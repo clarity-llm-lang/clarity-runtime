@@ -142,7 +142,7 @@ For larger architecture changes, open an issue first to align on the control-pla
 
 Use the themed Open Graph card:
 
-- `assets/clarity-runtime-og-card.svg`
+- `assets/clarity-runtime-og-card.png`
 
 In GitHub: repository `Settings` -> `General` -> `Social preview` -> `Upload an image`.
 
