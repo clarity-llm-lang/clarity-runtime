@@ -1,6 +1,4 @@
-import { spawn } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
-import path from "node:path";
 import type {
   InterfaceSnapshot,
   MCPServiceManifest,
@@ -30,25 +28,14 @@ function extractListResult<T>(value: unknown, key: string): T[] {
   return [];
 }
 
-function parseFunctionArgs(args: unknown): string[] {
+function parseFunctionArgs(args: unknown): unknown[] {
   const payload = asObject(args);
   const raw = payload.args;
   if (!Array.isArray(raw)) {
     return [];
   }
 
-  return raw.map((item) => {
-    if (typeof item === "number" || typeof item === "bigint") {
-      return String(item);
-    }
-    if (typeof item === "string") {
-      if (/^-?\d+(\.\d+)?$/.test(item)) {
-        return item;
-      }
-      return JSON.stringify(item);
-    }
-    return JSON.stringify(item);
-  });
+  return raw;
 }
 
 function parseAllowedHosts(value: string | undefined): Set<string> | null {
@@ -66,6 +53,7 @@ export class ServiceManager {
   private readonly starts = new Map<string, number>();
   private readonly logs = new Map<string, string[]>();
   private readonly remoteInitialized = new Set<string>();
+  private readonly localModuleCache = new Map<string, WebAssembly.Module>();
   private remoteRequestCounter = 1;
   private pidCounter = 49000;
 
@@ -235,7 +223,7 @@ export class ServiceManager {
           },
           ...localFunctions.map((fn) => ({
             name: `fn__${fn}`,
-            description: `Invoke local exported function '${fn}' via compiler runtime`,
+            description: `Invoke local exported function '${fn}' in-process`,
             inputSchema: {
               type: "object",
               properties: {
@@ -345,7 +333,7 @@ export class ServiceManager {
       const functionName = toolName.slice("fn__".length);
       const argsList = parseFunctionArgs(args);
       const output = await this.runLocalFunction(service, functionName, argsList);
-      this.appendLog(serviceId, `tools/call ${toolName}(${argsList.join(", ")})`);
+      this.appendLog(serviceId, `tools/call ${toolName}(${JSON.stringify(argsList)})`);
       return {
         content: [
           {
@@ -503,8 +491,7 @@ export class ServiceManager {
 
   private async discoverLocalFunctions(wasmPath: string): Promise<string[]> {
     try {
-      const bytes = await readFile(wasmPath);
-      const module = await WebAssembly.compile(bytes);
+      const module = await this.loadLocalModule(wasmPath);
       const exports = WebAssembly.Module.exports(module);
       return exports
         .filter((item) => item.kind === "function")
@@ -519,60 +506,141 @@ export class ServiceManager {
   private async runLocalFunction(
     service: ServiceRecord,
     functionName: string,
-    argsList: string[]
+    argsList: unknown[]
   ): Promise<string> {
-    const sourceFile = service.manifest.metadata.sourceFile;
-    const runner = await this.resolveClarityRunner();
-    const fullArgs = [...runner.baseArgs, "run", sourceFile, "-f", functionName];
-    if (argsList.length > 0) {
-      fullArgs.push("-a", ...argsList);
+    if (service.manifest.spec.origin.type !== "local_wasm") {
+      throw new Error("local function execution requires local_wasm origin");
     }
 
-    return new Promise<string>((resolve, reject) => {
-      const child = spawn(runner.command, fullArgs, {
-        stdio: ["ignore", "pipe", "pipe"]
-      });
+    const wasmPath = service.manifest.spec.origin.wasmPath;
+    const module = await this.loadLocalModule(wasmPath);
 
-      let stdout = "";
-      let stderr = "";
+    const inertModule = new Proxy(
+      {},
+      {
+        get: () => () => 0
+      }
+    );
+    const imports = new Proxy(
+      {},
+      {
+        get: () => inertModule
+      }
+    ) as WebAssembly.Imports;
 
-      child.stdout.on("data", (chunk: Buffer | string) => {
-        stdout += String(chunk);
-      });
-      child.stderr.on("data", (chunk: Buffer | string) => {
-        stderr += String(chunk);
-      });
+    const instance = await WebAssembly.instantiate(module, imports);
+    const fn = instance.exports[functionName];
+    if (typeof fn !== "function") {
+      throw new Error(`exported function not found: ${functionName}`);
+    }
 
-      child.on("error", (error) => {
-        reject(new Error(`failed to launch clarity runner: ${error.message}`));
-      });
+    const args = this.resolveWasmArgs(argsList);
+    let result: unknown;
+    let lastTypeError: Error | null = null;
 
-      child.on("close", (code) => {
-        if (code === 0) {
-          resolve(stdout.trim() || "(no output)");
-          return;
+    for (const candidate of args) {
+      try {
+        result = (fn as Function)(...candidate);
+        lastTypeError = null;
+        break;
+      } catch (error) {
+        if (error instanceof TypeError) {
+          lastTypeError = error;
+          continue;
         }
-        reject(new Error(stderr.trim() || `function execution failed with code ${code ?? "unknown"}`));
-      });
-    });
+        throw error;
+      }
+    }
+
+    if (lastTypeError) {
+      throw new Error(`failed to coerce function arguments for '${functionName}': ${lastTypeError.message}`);
+    }
+
+    return this.formatWasmResult(result);
   }
 
-  private async resolveClarityRunner(): Promise<{ command: string; baseArgs: string[] }> {
-    const nodeScript = process.env.CLARITYC_NODE_SCRIPT;
-    if (nodeScript) {
-      return { command: "node", baseArgs: [nodeScript] };
+  private async loadLocalModule(wasmPath: string): Promise<WebAssembly.Module> {
+    const cached = this.localModuleCache.get(wasmPath);
+    if (cached) {
+      return cached;
     }
 
-    const siblingScript = path.resolve(process.cwd(), "../LLM-lang/dist/index.js");
-    try {
-      await access(siblingScript);
-      return { command: "node", baseArgs: [siblingScript] };
-    } catch {
-      // Fall through.
+    const bytes = await readFile(wasmPath);
+    const module = await WebAssembly.compile(bytes);
+    this.localModuleCache.set(wasmPath, module);
+    return module;
+  }
+
+  private resolveWasmArgs(args: unknown[]): Array<Array<number | bigint>> {
+    const perArg: Array<Array<number | bigint>> = args.map((arg) => {
+      if (typeof arg === "bigint") {
+        const asNumber = Number(arg);
+        return Number.isSafeInteger(asNumber) ? [arg, asNumber] : [arg];
+      }
+
+      if (typeof arg === "number") {
+        if (Number.isInteger(arg)) {
+          return [BigInt(arg), arg];
+        }
+        return [arg];
+      }
+
+      if (typeof arg === "boolean") {
+        return [arg ? 1 : 0];
+      }
+
+      if (typeof arg === "string") {
+        if (/^-?\d+$/.test(arg)) {
+          const asNumber = Number(arg);
+          return Number.isSafeInteger(asNumber) ? [BigInt(arg), asNumber] : [BigInt(arg)];
+        }
+        if (/^-?\d+\.\d+$/.test(arg)) {
+          return [Number(arg)];
+        }
+        throw new Error(`unsupported string argument '${arg}' for in-process wasm call`);
+      }
+
+      throw new Error(`unsupported argument type '${typeof arg}' for in-process wasm call`);
+    });
+
+    if (perArg.length === 0) {
+      return [[]];
     }
 
-    const bin = process.env.CLARITYC_BIN ?? "clarityc";
-    return { command: bin, baseArgs: [] };
+    const combinations: Array<Array<number | bigint>> = [];
+    const current: Array<number | bigint> = [];
+
+    const walk = (index: number): void => {
+      if (index === perArg.length) {
+        combinations.push([...current]);
+        return;
+      }
+      for (const option of perArg[index]) {
+        current.push(option);
+        walk(index + 1);
+        current.pop();
+      }
+    };
+
+    walk(0);
+    return combinations;
+  }
+
+  private formatWasmResult(value: unknown): string {
+    if (value === undefined) {
+      return "(no output)";
+    }
+    if (typeof value === "bigint") {
+      return value.toString();
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+    if (typeof value === "string") {
+      return value;
+    }
+
+    return JSON.stringify(value);
   }
 
   private appendLog(serviceId: string, line: string): void {

@@ -42,7 +42,7 @@
 - Local services expose built-in tools: `health_check`, `describe_service`.
 - Local services also expose discovered function tools: `fn__<exported_function>`.
 - Gateway namespaced exposure format: `<toolNamespace>__fn__<exported_function>`.
-- Current execution path for `fn__*` tools uses compiler runtime subprocess invocation.
+- Current execution path for `fn__*` tools is direct in-process wasm execution in `clarityd`.
 
 ## Manifest
 - JSON schema file: `schemas/mcp-service-v1.schema.json`.
@@ -61,5 +61,4 @@
 
 ## Planned Next
 - Add policy enforcement and auth secret backend for remote services.
-- Move local function execution to direct in-process WASM host.
 - Merge and release native `clarityc start` compiler command.

@@ -121,7 +121,6 @@ Implemented in v1 scaffold:
 Not implemented yet:
 - direct native `clarityc start` command in the compiler repo (runtime side is ready via `clarityctl start-source`)
 - remote auth/policy hardening and isolation
-- direct in-process WASM host execution (current local function calls run through compiler runtime subprocess)
 
 ---
 
@@ -133,7 +132,6 @@ Not implemented yet:
 - [ ] Add remote auth providers and secret references
 - [ ] Add quarantine/recovery and richer health diagnostics
 - [ ] Add interface diffing and audit/event timeline
-- [ ] Move local function execution from compiler subprocess to direct in-process WASM host
 
 ## Progress Snapshot
 
@@ -146,7 +144,7 @@ Not implemented yet:
 | Remote MCP proxying | Done (baseline) | Initialize/introspect/tool forwarding |
 | Compiler-driven onboarding | In progress | Runtime side done; native `clarityc start` implemented in `LLM-lang` branch and pending merge |
 | Local function execution | Done (baseline) | `<namespace>__fn__*` tools discovered from wasm exports and executed via compiler runtime |
-| In-process WASM host execution | Pending | Current local execution path uses compiler subprocess |
+| In-process WASM host execution | Done | Local function tools execute directly via wasm instantiate/call in runtime |
 | Auth/policy hardening | In progress | Timeout/allowed-tools/host-allowlist baseline implemented; auth provider model still pending |
 
 ---
