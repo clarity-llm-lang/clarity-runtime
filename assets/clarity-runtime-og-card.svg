@@ -34,8 +34,4 @@
   <text x="308" y="340" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="24" fill="#9fb0c7" letter-spacing="4">UNIFIED MCP CONTROL PLANE</text>
 
   <text x="308" y="420" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="34" fill="#E7EEF7">Run local + remote MCP services from one gateway.</text>
-  <text x="308" y="470" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="28" fill="#C7D5E6">Status page. Registry. Bootstrap for Codex and Claude.</text>
-
-  <rect x="308" y="518" width="570" height="56" rx="12" fill="#0A1326" stroke="#35538A"/>
-  <text x="336" y="554" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="24" fill="#8FD6FF">clarityc start server.clarity</text>
-</svg>
+  <text x="308" y="470" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="28" fill="#C7D5E6">Status page. Registry. Bootstrap for Codex and Claude.</text></svg>

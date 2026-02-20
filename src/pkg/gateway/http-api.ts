@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ServiceManager } from "../supervisor/service-manager.js";
 import { renderStatusPage } from "../../web/status-page.js";
+import { isJsonRpcRequest, failure, type JsonRpcRequest } from "./mcp-jsonrpc.js";
+import { McpRouter } from "./mcp-router.js";
 
 function json(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -50,6 +52,7 @@ function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) 
 export async function handleHttp(manager: ServiceManager, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const method = req.method ?? "GET";
+  const mcpRouter = new McpRouter(manager);
 
   try {
     if (method === "GET" && (url.pathname === "/" || url.pathname === "/status")) {
@@ -57,11 +60,30 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
       return;
     }
 
-    if (method === "GET" && url.pathname === "/mcp") {
-      json(res, 501, {
-        error: "MCP gateway transport not implemented yet",
-        hint: "Use /api/status and service APIs for v1 control-plane scaffolding"
+    if (url.pathname === "/mcp" && method === "GET") {
+      json(res, 200, {
+        name: "clarity-runtime gateway",
+        protocol: "jsonrpc-2.0",
+        supportedMethods: ["initialize", "ping", "tools/list", "tools/call", "resources/list", "prompts/list"]
       });
+      return;
+    }
+
+    if (url.pathname === "/mcp" && method === "POST") {
+      const message = await readJson(req);
+      if (!isJsonRpcRequest(message)) {
+        json(res, 400, failure(null, -32600, "invalid JSON-RPC request"));
+        return;
+      }
+
+      const response = await mcpRouter.handle(message as JsonRpcRequest);
+      if (!response) {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+
+      json(res, 200, response);
       return;
     }
 

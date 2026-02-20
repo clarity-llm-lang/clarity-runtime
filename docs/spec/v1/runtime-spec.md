@@ -17,6 +17,8 @@
 
 ## HTTP API
 - `GET /status`: status page UI.
+- `GET /mcp`: gateway metadata.
+- `POST /mcp`: MCP JSON-RPC endpoint.
 - `GET /api/status`: full runtime summary.
 - `GET /api/services`: service summaries.
 - `GET /api/services/:id`: full service record.
@@ -36,9 +38,9 @@
 - `clarityctl add-local --source ... --module ... --wasm ...`
 - `clarityctl add-remote --endpoint ... --module ...`
 - `clarityctl list|status|start|stop|restart|introspect|logs|bootstrap|doctor`
+- `clarityctl gateway serve --stdio`
 
 ## Planned Next
-- Implement real MCP transport at `/mcp`.
-- Implement real stdio bridge in `clarityctl gateway serve --stdio`.
 - Add policy enforcement and auth secret backend for remote services.
+- Add local WASM MCP execution engine.
 - Add compiler hook so `clarityc start` calls daemon apply/start directly.

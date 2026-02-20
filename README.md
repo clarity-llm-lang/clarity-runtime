@@ -109,20 +109,19 @@ Implemented in v1 scaffold:
 - persistent registry (`.clarity/runtime/registry.json`)
 - daemon HTTP API and status page
 - add/list/start/stop/restart/introspect flows
+- gateway `/mcp` JSON-RPC endpoint (`initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`)
+- stdio bridge mode via `clarityctl gateway serve --stdio`
 - bootstrap writers for Codex/Claude config files
 
 Not implemented yet:
-- real MCP transport on `/mcp`
-- real stdio bridge for agent clients
 - direct `clarityc start` compiler integration
 - remote auth/policy hardening and isolation
+- local WASM MCP execution engine (currently local services expose runtime tools and remote services are fully proxied)
 
 ---
 
 ## Roadmap
 
-- [ ] Implement real MCP gateway transport (`/mcp`, streamable HTTP)
-- [ ] Implement stdio gateway process for local clients
 - [ ] Wire compiler path: `clarityc start <file.clarity>`
 - [ ] Add policy engine (timeouts, allowlists, concurrency, payload limits)
 - [ ] Add remote auth providers and secret references

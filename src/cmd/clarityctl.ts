@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import path from "node:path";
+import readline from "node:readline";
 import type { MCPServiceManifest } from "../types/contracts.js";
 
 const program = new Command();
 
-async function api<T>(pathname: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`http://127.0.0.1:4707${pathname}`, {
+const DEFAULT_DAEMON_URL = process.env.CLARITYD_URL ?? "http://127.0.0.1:4707";
+
+async function api<T>(baseUrl: string, pathname: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${baseUrl}${pathname}`, {
     ...init,
     headers: {
       "content-type": "application/json",
@@ -88,19 +91,67 @@ function remoteManifest(input: {
   };
 }
 
-program.name("clarityctl").description("Clarity runtime control CLI");
+async function runStdioGateway(baseUrl: string): Promise<void> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    crlfDelay: Infinity,
+    terminal: false
+  });
+
+  for await (const line of rl) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    let message: unknown;
+    try {
+      message = JSON.parse(trimmed);
+    } catch {
+      // Ignore malformed JSON from upstream client and keep stream alive.
+      continue;
+    }
+
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(message)
+    });
+
+    const raw = await response.text();
+    if (!raw.trim()) {
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      process.stdout.write(`${JSON.stringify(parsed)}\n`);
+    } catch {
+      continue;
+    }
+  }
+}
+
+program
+  .name("clarityctl")
+  .description("Clarity runtime control CLI")
+  .option("--daemon-url <url>", "Clarity daemon base URL", DEFAULT_DAEMON_URL);
 
 program
   .command("list")
   .action(async () => {
-    const out = await api<{ items: Array<Record<string, unknown>> }>("/api/services");
+    const opts = program.opts<{ daemonUrl: string }>();
+    const out = await api<{ items: Array<Record<string, unknown>> }>(opts.daemonUrl, "/api/services");
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });
 
 program
   .command("status")
   .action(async () => {
-    const out = await api<Record<string, unknown>>("/api/status");
+    const opts = program.opts<{ daemonUrl: string }>();
+    const out = await api<Record<string, unknown>>(opts.daemonUrl, "/api/status");
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });
 
@@ -112,6 +163,7 @@ program
   .option("--entry <name>", "MCP entry function", "mcp_main")
   .option("--name <display>", "Optional display name")
   .action(async (opts) => {
+    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
     const manifest = localManifest({
       sourceFile: path.resolve(opts.source),
       module: opts.module,
@@ -120,7 +172,7 @@ program
       displayName: opts.name
     });
 
-    const out = await api<{ service: unknown }>("/api/services/apply", {
+    const out = await api<{ service: unknown }>(daemon, "/api/services/apply", {
       method: "POST",
       body: JSON.stringify({ manifest })
     });
@@ -133,13 +185,14 @@ program
   .requiredOption("--module <name>", "Logical module name")
   .option("--name <display>", "Optional display name")
   .action(async (opts) => {
+    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
     const manifest = remoteManifest({
       endpoint: opts.endpoint,
       module: opts.module,
       displayName: opts.name
     });
 
-    const out = await api<{ service: unknown }>("/api/services/apply", {
+    const out = await api<{ service: unknown }>(daemon, "/api/services/apply", {
       method: "POST",
       body: JSON.stringify({ manifest })
     });
@@ -150,7 +203,8 @@ for (const action of ["start", "stop", "restart", "introspect"] as const) {
   program
     .command(`${action} <serviceId>`)
     .action(async (serviceId) => {
-      const out = await api<Record<string, unknown>>(`/api/services/${encodeURIComponent(serviceId)}/${action}`, {
+      const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+      const out = await api<Record<string, unknown>>(daemon, `/api/services/${encodeURIComponent(serviceId)}/${action}`, {
         method: "POST"
       });
       process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
@@ -161,8 +215,9 @@ program
   .command("logs <serviceId>")
   .option("--limit <n>", "Number of lines", "200")
   .action(async (serviceId, opts) => {
+    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
     const limit = Number(opts.limit);
-    const out = await api<{ lines: string[] }>(`/api/services/${encodeURIComponent(serviceId)}/logs?limit=${Number.isFinite(limit) ? limit : 200}`);
+    const out = await api<{ lines: string[] }>(daemon, `/api/services/${encodeURIComponent(serviceId)}/logs?limit=${Number.isFinite(limit) ? limit : 200}`);
     process.stdout.write(`${out.lines.join("\n")}\n`);
   });
 
@@ -170,12 +225,13 @@ program
   .command("bootstrap")
   .option("--clients <items>", "Comma separated clients", "codex,claude")
   .action(async (opts) => {
+    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
     const clients = String(opts.clients)
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
 
-    const out = await api<Record<string, unknown>>("/api/bootstrap", {
+    const out = await api<Record<string, unknown>>(daemon, "/api/bootstrap", {
       method: "POST",
       body: JSON.stringify({ clients })
     });
@@ -185,20 +241,22 @@ program
 program
   .command("doctor")
   .action(async () => {
-    const out = await api<Record<string, unknown>>("/api/status");
+    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const out = await api<Record<string, unknown>>(daemon, "/api/status");
     process.stdout.write(`${JSON.stringify({ ok: true, checks: [{ name: "daemon", status: "pass" }], status: out }, null, 2)}\n`);
   });
 
-program
-  .command("gateway")
+const gateway = program.command("gateway");
+gateway
   .command("serve")
-  .option("--stdio", "Start stdio gateway placeholder")
-  .action(() => {
-    process.stdin.resume();
-    process.stdout.write("Clarity gateway stdio placeholder active\n");
-    process.stdin.on("data", () => {
-      process.stdout.write('{"jsonrpc":"2.0","method":"$error","params":{"message":"MCP stdio gateway not implemented yet"}}\n');
-    });
+  .option("--stdio", "Run stdio bridge mode")
+  .action(async (opts) => {
+    if (!opts.stdio) {
+      throw new Error("Only --stdio mode is currently supported");
+    }
+
+    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    await runStdioGateway(daemon);
   });
 
 program.parseAsync(process.argv).catch((err) => {

@@ -1,3 +1,4 @@
+import { access } from "node:fs/promises";
 import type {
   InterfaceSnapshot,
   MCPServiceManifest,
@@ -10,10 +11,28 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function asObject(input: unknown): Record<string, unknown> {
+  if (!input || typeof input !== "object") {
+    return {};
+  }
+  return input as Record<string, unknown>;
+}
+
+function extractListResult<T>(value: unknown, key: string): T[] {
+  const obj = asObject(value);
+  const raw = obj[key];
+  if (Array.isArray(raw)) {
+    return raw as T[];
+  }
+  return [];
+}
+
 export class ServiceManager {
   private readonly registry: ServiceRegistry;
   private readonly starts = new Map<string, number>();
   private readonly logs = new Map<string, string[]>();
+  private readonly remoteInitialized = new Set<string>();
+  private remoteRequestCounter = 1;
   private pidCounter = 49000;
 
   constructor(registry: ServiceRegistry) {
@@ -43,20 +62,45 @@ export class ServiceManager {
     const startedAt = Date.now();
     this.starts.set(serviceId, startedAt);
 
+    let health: ServiceRecord["runtime"]["health"] = "HEALTHY";
+    let lastError: string | undefined;
+
+    if (existing.manifest.spec.origin.type === "local_wasm") {
+      try {
+        await access(existing.manifest.spec.origin.wasmPath);
+      } catch {
+        health = "DEGRADED";
+        lastError = `wasm artifact missing: ${existing.manifest.spec.origin.wasmPath}`;
+      }
+    }
+
+    if (existing.manifest.spec.origin.type === "remote_mcp") {
+      try {
+        await this.ensureRemoteInitialized(serviceId, existing.manifest.spec.origin.endpoint);
+      } catch (error) {
+        health = "DEGRADED";
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
     const updated = await this.registry.update(serviceId, (current) => ({
       ...current,
       runtime: {
         ...current.runtime,
         lifecycle: "RUNNING",
-        health: "HEALTHY",
+        health,
         pid: ++this.pidCounter,
         uptimeSeconds: 0,
         lastHeartbeatAt: nowIso(),
-        lastError: undefined
+        lastError
       }
     }));
 
     this.appendLog(serviceId, "Service started");
+    if (lastError) {
+      this.appendLog(serviceId, `Start warning: ${lastError}`);
+    }
+
     return updated;
   }
 
@@ -73,24 +117,27 @@ export class ServiceManager {
       }
     }));
     this.starts.delete(serviceId);
+    this.remoteInitialized.delete(serviceId);
     this.appendLog(serviceId, "Service stopped");
     return updated;
   }
 
   async restart(serviceId: string): Promise<ServiceRecord> {
     await this.stop(serviceId);
-    return this.registry.update(serviceId, (current) => ({
+    await this.registry.update(serviceId, (current) => ({
       ...current,
       runtime: {
         ...current.runtime,
         restartCount: current.runtime.restartCount + 1
       }
-    })).then(() => this.start(serviceId));
+    }));
+    return this.start(serviceId);
   }
 
   async remove(serviceId: string): Promise<boolean> {
     this.starts.delete(serviceId);
     this.logs.delete(serviceId);
+    this.remoteInitialized.delete(serviceId);
     return this.registry.remove(serviceId);
   }
 
@@ -100,34 +147,136 @@ export class ServiceManager {
       throw new Error(`service not found: ${serviceId}`);
     }
 
-    const namespace = service.manifest.spec.toolNamespace ?? service.manifest.metadata.module.toLowerCase();
-    const snapshot: InterfaceSnapshot = {
-      interfaceRevision: deriveInterfaceRevision(`${serviceId}:${Date.now()}`),
-      introspectedAt: nowIso(),
-      tools: [
-        {
-          name: `${namespace}__health_check`,
-          description: "Synthetic v1 placeholder tool exposed by gateway",
-          inputSchema: {
-            type: "object",
-            properties: {
-              verbose: { type: "boolean" }
-            },
-            additionalProperties: false
+    let snapshot: InterfaceSnapshot;
+
+    if (service.manifest.spec.origin.type === "remote_mcp") {
+      const endpoint = service.manifest.spec.origin.endpoint;
+      await this.ensureRemoteInitialized(serviceId, endpoint);
+
+      const [toolsResult, resourcesResult, promptsResult] = await Promise.all([
+        this.remoteRequest(serviceId, endpoint, "tools/list", {}),
+        this.remoteRequest(serviceId, endpoint, "resources/list", {}).catch(() => ({ resources: [] })),
+        this.remoteRequest(serviceId, endpoint, "prompts/list", {}).catch(() => ({ prompts: [] }))
+      ]);
+
+      snapshot = {
+        interfaceRevision: deriveInterfaceRevision(`${serviceId}:${JSON.stringify(toolsResult)}:${Date.now()}`),
+        introspectedAt: nowIso(),
+        tools: extractListResult<{ name: string; description?: string; inputSchema?: unknown }>(toolsResult, "tools"),
+        resources: extractListResult<{ uri: string; name?: string; description?: string }>(resourcesResult, "resources"),
+        prompts: extractListResult<{
+          name: string;
+          description?: string;
+          arguments?: Array<{ name: string; required?: boolean; description?: string }>;
+        }>(promptsResult, "prompts")
+      };
+    } else {
+      const namespace = service.manifest.spec.toolNamespace ?? service.manifest.metadata.module.toLowerCase();
+      snapshot = {
+        interfaceRevision: deriveInterfaceRevision(`${serviceId}:${Date.now()}`),
+        introspectedAt: nowIso(),
+        tools: [
+          {
+            name: "health_check",
+            description: `Health probe for ${namespace}`,
+            inputSchema: {
+              type: "object",
+              properties: {
+                verbose: { type: "boolean" }
+              },
+              additionalProperties: false
+            }
+          },
+          {
+            name: "describe_service",
+            description: "Returns runtime metadata for this local service",
+            inputSchema: {
+              type: "object",
+              properties: {},
+              additionalProperties: false
+            }
           }
-        }
-      ],
-      resources: [],
-      prompts: []
-    };
+        ],
+        resources: [],
+        prompts: []
+      };
+    }
 
     await this.registry.update(serviceId, (current) => ({
       ...current,
-      interfaceSnapshot: snapshot
+      interfaceSnapshot: snapshot,
+      runtime: {
+        ...current.runtime,
+        lastHeartbeatAt: nowIso(),
+        health: current.runtime.lifecycle === "RUNNING" ? "HEALTHY" : current.runtime.health,
+        lastError: undefined
+      }
     }));
 
     this.appendLog(serviceId, "Interface snapshot refreshed");
     return snapshot;
+  }
+
+  async callTool(serviceId: string, toolName: string, args: unknown): Promise<unknown> {
+    const service = await this.registry.get(serviceId);
+    if (!service) {
+      throw new Error(`service not found: ${serviceId}`);
+    }
+
+    if (service.runtime.lifecycle !== "RUNNING") {
+      throw new Error(`service is not running: ${serviceId}`);
+    }
+
+    if (service.manifest.spec.origin.type === "remote_mcp") {
+      const result = await this.remoteRequest(
+        serviceId,
+        service.manifest.spec.origin.endpoint,
+        "tools/call",
+        {
+          name: toolName,
+          arguments: args ?? {}
+        }
+      );
+      this.appendLog(serviceId, `tools/call ${toolName}`);
+      return result;
+    }
+
+    if (toolName === "health_check") {
+      this.appendLog(serviceId, "tools/call health_check");
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Service ${serviceId} is running with health=${service.runtime.health}`
+          }
+        ]
+      };
+    }
+
+    if (toolName === "describe_service") {
+      this.appendLog(serviceId, "tools/call describe_service");
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                serviceId,
+                module: service.manifest.metadata.module,
+                sourceFile: service.manifest.metadata.sourceFile,
+                wasmPath: service.manifest.spec.origin.wasmPath,
+                entry: service.manifest.spec.origin.entry,
+                runtime: service.runtime
+              },
+              null,
+              2
+            )
+          }
+        ]
+      };
+    }
+
+    throw new Error(`unsupported local tool: ${toolName}`);
   }
 
   async tailLogs(serviceId: string, limit = 200): Promise<string[]> {
@@ -155,6 +304,104 @@ export class ServiceManager {
           }));
         })
     );
+  }
+
+  private async ensureRemoteInitialized(serviceId: string, endpoint: string): Promise<void> {
+    if (this.remoteInitialized.has(serviceId)) {
+      return;
+    }
+
+    await this.remoteRequest(
+      serviceId,
+      endpoint,
+      "initialize",
+      {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: {
+          name: "clarity-runtime",
+          version: "0.1.0"
+        }
+      }
+    );
+
+    await this.remoteNotify(serviceId, endpoint, "notifications/initialized", {});
+    this.remoteInitialized.add(serviceId);
+    this.appendLog(serviceId, "Remote MCP initialized");
+  }
+
+  private async remoteNotify(serviceId: string, endpoint: string, method: string, params: unknown): Promise<void> {
+    try {
+      const payload = {
+        jsonrpc: "2.0",
+        method,
+        params
+      };
+
+      await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+    } catch (error) {
+      this.appendLog(serviceId, `Notification failed (${method}): ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async remoteRequest(serviceId: string, endpoint: string, method: string, params: unknown): Promise<unknown> {
+    const requestId = `${serviceId}-${this.remoteRequestCounter++}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20_000);
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: requestId,
+          method,
+          params
+        }),
+        signal: controller.signal
+      });
+
+      const raw = await response.text();
+      if (!response.ok) {
+        throw new Error(`remote ${response.status}: ${raw.slice(0, 200)}`);
+      }
+
+      const parsed = raw ? JSON.parse(raw) : {};
+      const obj = asObject(parsed);
+      if (obj.error) {
+        const err = asObject(obj.error);
+        const message = typeof err.message === "string" ? err.message : "remote RPC error";
+        throw new Error(message);
+      }
+      if (!("result" in obj)) {
+        return {};
+      }
+
+      return obj.result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.registry.update(serviceId, (current) => ({
+        ...current,
+        runtime: {
+          ...current.runtime,
+          health: "DEGRADED",
+          lastError: message
+        }
+      }));
+      this.appendLog(serviceId, `Remote request failed (${method}): ${message}`);
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private appendLog(serviceId: string, line: string): void {
