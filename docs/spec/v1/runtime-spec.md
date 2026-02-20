@@ -38,6 +38,12 @@
 - `runtime__restart_service`
 - `runtime__refresh_interface`
 
+## Local Service Tooling
+- Local services expose built-in tools: `health_check`, `describe_service`.
+- Local services also expose discovered function tools: `fn__<exported_function>`.
+- Gateway namespaced exposure format: `<toolNamespace>__fn__<exported_function>`.
+- Current execution path for `fn__*` tools uses compiler runtime subprocess invocation.
+
 ## Manifest
 - JSON schema file: `schemas/mcp-service-v1.schema.json`.
 - `apiVersion`: `clarity.runtime/v1`.
@@ -53,5 +59,5 @@
 
 ## Planned Next
 - Add policy enforcement and auth secret backend for remote services.
-- Add local WASM MCP execution engine.
-- Add compiler hook so `clarityc start` calls daemon apply/start directly.
+- Move local function execution to direct in-process WASM host.
+- Merge and release native `clarityc start` compiler command.

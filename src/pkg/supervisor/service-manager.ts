@@ -1,4 +1,6 @@
-import { access } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { access, readFile } from "node:fs/promises";
+import path from "node:path";
 import type {
   InterfaceSnapshot,
   MCPServiceManifest,
@@ -25,6 +27,27 @@ function extractListResult<T>(value: unknown, key: string): T[] {
     return raw as T[];
   }
   return [];
+}
+
+function parseFunctionArgs(args: unknown): string[] {
+  const payload = asObject(args);
+  const raw = payload.args;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw.map((item) => {
+    if (typeof item === "number" || typeof item === "bigint") {
+      return String(item);
+    }
+    if (typeof item === "string") {
+      if (/^-?\d+(\.\d+)?$/.test(item)) {
+        return item;
+      }
+      return JSON.stringify(item);
+    }
+    return JSON.stringify(item);
+  });
 }
 
 export class ServiceManager {
@@ -172,6 +195,7 @@ export class ServiceManager {
       };
     } else {
       const namespace = service.manifest.spec.toolNamespace ?? service.manifest.metadata.module.toLowerCase();
+      const localFunctions = await this.discoverLocalFunctions(service.manifest.spec.origin.wasmPath);
       snapshot = {
         interfaceRevision: deriveInterfaceRevision(`${serviceId}:${Date.now()}`),
         introspectedAt: nowIso(),
@@ -195,7 +219,27 @@ export class ServiceManager {
               properties: {},
               additionalProperties: false
             }
-          }
+          },
+          ...localFunctions.map((fn) => ({
+            name: `fn__${fn}`,
+            description: `Invoke local exported function '${fn}' via compiler runtime`,
+            inputSchema: {
+              type: "object",
+              properties: {
+                args: {
+                  type: "array",
+                  items: {
+                    anyOf: [
+                      { type: "string" },
+                      { type: "number" },
+                      { type: "boolean" }
+                    ]
+                  }
+                }
+              },
+              additionalProperties: false
+            }
+          }))
         ],
         resources: [],
         prompts: []
@@ -271,6 +315,21 @@ export class ServiceManager {
               null,
               2
             )
+          }
+        ]
+      };
+    }
+
+    if (toolName.startsWith("fn__")) {
+      const functionName = toolName.slice("fn__".length);
+      const argsList = parseFunctionArgs(args);
+      const output = await this.runLocalFunction(service, functionName, argsList);
+      this.appendLog(serviceId, `tools/call ${toolName}(${argsList.join(", ")})`);
+      return {
+        content: [
+          {
+            type: "text",
+            text: output
           }
         ]
       };
@@ -402,6 +461,80 @@ export class ServiceManager {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private async discoverLocalFunctions(wasmPath: string): Promise<string[]> {
+    try {
+      const bytes = await readFile(wasmPath);
+      const module = await WebAssembly.compile(bytes);
+      const exports = WebAssembly.Module.exports(module);
+      return exports
+        .filter((item) => item.kind === "function")
+        .map((item) => item.name)
+        .filter((name) => !name.startsWith("__"))
+        .sort((a, b) => a.localeCompare(b));
+    } catch {
+      return [];
+    }
+  }
+
+  private async runLocalFunction(
+    service: ServiceRecord,
+    functionName: string,
+    argsList: string[]
+  ): Promise<string> {
+    const sourceFile = service.manifest.metadata.sourceFile;
+    const runner = await this.resolveClarityRunner();
+    const fullArgs = [...runner.baseArgs, "run", sourceFile, "-f", functionName];
+    if (argsList.length > 0) {
+      fullArgs.push("-a", ...argsList);
+    }
+
+    return new Promise<string>((resolve, reject) => {
+      const child = spawn(runner.command, fullArgs, {
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout.on("data", (chunk: Buffer | string) => {
+        stdout += String(chunk);
+      });
+      child.stderr.on("data", (chunk: Buffer | string) => {
+        stderr += String(chunk);
+      });
+
+      child.on("error", (error) => {
+        reject(new Error(`failed to launch clarity runner: ${error.message}`));
+      });
+
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolve(stdout.trim() || "(no output)");
+          return;
+        }
+        reject(new Error(stderr.trim() || `function execution failed with code ${code ?? "unknown"}`));
+      });
+    });
+  }
+
+  private async resolveClarityRunner(): Promise<{ command: string; baseArgs: string[] }> {
+    const nodeScript = process.env.CLARITYC_NODE_SCRIPT;
+    if (nodeScript) {
+      return { command: "node", baseArgs: [nodeScript] };
+    }
+
+    const siblingScript = path.resolve(process.cwd(), "../LLM-lang/dist/index.js");
+    try {
+      await access(siblingScript);
+      return { command: "node", baseArgs: [siblingScript] };
+    } catch {
+      // Fall through.
+    }
+
+    const bin = process.env.CLARITYC_BIN ?? "clarityc";
+    return { command: bin, baseArgs: [] };
   }
 
   private appendLog(serviceId: string, line: string): void {
