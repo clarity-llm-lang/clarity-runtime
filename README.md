@@ -111,7 +111,8 @@ Implemented in v1 scaffold:
 - daemon HTTP API and status page
 - add/list/start/stop/restart/introspect flows
 - gateway `/mcp` JSON-RPC endpoint (`initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`)
-- built-in runtime control MCP tools (`runtime__status_summary`, `runtime__list_services`, `runtime__get_service`, `runtime__get_logs`, `runtime__start_service`, `runtime__stop_service`, `runtime__restart_service`, `runtime__refresh_interface`)
+- built-in runtime control MCP tools (`runtime__status_summary`, `runtime__list_services`, `runtime__get_service`, `runtime__get_logs`, `runtime__start_service`, `runtime__stop_service`, `runtime__restart_service`, `runtime__refresh_interface`, `runtime__unquarantine_service`, `runtime__get_audit`)
+- gated MCP self-provisioning tools (`runtime__register_local`, `runtime__register_remote`, `runtime__register_via_url`, `runtime__apply_manifest`) protected by `CLARITY_ENABLE_MCP_PROVISIONING=1`
 - stdio bridge mode via `clarityctl gateway serve --stdio`
 - compiler-assisted onboarding via `clarityctl start-source --source <file.clarity>` (compile + register + start + introspect)
 - local function execution tools for local services (`<namespace>__fn__<exported_function>`)
@@ -130,9 +131,9 @@ Not implemented yet:
 - [ ] Native compiler command (`clarityc start <file.clarity>`) in `LLM-lang`
 - [ ] Add policy engine (timeouts, allowlists, concurrency, payload limits)
 - [ ] Add remote auth providers and secret references
-- [ ] Add MCP self-provisioning tools (LLM can register/install services via MCP with approval + policy gates)
-- [ ] Add quarantine/recovery and richer health diagnostics
-- [ ] Add interface diffing and audit/event timeline
+- [x] Add MCP self-provisioning tools (LLM can register/install services via MCP with approval + policy gates)
+- [x] Add quarantine/recovery and richer health diagnostics
+- [x] Add interface diffing and audit/event timeline
 
 ## Progress Snapshot
 
@@ -140,14 +141,14 @@ Not implemented yet:
 |------|--------|-------|
 | Registry + lifecycle | Done | Persistent service records, start/stop/restart, health state |
 | Gateway MCP transport | Done | `/mcp` JSON-RPC with list/call routing |
-| Runtime as MCP control plane | Done | `runtime__*` tools for status, service ops, logs, interface refresh |
+| Runtime as MCP control plane | Done | `runtime__*` tools for status, service ops, logs, audit, quarantine recovery |
 | Stdio gateway bridge | Done | `clarityctl gateway serve --stdio` forwards to daemon gateway |
 | Remote MCP proxying | Done (baseline) | Initialize/introspect/tool forwarding |
 | Compiler-driven onboarding | In progress | Runtime side done; native `clarityc start` implemented in `LLM-lang` branch and pending merge |
 | Local function execution | Done (baseline) | `<namespace>__fn__*` tools discovered from wasm exports and executed via compiler runtime |
 | In-process WASM host execution | Done | Local function tools execute directly via wasm instantiate/call in runtime |
 | Auth/policy hardening | In progress | Timeout/allowed-tools/host-allowlist baseline implemented; auth provider model still pending |
-| MCP self-provisioning | Backlog | Add `runtime__register_*` style tools with explicit approval and policy checks |
+| MCP self-provisioning | Done (gated) | `runtime__register_local`, `runtime__register_remote`, `runtime__apply_manifest` behind `CLARITY_ENABLE_MCP_PROVISIONING=1` |
 
 ---
 
@@ -173,6 +174,13 @@ Use: `assets/clarity-github-avatar.png`
 - `add-remote --auth-ref <name>`: resolve bearer secret from `CLARITY_REMOTE_AUTH_<NAME>`.
 - `CLARITY_REMOTE_ALLOWED_HOSTS=host1,host2`: optional global remote host allowlist.
 - `CLARITY_REMOTE_DEFAULT_TIMEOUT_MS=20000`: default timeout when manifest timeout is not set.
+- `CLARITY_ENABLE_MCP_PROVISIONING=1`: enable runtime MCP self-provisioning tools (`runtime__register_*`, `runtime__apply_manifest`).
+
+## Audit And Events
+
+- `GET /api/audit?limit=200`: latest runtime audit/events.
+- `GET /api/events`: SSE stream for live runtime events.
+- Status page now includes an audit timeline and `Unquarantine` action for quarantined services.
 
 ## Contributing
 

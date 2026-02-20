@@ -21,11 +21,13 @@
 - `POST /mcp`: MCP JSON-RPC endpoint.
 - `GET /api/status`: full runtime summary.
 - `GET /api/services`: service summaries.
+- `GET /api/audit?limit=200`: recent audit/event records.
+- `GET /api/events`: server-sent events stream for live audit updates.
 - `GET /api/services/:id`: full service record.
 - `GET /api/services/:id/interface`: interface snapshot.
 - `GET /api/services/:id/logs?limit=200`: logs.
 - `POST /api/services/apply`: apply manifest.
-- `POST /api/services/:id/start|stop|restart|introspect`.
+- `POST /api/services/:id/start|stop|restart|introspect|unquarantine`.
 - `POST /api/bootstrap`: write Codex/Claude client registration.
 
 ## Built-in MCP Control Tools
@@ -37,6 +39,12 @@
 - `runtime__stop_service`
 - `runtime__restart_service`
 - `runtime__refresh_interface`
+- `runtime__unquarantine_service`
+- `runtime__get_audit`
+- `runtime__register_local` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
+- `runtime__register_remote` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
+- `runtime__register_via_url` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
+- `runtime__apply_manifest` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
 
 ## Local Service Tooling
 - Local services expose built-in tools: `health_check`, `describe_service`.
@@ -62,5 +70,4 @@
 
 ## Planned Next
 - Add policy enforcement and auth secret backend for remote services.
-- Add MCP self-provisioning control tools (register/apply/start through MCP with strict approval and policy checks).
 - Merge and release native `clarityc start` compiler command.

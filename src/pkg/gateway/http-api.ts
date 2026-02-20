@@ -60,6 +60,35 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
       return;
     }
 
+    if (method === "GET" && url.pathname === "/api/events") {
+      res.statusCode = 200;
+      res.setHeader("content-type", "text/event-stream; charset=utf-8");
+      res.setHeader("cache-control", "no-cache");
+      res.setHeader("connection", "keep-alive");
+
+      const writeEvent = (event: unknown): void => {
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+      };
+
+      for (const event of manager.getRecentEvents(100)) {
+        writeEvent(event);
+      }
+
+      const unsubscribe = manager.subscribeEvents((event) => {
+        writeEvent(event);
+      });
+
+      const keepAlive = setInterval(() => {
+        res.write(": ping\n\n");
+      }, 15000);
+
+      req.on("close", () => {
+        clearInterval(keepAlive);
+        unsubscribe();
+      });
+      return;
+    }
+
     if (url.pathname === "/mcp" && method === "GET") {
       json(res, 200, {
         name: "clarity-runtime gateway",
@@ -89,11 +118,13 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
 
     if (method === "GET" && url.pathname === "/api/status") {
       const services = (await manager.list()).map(summarize);
+      const listen = req.headers.host && req.headers.host.length > 0 ? req.headers.host : "localhost:4707";
       const summary = {
         total: services.length,
         running: services.filter((s) => s.lifecycle === "RUNNING").length,
         degraded: services.filter((s) => s.health === "DEGRADED").length,
         stopped: services.filter((s) => s.lifecycle === "STOPPED" || s.lifecycle === "REGISTERED").length,
+        quarantined: services.filter((s) => s.lifecycle === "QUARANTINED").length,
         local: services.filter((s) => s.originType === "local_wasm").length,
         remote: services.filter((s) => s.originType === "remote_mcp").length
       };
@@ -105,7 +136,7 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
           uptimeSeconds: Math.floor(process.uptime())
         },
         gateway: {
-          listen: "localhost:4707",
+          listen,
           mcpPath: "/mcp",
           healthy: true
         },
@@ -118,6 +149,14 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
 
     if (method === "GET" && url.pathname === "/api/services") {
       json(res, 200, { items: (await manager.list()).map(summarize) });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/audit") {
+      const limit = Number(url.searchParams.get("limit") ?? "200");
+      json(res, 200, {
+        items: manager.getRecentEvents(Number.isFinite(limit) ? limit : 200)
+      });
       return;
     }
 
@@ -165,7 +204,7 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
       return;
     }
 
-    const actionMatch = url.pathname.match(/^\/api\/services\/([^/]+)\/(start|stop|restart|introspect)$/);
+    const actionMatch = url.pathname.match(/^\/api\/services\/([^/]+)\/(start|stop|restart|introspect|unquarantine)$/);
     if (method === "POST" && actionMatch) {
       const id = decodeURIComponent(actionMatch[1]);
       const action = actionMatch[2];
@@ -184,6 +223,10 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
       }
       if (action === "introspect") {
         json(res, 200, { interface: await manager.refreshInterface(id) });
+        return;
+      }
+      if (action === "unquarantine") {
+        json(res, 200, { service: await manager.unquarantine(id) });
         return;
       }
     }

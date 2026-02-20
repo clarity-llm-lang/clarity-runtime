@@ -110,6 +110,7 @@ export function renderStatusPage(): string {
       border-radius: 12px;
       overflow: auto;
       background: var(--panel-2);
+      margin-bottom: 14px;
     }
 
     table { width: 100%; min-width: 980px; border-collapse: collapse; }
@@ -174,6 +175,46 @@ export function renderStatusPage(): string {
 
     .btn:hover { filter: brightness(1.1); }
 
+    .audit {
+      max-height: 280px;
+      overflow: auto;
+    }
+
+    .audit-title {
+      margin: 0 0 8px;
+      font-size: 13px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+
+    .audit-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 8px;
+    }
+
+    .audit-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: rgba(10, 16, 30, 0.72);
+      font-size: 12px;
+    }
+
+    .audit-meta {
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 3px;
+    }
+
+    .audit-msg {
+      color: var(--text);
+      word-break: break-word;
+    }
+
     @media (max-width: 760px) {
       body { padding: 14px; }
       .title { font-size: 20px; }
@@ -207,6 +248,11 @@ export function renderStatusPage(): string {
         <tbody id="rows"></tbody>
       </table>
     </div>
+
+    <div class="card audit">
+      <h2 class="audit-title">Audit Timeline</h2>
+      <ul id="audit" class="audit-list"></ul>
+    </div>
   </div>
 <script>
 async function call(path, method = 'GET') {
@@ -238,7 +284,10 @@ async function action(id, op) {
 }
 
 async function refresh() {
-  const data = await call('/api/status');
+  const [data, audit] = await Promise.all([
+    call('/api/status'),
+    call('/api/audit?limit=25')
+  ]);
   document.getElementById('summary').innerHTML = summaryCards(data);
   const rows = data.services.map((svc) => {
     const toolCount = svc.interface?.tools ?? 0;
@@ -255,10 +304,22 @@ async function refresh() {
         '<button class="btn" onclick="action(\'' + svc.serviceId + '\',\'stop\')">Stop</button>' +
         '<button class="btn" onclick="action(\'' + svc.serviceId + '\',\'restart\')">Restart</button>' +
         '<button class="btn secondary" onclick="action(\'' + svc.serviceId + '\',\'introspect\')">Refresh Interface</button>' +
+        (svc.lifecycle === 'QUARANTINED'
+          ? '<button class="btn secondary" onclick="action(\'' + svc.serviceId + '\',\'unquarantine\')">Unquarantine</button>'
+          : '') +
       '</td>' +
     '</tr>';
   }).join('');
   document.getElementById('rows').innerHTML = rows || '<tr><td colspan="6" style="color:#9daec4">No services registered</td></tr>';
+
+  const auditRows = (audit.items || []).slice().reverse().map((evt) => {
+    const sid = evt.serviceId ? ' [' + evt.serviceId + ']' : '';
+    return '<li class="audit-item">' +
+      '<div class="audit-meta">' + evt.at + ' · ' + evt.kind + sid + '</div>' +
+      '<div class="audit-msg">' + evt.message + '</div>' +
+    '</li>';
+  }).join('');
+  document.getElementById('audit').innerHTML = auditRows || '<li class="audit-item"><div class="audit-msg" style="color:#9daec4">No events yet</div></li>';
 }
 
 refresh();

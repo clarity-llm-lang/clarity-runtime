@@ -131,7 +131,26 @@ export class ServiceRegistry {
   private async read(): Promise<RegistryFile> {
     await this.init();
     const raw = await readFile(this.filePath, "utf8");
-    return JSON.parse(raw) as RegistryFile;
+    try {
+      const parsed = JSON.parse(raw) as Partial<RegistryFile>;
+      if (
+        parsed.version !== 1
+        || typeof parsed.updatedAt !== "string"
+        || !Array.isArray(parsed.services)
+      ) {
+        throw new Error("registry shape validation failed");
+      }
+      return parsed as RegistryFile;
+    } catch (error) {
+      const backupPath = `${this.filePath}.corrupt-${Date.now()}.json`;
+      await writeFile(backupPath, raw, "utf8");
+      const empty = createEmptyRegistry();
+      await this.write(empty);
+      process.stderr.write(
+        `registry reset after parse failure; backup=${backupPath}; reason=${error instanceof Error ? error.message : String(error)}\n`
+      );
+      return empty;
+    }
   }
 
   private async write(file: RegistryFile): Promise<void> {

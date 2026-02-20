@@ -5,7 +5,7 @@ import type {
   RemoteMcpOrigin,
   ServiceRecord
 } from "../../types/contracts.js";
-import { deriveInterfaceRevision } from "../registry/ids.js";
+import { deriveInterfaceRevision, deriveServiceId } from "../registry/ids.js";
 import { ServiceRegistry } from "../registry/registry.js";
 
 function nowIso(): string {
@@ -52,12 +52,26 @@ function envKeyForAuthRef(authRef: string): string {
   return `CLARITY_REMOTE_AUTH_${authRef.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`;
 }
 
+export interface AuditEvent {
+  seq: number;
+  at: string;
+  kind: string;
+  serviceId?: string;
+  level: "info" | "warn" | "error";
+  message: string;
+  data?: unknown;
+}
+
 export class ServiceManager {
   private readonly registry: ServiceRegistry;
   private readonly starts = new Map<string, number>();
   private readonly logs = new Map<string, string[]>();
   private readonly remoteInitialized = new Set<string>();
   private readonly localModuleCache = new Map<string, WebAssembly.Module>();
+  private readonly startFailures = new Map<string, number[]>();
+  private readonly events: AuditEvent[] = [];
+  private readonly eventSubscribers = new Set<(event: AuditEvent) => void>();
+  private eventSeq = 1;
   private remoteRequestCounter = 1;
   private pidCounter = 49000;
 
@@ -66,8 +80,28 @@ export class ServiceManager {
   }
 
   async applyManifest(manifest: MCPServiceManifest): Promise<ServiceRecord> {
+    manifest.metadata.serviceId =
+      manifest.metadata.serviceId
+      ?? deriveServiceId({
+        sourceFile: manifest.metadata.sourceFile,
+        module: manifest.metadata.module,
+        artifactOrEndpoint:
+          manifest.spec.origin.type === "local_wasm"
+            ? manifest.spec.origin.wasmPath
+            : manifest.spec.origin.endpoint
+      });
     const record = await this.registry.upsert(manifest);
     this.appendLog(manifest.metadata.serviceId!, `Manifest applied (${manifest.spec.origin.type})`);
+    this.emitEvent({
+      kind: "service.manifest_applied",
+      serviceId: manifest.metadata.serviceId,
+      level: "info",
+      message: `Manifest applied for ${manifest.metadata.serviceId}`,
+      data: {
+        origin: manifest.spec.origin.type,
+        module: manifest.metadata.module
+      }
+    });
     return record;
   }
 
@@ -79,10 +113,38 @@ export class ServiceManager {
     return this.registry.get(serviceId);
   }
 
+  async unquarantine(serviceId: string): Promise<ServiceRecord> {
+    const current = await this.registry.get(serviceId);
+    if (!current) {
+      throw new Error(`service not found: ${serviceId}`);
+    }
+    const updated = await this.registry.update(serviceId, (record) => ({
+      ...record,
+      runtime: {
+        ...record.runtime,
+        lifecycle: "STOPPED",
+        health: "UNKNOWN",
+        lastError: undefined,
+        pid: undefined
+      }
+    }));
+    this.startFailures.delete(serviceId);
+    this.emitEvent({
+      kind: "service.unquarantined",
+      serviceId,
+      level: "info",
+      message: `Service unquarantined: ${serviceId}`
+    });
+    return updated;
+  }
+
   async start(serviceId: string): Promise<ServiceRecord> {
     const existing = await this.registry.get(serviceId);
     if (!existing) {
       throw new Error(`service not found: ${serviceId}`);
+    }
+    if (existing.runtime.lifecycle === "QUARANTINED") {
+      throw new Error(`service is quarantined: ${serviceId} (use unquarantine first)`);
     }
 
     const startedAt = Date.now();
@@ -110,22 +172,50 @@ export class ServiceManager {
       }
     }
 
-    const updated = await this.registry.update(serviceId, (current) => ({
-      ...current,
-      runtime: {
-        ...current.runtime,
-        lifecycle: "RUNNING",
-        health,
-        pid: ++this.pidCounter,
-        uptimeSeconds: 0,
-        lastHeartbeatAt: nowIso(),
-        lastError
-      }
-    }));
+    const quarantined = await this.shouldQuarantine(existing, !!lastError);
+    const updated = await this.registry.update(serviceId, (current) => {
+      const nextLifecycle = quarantined ? "QUARANTINED" : "RUNNING";
+      return {
+        ...current,
+        runtime: {
+          ...current.runtime,
+          lifecycle: nextLifecycle,
+          health,
+          pid: quarantined ? undefined : ++this.pidCounter,
+          uptimeSeconds: 0,
+          lastHeartbeatAt: nowIso(),
+          lastError
+        }
+      };
+    });
 
-    this.appendLog(serviceId, "Service started");
+    this.appendLog(serviceId, quarantined ? "Service quarantined after repeated failures" : "Service started");
     if (lastError) {
       this.appendLog(serviceId, `Start warning: ${lastError}`);
+      this.emitEvent({
+        kind: "service.start_warning",
+        serviceId,
+        level: "warn",
+        message: `Service start warning for ${serviceId}`,
+        data: { error: lastError }
+      });
+    }
+    if (quarantined) {
+      this.starts.delete(serviceId);
+      this.emitEvent({
+        kind: "service.quarantined",
+        serviceId,
+        level: "error",
+        message: `Service quarantined: ${serviceId}`,
+        data: { reason: lastError ?? "start failure threshold exceeded" }
+      });
+    } else {
+      this.emitEvent({
+        kind: "service.started",
+        serviceId,
+        level: "info",
+        message: `Service started: ${serviceId}`
+      });
     }
 
     return updated;
@@ -146,6 +236,12 @@ export class ServiceManager {
     this.starts.delete(serviceId);
     this.remoteInitialized.delete(serviceId);
     this.appendLog(serviceId, "Service stopped");
+    this.emitEvent({
+      kind: "service.stopped",
+      serviceId,
+      level: "info",
+      message: `Service stopped: ${serviceId}`
+    });
     return updated;
   }
 
@@ -158,14 +254,30 @@ export class ServiceManager {
         restartCount: current.runtime.restartCount + 1
       }
     }));
-    return this.start(serviceId);
+    const updated = await this.start(serviceId);
+    this.emitEvent({
+      kind: "service.restarted",
+      serviceId,
+      level: "info",
+      message: `Service restarted: ${serviceId}`
+    });
+    return updated;
   }
 
   async remove(serviceId: string): Promise<boolean> {
     this.starts.delete(serviceId);
     this.logs.delete(serviceId);
     this.remoteInitialized.delete(serviceId);
-    return this.registry.remove(serviceId);
+    const removed = await this.registry.remove(serviceId);
+    if (removed) {
+      this.emitEvent({
+        kind: "service.removed",
+        serviceId,
+        level: "info",
+        message: `Service removed: ${serviceId}`
+      });
+    }
+    return removed;
   }
 
   async refreshInterface(serviceId: string): Promise<InterfaceSnapshot> {
@@ -263,6 +375,13 @@ export class ServiceManager {
     }));
 
     this.appendLog(serviceId, "Interface snapshot refreshed");
+    this.emitEvent({
+      kind: "service.interface_refreshed",
+      serviceId,
+      level: "info",
+      message: `Interface refreshed for ${serviceId}`,
+      data: { revision: snapshot.interfaceRevision }
+    });
     return snapshot;
   }
 
@@ -295,6 +414,12 @@ export class ServiceManager {
         }
       );
       this.appendLog(serviceId, `tools/call ${toolName}`);
+      this.emitEvent({
+        kind: "service.tool_called",
+        serviceId,
+        level: "info",
+        message: `Remote tool called: ${toolName}`,
+      });
       return result;
     }
 
@@ -338,6 +463,12 @@ export class ServiceManager {
       const argsList = parseFunctionArgs(args);
       const output = await this.runLocalFunction(service, functionName, argsList);
       this.appendLog(serviceId, `tools/call ${toolName}(${JSON.stringify(argsList)})`);
+      this.emitEvent({
+        kind: "service.tool_called",
+        serviceId,
+        level: "info",
+        message: `Local function tool called: ${toolName}`
+      });
       return {
         content: [
           {
@@ -354,6 +485,17 @@ export class ServiceManager {
   async tailLogs(serviceId: string, limit = 200): Promise<string[]> {
     const lines = this.logs.get(serviceId) ?? [];
     return lines.slice(Math.max(0, lines.length - limit));
+  }
+
+  getRecentEvents(limit = 200): AuditEvent[] {
+    return this.events.slice(Math.max(0, this.events.length - limit));
+  }
+
+  subscribeEvents(listener: (event: AuditEvent) => void): () => void {
+    this.eventSubscribers.add(listener);
+    return () => {
+      this.eventSubscribers.delete(listener);
+    };
   }
 
   async tickUptimes(): Promise<void> {
@@ -475,6 +617,13 @@ export class ServiceManager {
         }
       }));
       this.appendLog(serviceId, `Remote request failed (${method}): ${message}`);
+      this.emitEvent({
+        kind: "service.remote_error",
+        serviceId,
+        level: "error",
+        message: `Remote request failed: ${method}`,
+        data: { error: message }
+      });
       throw error;
     } finally {
       clearTimeout(timeout);
@@ -675,5 +824,54 @@ export class ServiceManager {
     const current = this.logs.get(serviceId) ?? [];
     current.push(`[${nowIso()}] ${line}`);
     this.logs.set(serviceId, current);
+  }
+
+  private emitEvent(input: {
+    kind: string;
+    serviceId?: string;
+    level: "info" | "warn" | "error";
+    message: string;
+    data?: unknown;
+  }): void {
+    const event: AuditEvent = {
+      seq: this.eventSeq++,
+      at: nowIso(),
+      kind: input.kind,
+      serviceId: input.serviceId,
+      level: input.level,
+      message: input.message,
+      data: input.data
+    };
+    this.events.push(event);
+    if (this.events.length > 2000) {
+      this.events.shift();
+    }
+    for (const subscriber of this.eventSubscribers) {
+      try {
+        subscriber(event);
+      } catch {
+        // Swallow subscriber errors.
+      }
+    }
+  }
+
+  private async shouldQuarantine(service: ServiceRecord, failedStart: boolean): Promise<boolean> {
+    const serviceId = service.manifest.metadata.serviceId!;
+    if (!failedStart) {
+      this.startFailures.delete(serviceId);
+      return false;
+    }
+
+    const policy = service.manifest.spec.restartPolicy;
+    if (policy.mode === "never" || policy.maxRestarts <= 0) {
+      return false;
+    }
+
+    const now = Date.now();
+    const windowStart = now - Math.max(1, policy.windowSeconds) * 1000;
+    const history = (this.startFailures.get(serviceId) ?? []).filter((ts) => ts >= windowStart);
+    history.push(now);
+    this.startFailures.set(serviceId, history);
+    return history.length >= policy.maxRestarts;
   }
 }

@@ -1,4 +1,7 @@
+import path from "node:path";
 import type { ServiceManager } from "../supervisor/service-manager.js";
+import type { MCPServiceManifest } from "../../types/contracts.js";
+import { validateManifest } from "../rpc/manifest.js";
 import { failure, success, type JsonRpcRequest, type JsonRpcResponse } from "./mcp-jsonrpc.js";
 
 interface RoutedTool {
@@ -103,6 +106,108 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
       },
       additionalProperties: false
     }
+  },
+  {
+    name: "runtime__unquarantine_service",
+    description: "Clear quarantine state for a service so it can be started again.",
+    inputSchema: {
+      type: "object",
+      required: ["service_id"],
+      properties: {
+        service_id: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__get_audit",
+    description: "Return recent runtime audit/events (latest first in returned slice order).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 2000 }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__apply_manifest",
+    description: "Apply a full MCPService manifest. Provisioning gate required.",
+    inputSchema: {
+      type: "object",
+      required: ["manifest"],
+      properties: {
+        manifest: { type: "object" },
+        start_now: { type: "boolean" },
+        introspect: { type: "boolean" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__register_local",
+    description: "Register a local wasm MCP service. Provisioning gate required.",
+    inputSchema: {
+      type: "object",
+      required: ["wasm_path"],
+      properties: {
+        wasm_path: { type: "string" },
+        source_file: { type: "string" },
+        module: { type: "string" },
+        display_name: { type: "string" },
+        entry: { type: "string" },
+        tool_namespace: { type: "string" },
+        autostart: { type: "boolean" },
+        enabled: { type: "boolean" },
+        start_now: { type: "boolean" },
+        introspect: { type: "boolean" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__register_remote",
+    description: "Register a remote MCP service endpoint. Provisioning gate required.",
+    inputSchema: {
+      type: "object",
+      required: ["endpoint"],
+      properties: {
+        endpoint: { type: "string" },
+        module: { type: "string" },
+        display_name: { type: "string" },
+        auth_ref: { type: "string" },
+        timeout_ms: { type: "integer", minimum: 1 },
+        allowed_tools: { type: "array", items: { type: "string" } },
+        tool_namespace: { type: "string" },
+        autostart: { type: "boolean" },
+        enabled: { type: "boolean" },
+        start_now: { type: "boolean" },
+        introspect: { type: "boolean" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__register_via_url",
+    description: "Register a remote MCP service from a URL (minimal onboarding). Provisioning gate required.",
+    inputSchema: {
+      type: "object",
+      required: ["url"],
+      properties: {
+        url: { type: "string" },
+        module: { type: "string" },
+        display_name: { type: "string" },
+        auth_ref: { type: "string" },
+        timeout_ms: { type: "integer", minimum: 1 },
+        allowed_tools: { type: "array", items: { type: "string" } },
+        tool_namespace: { type: "string" },
+        autostart: { type: "boolean" },
+        enabled: { type: "boolean" },
+        start_now: { type: "boolean" },
+        introspect: { type: "boolean" }
+      },
+      additionalProperties: false
+    }
   }
 ];
 
@@ -126,6 +231,66 @@ function asInteger(input: unknown): number | undefined {
     return undefined;
   }
   return input;
+}
+
+function asBoolean(input: unknown): boolean | undefined {
+  if (typeof input !== "boolean") {
+    return undefined;
+  }
+  return input;
+}
+
+function asStringList(input: unknown): string[] | undefined {
+  if (!Array.isArray(input)) {
+    return undefined;
+  }
+  const out = input.filter((v): v is string => typeof v === "string" && v.trim().length > 0).map((v) => v.trim());
+  return out.length > 0 ? out : undefined;
+}
+
+function normalizeNamespace(value: string): string {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+  return normalized || "service";
+}
+
+function inferModuleFromPath(wasmPath: string): string {
+  const base = path.basename(wasmPath, path.extname(wasmPath));
+  return base.length > 0 ? base : "local_service";
+}
+
+function inferModuleFromEndpoint(endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    const tail = url.pathname.split("/").filter(Boolean).at(-1) ?? url.hostname;
+    return tail || "remote_service";
+  } catch {
+    return "remote_service";
+  }
+}
+
+function parseAllowedHosts(value: string | undefined): Set<string> | null {
+  if (!value) return null;
+  const hosts = value
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return hosts.length > 0 ? new Set(hosts) : null;
+}
+
+function assertProvisioningEnabled(): void {
+  const value = (process.env.CLARITY_ENABLE_MCP_PROVISIONING ?? "").toLowerCase();
+  if (!(value === "1" || value === "true" || value === "yes")) {
+    throw new Error("MCP provisioning is disabled. Set CLARITY_ENABLE_MCP_PROVISIONING=1 to enable runtime__register_* tools.");
+  }
+}
+
+function assertRemoteHostAllowed(endpoint: string): void {
+  const allowedHosts = parseAllowedHosts(process.env.CLARITY_REMOTE_ALLOWED_HOSTS);
+  if (!allowedHosts) return;
+  const host = new URL(endpoint).hostname.toLowerCase();
+  if (!allowedHosts.has(host)) {
+    throw new Error(`remote endpoint host '${host}' is not in CLARITY_REMOTE_ALLOWED_HOSTS`);
+  }
 }
 
 function contentJson(payload: unknown): { content: Array<{ type: "text"; text: string }> } {
@@ -247,6 +412,7 @@ export class McpRouter {
         running: services.filter((s) => s.runtime.lifecycle === "RUNNING").length,
         degraded: services.filter((s) => s.runtime.health === "DEGRADED").length,
         stopped: services.filter((s) => s.runtime.lifecycle === "STOPPED" || s.runtime.lifecycle === "REGISTERED").length,
+        quarantined: services.filter((s) => s.runtime.lifecycle === "QUARANTINED").length,
         local: services.filter((s) => s.manifest.spec.origin.type === "local_wasm").length,
         remote: services.filter((s) => s.manifest.spec.origin.type === "remote_mcp").length
       });
@@ -305,6 +471,229 @@ export class McpRouter {
       return contentJson({
         service_id: serviceId,
         interface: snapshot
+      });
+    }
+
+    if (name === "runtime__unquarantine_service") {
+      const serviceId = asString(payload.service_id);
+      if (!serviceId) throw new Error("runtime__unquarantine_service requires service_id");
+      const service = await this.manager.unquarantine(serviceId);
+      return contentJson({ service: summarizeService(service) });
+    }
+
+    if (name === "runtime__get_audit") {
+      const limit = asInteger(payload.limit) ?? 200;
+      return contentJson({
+        items: this.manager.getRecentEvents(limit)
+      });
+    }
+
+    if (name === "runtime__apply_manifest") {
+      assertProvisioningEnabled();
+      const manifest = validateManifest(payload.manifest);
+      const service = await this.manager.applyManifest(manifest);
+      const serviceId = service.manifest.metadata.serviceId!;
+      const startNow = asBoolean(payload.start_now) ?? true;
+      const introspect = asBoolean(payload.introspect) ?? true;
+
+      if (startNow) {
+        await this.manager.start(serviceId);
+      }
+      if (introspect) {
+        await this.manager.refreshInterface(serviceId);
+      }
+
+      const latest = await this.manager.get(serviceId);
+      if (!latest) {
+        throw new Error(`service not found after apply: ${serviceId}`);
+      }
+      return contentJson({
+        service: summarizeService(latest),
+        applied: true,
+        started: startNow,
+        introspected: introspect
+      });
+    }
+
+    if (name === "runtime__register_local") {
+      assertProvisioningEnabled();
+      const wasmPath = asString(payload.wasm_path);
+      if (!wasmPath) throw new Error("runtime__register_local requires wasm_path");
+
+      const module = asString(payload.module) ?? inferModuleFromPath(wasmPath);
+      const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
+      const sourceFile = asString(payload.source_file) ?? wasmPath;
+      const manifest: MCPServiceManifest = {
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile,
+          module,
+          ...(asString(payload.display_name) ? { displayName: asString(payload.display_name) } : {})
+        },
+        spec: {
+          origin: {
+            type: "local_wasm",
+            wasmPath,
+            entry: asString(payload.entry) ?? "mcp_main"
+          },
+          enabled: asBoolean(payload.enabled) ?? true,
+          autostart: asBoolean(payload.autostart) ?? true,
+          restartPolicy: {
+            mode: "on-failure",
+            maxRestarts: 5,
+            windowSeconds: 60
+          },
+          policyRef: "default",
+          toolNamespace: namespace
+        }
+      };
+
+      const service = await this.manager.applyManifest(manifest);
+      const serviceId = service.manifest.metadata.serviceId!;
+      const startNow = asBoolean(payload.start_now) ?? true;
+      const introspect = asBoolean(payload.introspect) ?? true;
+
+      if (startNow) {
+        await this.manager.start(serviceId);
+      }
+      if (introspect) {
+        await this.manager.refreshInterface(serviceId);
+      }
+
+      const latest = await this.manager.get(serviceId);
+      if (!latest) {
+        throw new Error(`service not found after register: ${serviceId}`);
+      }
+      return contentJson({
+        service: summarizeService(latest),
+        created: true,
+        started: startNow,
+        introspected: introspect
+      });
+    }
+
+    if (name === "runtime__register_remote") {
+      assertProvisioningEnabled();
+      const endpoint = asString(payload.endpoint);
+      if (!endpoint) throw new Error("runtime__register_remote requires endpoint");
+      assertRemoteHostAllowed(endpoint);
+
+      const module = asString(payload.module) ?? inferModuleFromEndpoint(endpoint);
+      const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
+      const timeoutMs = asInteger(payload.timeout_ms);
+      const manifest: MCPServiceManifest = {
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile: endpoint,
+          module,
+          ...(asString(payload.display_name) ? { displayName: asString(payload.display_name) } : {})
+        },
+        spec: {
+          origin: {
+            type: "remote_mcp",
+            endpoint,
+            transport: "streamable_http",
+            ...(asString(payload.auth_ref) ? { authRef: asString(payload.auth_ref) } : {}),
+            ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+            ...(asStringList(payload.allowed_tools) ? { allowedTools: asStringList(payload.allowed_tools) } : {})
+          },
+          enabled: asBoolean(payload.enabled) ?? true,
+          autostart: asBoolean(payload.autostart) ?? true,
+          restartPolicy: {
+            mode: "on-failure",
+            maxRestarts: 5,
+            windowSeconds: 60
+          },
+          policyRef: "default",
+          toolNamespace: namespace
+        }
+      };
+
+      const service = await this.manager.applyManifest(manifest);
+      const serviceId = service.manifest.metadata.serviceId!;
+      const startNow = asBoolean(payload.start_now) ?? true;
+      const introspect = asBoolean(payload.introspect) ?? true;
+
+      if (startNow) {
+        await this.manager.start(serviceId);
+      }
+      if (introspect) {
+        await this.manager.refreshInterface(serviceId);
+      }
+
+      const latest = await this.manager.get(serviceId);
+      if (!latest) {
+        throw new Error(`service not found after register: ${serviceId}`);
+      }
+      return contentJson({
+        service: summarizeService(latest),
+        created: true,
+        started: startNow,
+        introspected: introspect
+      });
+    }
+
+    if (name === "runtime__register_via_url") {
+      assertProvisioningEnabled();
+      const endpoint = asString(payload.url);
+      if (!endpoint) throw new Error("runtime__register_via_url requires url");
+      assertRemoteHostAllowed(endpoint);
+
+      const module = asString(payload.module) ?? inferModuleFromEndpoint(endpoint);
+      const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
+      const timeoutMs = asInteger(payload.timeout_ms);
+      const manifest: MCPServiceManifest = {
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile: endpoint,
+          module,
+          ...(asString(payload.display_name) ? { displayName: asString(payload.display_name) } : {})
+        },
+        spec: {
+          origin: {
+            type: "remote_mcp",
+            endpoint,
+            transport: "streamable_http",
+            ...(asString(payload.auth_ref) ? { authRef: asString(payload.auth_ref) } : {}),
+            ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+            ...(asStringList(payload.allowed_tools) ? { allowedTools: asStringList(payload.allowed_tools) } : {})
+          },
+          enabled: asBoolean(payload.enabled) ?? true,
+          autostart: asBoolean(payload.autostart) ?? true,
+          restartPolicy: {
+            mode: "on-failure",
+            maxRestarts: 5,
+            windowSeconds: 60
+          },
+          policyRef: "default",
+          toolNamespace: namespace
+        }
+      };
+
+      const service = await this.manager.applyManifest(manifest);
+      const serviceId = service.manifest.metadata.serviceId!;
+      const startNow = asBoolean(payload.start_now) ?? true;
+      const introspect = asBoolean(payload.introspect) ?? true;
+
+      if (startNow) {
+        await this.manager.start(serviceId);
+      }
+      if (introspect) {
+        await this.manager.refreshInterface(serviceId);
+      }
+
+      const latest = await this.manager.get(serviceId);
+      if (!latest) {
+        throw new Error(`service not found after register: ${serviceId}`);
+      }
+      return contentJson({
+        service: summarizeService(latest),
+        created: true,
+        started: startNow,
+        introspected: introspect
       });
     }
 
