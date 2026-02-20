@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/clarity-runtime-banner.svg" alt="Clarity Runtime" width="860">
+</p>
+
 # Clarity Runtime
 
 **One local control plane for every MCP server you use.**
@@ -66,6 +70,23 @@ npm run dev:ctl -- bootstrap --clients codex,claude
 Open the control layer:
 
 - [http://127.0.0.1:4707/status](http://127.0.0.1:4707/status)
+
+## Getting Started in 60 Seconds
+
+```bash
+# 1) Start the runtime
+npm install && npm run dev:daemon
+
+# 2) Register one local MCP service
+npm run dev:ctl -- add-local --source ./examples/sample.clarity --module Sample --wasm ./examples/sample.wasm
+
+# 3) Start it and inspect interface
+npm run dev:ctl -- start <service_id>
+npm run dev:ctl -- introspect <service_id>
+
+# 4) Open control plane UI
+open http://127.0.0.1:4707/status
+```
 
 ## Current State (v1 Scaffold)
 
