@@ -138,6 +138,14 @@ clarityctl doctor
 
 For larger architecture changes, open an issue first to align on the control-plane contract.
 
+## Social Preview
+
+Use the themed Open Graph card:
+
+- `assets/clarity-runtime-og-card.svg`
+
+In GitHub: repository `Settings` -> `General` -> `Social preview` -> `Upload an image`.
+
 ## Spec
 
 - Runtime spec: `docs/spec/v1/runtime-spec.md`

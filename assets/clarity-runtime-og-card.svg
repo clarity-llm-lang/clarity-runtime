@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0B1020"/>
+      <stop offset="0.55" stop-color="#121A34"/>
+      <stop offset="1" stop-color="#0E2B3C"/>
+    </linearGradient>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#06b6d4;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#8b5cf6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#06b6d4;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <circle cx="1110" cy="-80" r="260" fill="#6366f1" fill-opacity="0.15"/>
+  <circle cx="-120" cy="590" r="320" fill="#06b6d4" fill-opacity="0.12"/>
+
+  <g transform="translate(92,178)">
+    <path d="M88 8 L168 88 L88 168 L8 88 Z" fill="url(#grad)" opacity="0.95"/>
+    <path d="M88 8 L88 168" stroke="white" stroke-width="2" opacity="0.24"/>
+    <path d="M8 88 L168 88" stroke="white" stroke-width="2" opacity="0.24"/>
+    <path d="M88 8 L130 88 L88 168" stroke="white" stroke-width="1.2" opacity="0.2" fill="none"/>
+    <path d="M88 8 L46 88 L88 168" stroke="white" stroke-width="1.2" opacity="0.2" fill="none"/>
+    <circle cx="88" cy="88" r="14" fill="white" opacity="0.24"/>
+    <path d="M73 82 L96 88 L73 94" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.9"/>
+  </g>
+
+  <text x="304" y="290" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="88" font-weight="800" fill="url(#grad2)" letter-spacing="-1">clarity runtime</text>
+  <text x="308" y="340" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="24" fill="#9fb0c7" letter-spacing="4">UNIFIED MCP CONTROL PLANE</text>
+
+  <text x="308" y="420" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="34" fill="#E7EEF7">Run local + remote MCP services from one gateway.</text>
+  <text x="308" y="470" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="28" fill="#C7D5E6">Status page. Registry. Bootstrap for Codex and Claude.</text>
+
+  <rect x="308" y="518" width="570" height="56" rx="12" fill="#0A1326" stroke="#35538A"/>
+  <text x="336" y="554" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="24" fill="#8FD6FF">clarityc start server.clarity</text>
+</svg>
