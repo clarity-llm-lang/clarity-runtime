@@ -285,6 +285,7 @@ program
     process.stdout.write(`${JSON.stringify({ ok: true, ...out }, null, 2)}\n`);
   });
 
+// Backward-compatible command: register a precompiled local wasm service.
 program
   .command("add-local")
   .requiredOption("--source <file>", "Clarity source file path")
@@ -294,6 +295,7 @@ program
   .option("--name <display>", "Optional display name")
   .action(async (opts) => {
     const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    process.stderr.write("warning: `add-local` is legacy; prefer `add <service>`.\n");
     const manifest = localManifest({
       sourceFile: path.resolve(opts.source),
       module: opts.module,
@@ -309,6 +311,7 @@ program
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });
 
+// Backward-compatible command: compile/register/start from explicit source options.
 program
   .command("start-source")
   .requiredOption("--source <file>", "Clarity source file path")
@@ -319,6 +322,7 @@ program
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (opts) => {
     const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    process.stderr.write("warning: `start-source` is legacy; prefer `add <service>`.\n");
     const sourceFile = path.resolve(opts.source);
     const moduleName = opts.module ?? path.basename(sourceFile, path.extname(sourceFile));
     const out = await compileRegisterStartIntrospect({

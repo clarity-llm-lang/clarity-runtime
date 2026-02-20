@@ -100,8 +100,6 @@ npm run dev:ctl -- list
 
 ```bash
 clarityctl add <service_or_source_path>
-clarityctl add-local --source <file.clarity> --module <name> --wasm <file.wasm>
-clarityctl start-source --source <file.clarity> [--module <name>] [--wasm <file.wasm>]
 clarityctl add-remote --endpoint <url> --module <name> [--auth-ref <name>] [--timeout-ms <ms>] [--allow-tools <a,b,c>]
 clarityctl list
 clarityctl status
@@ -112,6 +110,13 @@ clarityctl introspect <service_id>
 clarityctl logs <service_id>
 clarityctl bootstrap --clients codex,claude
 clarityctl doctor
+```
+
+Legacy compatibility commands (still supported):
+
+```bash
+clarityctl add-local --source <file.clarity> --module <name> --wasm <file.wasm>
+clarityctl start-source --source <file.clarity> [--module <name>] [--wasm <file.wasm>]
 ```
 
 ---
@@ -127,20 +132,20 @@ Implemented in v1 scaffold:
 - built-in runtime control MCP tools (`runtime__status_summary`, `runtime__list_services`, `runtime__get_service`, `runtime__get_logs`, `runtime__start_service`, `runtime__stop_service`, `runtime__restart_service`, `runtime__refresh_interface`, `runtime__unquarantine_service`, `runtime__get_audit`)
 - gated MCP self-provisioning tools (`runtime__register_local`, `runtime__register_remote`, `runtime__register_via_url`, `runtime__apply_manifest`) protected by `CLARITY_ENABLE_MCP_PROVISIONING=1`
 - stdio bridge mode via `clarityctl gateway serve --stdio`
-- compiler-assisted onboarding via `clarityctl start-source --source <file.clarity>` (compile + register + start + introspect)
+- compiler-assisted onboarding via `clarityctl add <service>` (compile + register + start + introspect)
 - local function execution tools for local services (`<namespace>__fn__<exported_function>`)
 - baseline remote policy controls (timeout + allowed-tools manifest policy + optional host allowlist)
 - bootstrap writers for Codex/Claude config files
 
 Not implemented yet:
-- direct native `clarityc start` command in the compiler repo (runtime side is ready via `clarityctl start-source`; compiler integration should add runtime as a requirement in a non-breaking way)
+- direct native `clarityc start` command in the compiler repo (runtime side is ready via `clarityctl add`; compiler integration should make runtime an explicit requirement)
 - remote auth/policy hardening and isolation
 
 ---
 
 ## Roadmap
 
-- [x] Runtime-side compiler path (`clarityctl start-source <file.clarity>`)
+- [x] Runtime-side compiler path (`clarityctl add <service>`)
 - [ ] Native compiler command (`clarityc start <file.clarity>`) in `LLM-lang`
 - [ ] Add policy engine (timeouts, allowlists, concurrency, payload limits)
 - [ ] Add remote auth providers and secret references
