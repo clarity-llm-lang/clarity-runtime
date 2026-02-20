@@ -110,6 +110,7 @@ Implemented in v1 scaffold:
 - daemon HTTP API and status page
 - add/list/start/stop/restart/introspect flows
 - gateway `/mcp` JSON-RPC endpoint (`initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`)
+- built-in runtime control MCP tools (`runtime__status_summary`, `runtime__list_services`, `runtime__get_service`, `runtime__get_logs`, `runtime__start_service`, `runtime__stop_service`, `runtime__restart_service`, `runtime__refresh_interface`)
 - stdio bridge mode via `clarityctl gateway serve --stdio`
 - bootstrap writers for Codex/Claude config files
 

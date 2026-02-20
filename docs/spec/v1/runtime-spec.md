@@ -28,6 +28,16 @@
 - `POST /api/services/:id/start|stop|restart|introspect`.
 - `POST /api/bootstrap`: write Codex/Claude client registration.
 
+## Built-in MCP Control Tools
+- `runtime__status_summary`
+- `runtime__list_services`
+- `runtime__get_service`
+- `runtime__get_logs`
+- `runtime__start_service`
+- `runtime__stop_service`
+- `runtime__restart_service`
+- `runtime__refresh_interface`
+
 ## Manifest
 - JSON schema file: `schemas/mcp-service-v1.schema.json`.
 - `apiVersion`: `clarity.runtime/v1`.
