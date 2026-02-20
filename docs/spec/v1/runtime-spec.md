@@ -46,6 +46,7 @@
 
 ## CLI
 - `clarityctl add-local --source ... --module ... --wasm ...`
+- `clarityctl start-source --source ... [--module ...] [--wasm ...]`
 - `clarityctl add-remote --endpoint ... --module ...`
 - `clarityctl list|status|start|stop|restart|introspect|logs|bootstrap|doctor`
 - `clarityctl gateway serve --stdio`

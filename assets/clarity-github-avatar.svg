@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0B1020"/>
+      <stop offset="0.52" stop-color="#121A34"/>
+      <stop offset="1" stop-color="#0E2B3C"/>
+    </linearGradient>
+    <radialGradient id="glowA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(860 120) rotate(132.8) scale(360)">
+      <stop stop-color="#6366F1" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#6366F1" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(140 880) rotate(24.2) scale(420)">
+      <stop stop-color="#06B6D4" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#06B6D4" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mark" x1="290" y1="290" x2="734" y2="734" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6366F1"/>
+      <stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="220" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="220" fill="url(#glowA)"/>
+  <rect width="1024" height="1024" rx="220" fill="url(#glowB)"/>
+
+  <g opacity="0.18">
+    <circle cx="512" cy="512" r="306" stroke="#E7EEF7" stroke-width="2"/>
+    <circle cx="512" cy="512" r="250" stroke="#E7EEF7" stroke-width="1.5"/>
+  </g>
+
+  <g>
+    <path d="M512 228 L796 512 L512 796 L228 512 Z" fill="url(#mark)" opacity="0.98"/>
+    <path d="M512 228 L512 796" stroke="white" stroke-width="9" opacity="0.24"/>
+    <path d="M228 512 L796 512" stroke="white" stroke-width="9" opacity="0.24"/>
+    <path d="M512 228 L664 512 L512 796" stroke="white" stroke-width="5.5" opacity="0.2" fill="none"/>
+    <path d="M512 228 L360 512 L512 796" stroke="white" stroke-width="5.5" opacity="0.2" fill="none"/>
+    <circle cx="512" cy="512" r="50" fill="white" opacity="0.24"/>
+    <path d="M458 492 L540 512 L458 532" stroke="white" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.94"/>
+  </g>
+
+  <rect x="12" y="12" width="1000" height="1000" rx="208" stroke="#9FB0C7" stroke-opacity="0.16" stroke-width="2"/>
+</svg>

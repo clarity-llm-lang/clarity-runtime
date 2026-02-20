@@ -88,6 +88,7 @@ Open the control layer: [http://127.0.0.1:4707/status](http://127.0.0.1:4707/sta
 
 ```bash
 clarityctl add-local --source <file.clarity> --module <name> --wasm <file.wasm>
+clarityctl start-source --source <file.clarity> [--module <name>] [--wasm <file.wasm>]
 clarityctl add-remote --endpoint <url> --module <name>
 clarityctl list
 clarityctl status
@@ -112,10 +113,11 @@ Implemented in v1 scaffold:
 - gateway `/mcp` JSON-RPC endpoint (`initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`)
 - built-in runtime control MCP tools (`runtime__status_summary`, `runtime__list_services`, `runtime__get_service`, `runtime__get_logs`, `runtime__start_service`, `runtime__stop_service`, `runtime__restart_service`, `runtime__refresh_interface`)
 - stdio bridge mode via `clarityctl gateway serve --stdio`
+- compiler-assisted onboarding via `clarityctl start-source --source <file.clarity>` (compile + register + start + introspect)
 - bootstrap writers for Codex/Claude config files
 
 Not implemented yet:
-- direct `clarityc start` compiler integration
+- direct native `clarityc start` command in the compiler repo (runtime side is ready via `clarityctl start-source`)
 - remote auth/policy hardening and isolation
 - local WASM MCP execution engine (currently local services expose runtime tools and remote services are fully proxied)
 
@@ -123,11 +125,25 @@ Not implemented yet:
 
 ## Roadmap
 
-- [ ] Wire compiler path: `clarityc start <file.clarity>`
+- [x] Runtime-side compiler path (`clarityctl start-source <file.clarity>`)
+- [ ] Native compiler command (`clarityc start <file.clarity>`) in `LLM-lang`
 - [ ] Add policy engine (timeouts, allowlists, concurrency, payload limits)
 - [ ] Add remote auth providers and secret references
 - [ ] Add quarantine/recovery and richer health diagnostics
 - [ ] Add interface diffing and audit/event timeline
+
+## Progress Snapshot
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Registry + lifecycle | Done | Persistent service records, start/stop/restart, health state |
+| Gateway MCP transport | Done | `/mcp` JSON-RPC with list/call routing |
+| Runtime as MCP control plane | Done | `runtime__*` tools for status, service ops, logs, interface refresh |
+| Stdio gateway bridge | Done | `clarityctl gateway serve --stdio` forwards to daemon gateway |
+| Remote MCP proxying | Done (baseline) | Initialize/introspect/tool forwarding |
+| Compiler-driven onboarding | In progress | Runtime side done (`start-source`), compiler command still pending in `LLM-lang` |
+| Local WASM MCP execution | Pending | Local services currently expose runtime tools only |
+| Auth/policy hardening | Pending | Not yet enforcing tool/network policy model |
 
 ---
 
@@ -141,6 +157,10 @@ Not implemented yet:
 Use: `assets/clarity-runtime-og-card.png`
 
 In GitHub: repository `Settings` -> `General` -> `Social preview` -> `Upload an image`.
+
+## GitHub Avatar
+
+Use: `assets/clarity-github-avatar.png`
 
 ## Contributing
 

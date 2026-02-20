@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { spawn } from "node:child_process";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 import type { MCPServiceManifest } from "../types/contracts.js";
@@ -134,6 +136,52 @@ async function runStdioGateway(baseUrl: string): Promise<void> {
   }
 }
 
+async function runCompiler(compilerBin: string, sourceFile: string, wasmPath: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(compilerBin, ["compile", sourceFile, "-o", wasmPath], {
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      stderr += String(chunk);
+    });
+
+    child.on("error", (error) => {
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(stderr.trim() || `compiler exited with code ${code ?? "unknown"}`));
+    });
+  });
+}
+
+function extractServiceId(payload: unknown): string {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("unexpected API response shape");
+  }
+  const out = payload as {
+    service?: {
+      manifest?: {
+        metadata?: {
+          serviceId?: string;
+        };
+      };
+    };
+  };
+
+  const serviceId = out.service?.manifest?.metadata?.serviceId;
+  if (!serviceId) {
+    throw new Error("serviceId missing from API response");
+  }
+  return serviceId;
+}
+
 program
   .name("clarityctl")
   .description("Clarity runtime control CLI")
@@ -177,6 +225,61 @@ program
       body: JSON.stringify({ manifest })
     });
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+program
+  .command("start-source")
+  .requiredOption("--source <file>", "Clarity source file path")
+  .option("--module <name>", "Module name (defaults to source file base name)")
+  .option("--wasm <file>", "Compiled wasm output path")
+  .option("--entry <name>", "MCP entry function", "mcp_main")
+  .option("--name <display>", "Optional display name")
+  .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
+  .action(async (opts) => {
+    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const sourceFile = path.resolve(opts.source);
+    const moduleName = opts.module ?? path.basename(sourceFile, path.extname(sourceFile));
+    const wasmPath = opts.wasm
+      ? path.resolve(opts.wasm)
+      : path.resolve(process.cwd(), ".clarity", "build", `${moduleName}.wasm`);
+
+    await mkdir(path.dirname(wasmPath), { recursive: true });
+    await runCompiler(opts.compilerBin, sourceFile, wasmPath);
+
+    const manifest = localManifest({
+      sourceFile,
+      module: moduleName,
+      wasmPath,
+      entry: opts.entry,
+      displayName: opts.name
+    });
+
+    const applyOut = await api<{ service: unknown }>(daemon, "/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({ manifest })
+    });
+
+    const serviceId = extractServiceId(applyOut);
+    await api<Record<string, unknown>>(daemon, `/api/services/${encodeURIComponent(serviceId)}/start`, {
+      method: "POST"
+    });
+    await api<Record<string, unknown>>(daemon, `/api/services/${encodeURIComponent(serviceId)}/introspect`, {
+      method: "POST"
+    });
+
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ok: true,
+          serviceId,
+          sourceFile,
+          wasmPath,
+          module: moduleName
+        },
+        null,
+        2
+      )}\n`
+    );
   });
 
 program
