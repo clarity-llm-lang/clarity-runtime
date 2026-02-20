@@ -65,28 +65,41 @@ Clarity Runtime centralizes this into one control plane daemon (`clarityd`) and 
 
 ---
 
-## Getting Started in 60 Seconds
+## Install + Start
 
 ```bash
-# 1) Start the runtime
-npm install && npm run dev:daemon
+# 1) Install and build once
+npm install
+npm run build
 
-# 2) Register local and remote MCP services
-npm run dev:ctl -- add-local --source ./examples/sample.clarity --module Sample --wasm ./examples/sample.wasm
-npm run dev:ctl -- add-remote --endpoint https://example.com/mcp --module ExternalDocs
+# 2) Start the runtime
+npx clarityd
 
-# 3) Inspect + wire clients once
-npm run dev:ctl -- list
-npm run dev:ctl -- bootstrap --clients codex,claude
+# 3) Add a local service from source (mcp1 -> ./mcp1.clarity)
+npx clarityctl add mcp1
+
+# 4) Inspect + wire clients once
+npx clarityctl list
+npx clarityctl bootstrap --clients codex,claude
 ```
 
 Open the control layer: [http://localhost:4707/status](http://localhost:4707/status)
+
+`clarityctl add <name>` compiles `<name>.clarity` to `.clarity/build/<name>.wasm`, then registers and starts it.
+
+For local development (without build artifacts), you can still use:
+
+```bash
+npm run dev:daemon
+npm run dev:ctl -- list
+```
 
 ---
 
 ## CLI
 
 ```bash
+clarityctl add <service_or_source_path>
 clarityctl add-local --source <file.clarity> --module <name> --wasm <file.wasm>
 clarityctl start-source --source <file.clarity> [--module <name>] [--wasm <file.wasm>]
 clarityctl add-remote --endpoint <url> --module <name> [--auth-ref <name>] [--timeout-ms <ms>] [--allow-tools <a,b,c>]
@@ -120,7 +133,7 @@ Implemented in v1 scaffold:
 - bootstrap writers for Codex/Claude config files
 
 Not implemented yet:
-- direct native `clarityc start` command in the compiler repo (runtime side is ready via `clarityctl start-source`)
+- direct native `clarityc start` command in the compiler repo (runtime side is ready via `clarityctl start-source`; compiler integration should add runtime as a requirement in a non-breaking way)
 - remote auth/policy hardening and isolation
 
 ---
@@ -156,16 +169,6 @@ Not implemented yet:
 
 - Runtime spec: `docs/spec/v1/runtime-spec.md`
 - Manifest schema: `schemas/mcp-service-v1.schema.json`
-
-## Social Preview
-
-Use: `assets/clarity-runtime-og-card.png`
-
-In GitHub: repository `Settings` -> `General` -> `Social preview` -> `Upload an image`.
-
-## GitHub Avatar
-
-Use: `assets/clarity-github-avatar.png`
 
 ## Remote Policy Knobs
 

@@ -167,6 +167,59 @@ async function runCompiler(compilerBin: string, sourceFile: string, wasmPath: st
   });
 }
 
+function resolveSourceAndModule(serviceInput: string, explicitModule?: string): { sourceFile: string; moduleName: string } {
+  const resolvedInput = path.resolve(serviceInput);
+  const hasClarityExtension = path.extname(resolvedInput) === ".clarity";
+  const sourceFile = hasClarityExtension ? resolvedInput : `${resolvedInput}.clarity`;
+  const moduleName = explicitModule ?? path.basename(sourceFile, path.extname(sourceFile));
+  return { sourceFile, moduleName };
+}
+
+async function compileRegisterStartIntrospect(input: {
+  daemonUrl: string;
+  sourceFile: string;
+  moduleName: string;
+  wasmPath?: string;
+  entry: string;
+  displayName?: string;
+  compilerBin: string;
+}): Promise<{ serviceId: string; sourceFile: string; wasmPath: string; module: string }> {
+  const wasmPath = input.wasmPath
+    ? path.resolve(input.wasmPath)
+    : path.resolve(process.cwd(), ".clarity", "build", `${input.moduleName}.wasm`);
+
+  await mkdir(path.dirname(wasmPath), { recursive: true });
+  await runCompiler(input.compilerBin, input.sourceFile, wasmPath);
+
+  const manifest = localManifest({
+    sourceFile: input.sourceFile,
+    module: input.moduleName,
+    wasmPath,
+    entry: input.entry,
+    displayName: input.displayName
+  });
+
+  const applyOut = await api<{ service: unknown }>(input.daemonUrl, "/api/services/apply", {
+    method: "POST",
+    body: JSON.stringify({ manifest })
+  });
+
+  const serviceId = extractServiceId(applyOut);
+  await api<Record<string, unknown>>(input.daemonUrl, `/api/services/${encodeURIComponent(serviceId)}/start`, {
+    method: "POST"
+  });
+  await api<Record<string, unknown>>(input.daemonUrl, `/api/services/${encodeURIComponent(serviceId)}/introspect`, {
+    method: "POST"
+  });
+
+  return {
+    serviceId,
+    sourceFile: input.sourceFile,
+    wasmPath,
+    module: input.moduleName
+  };
+}
+
 function extractServiceId(payload: unknown): string {
   if (!payload || typeof payload !== "object") {
     throw new Error("unexpected API response shape");
@@ -210,6 +263,29 @@ program
   });
 
 program
+  .command("add <service>")
+  .description("Compile, register, and start a local Clarity service from <service>.clarity (or explicit path)")
+  .option("--module <name>", "Module name (defaults to source file base name)")
+  .option("--wasm <file>", "Compiled wasm output path")
+  .option("--entry <name>", "MCP entry function", "mcp_main")
+  .option("--name <display>", "Optional display name")
+  .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
+  .action(async (service, opts) => {
+    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const { sourceFile, moduleName } = resolveSourceAndModule(String(service), opts.module);
+    const out = await compileRegisterStartIntrospect({
+      daemonUrl: daemon,
+      sourceFile,
+      moduleName,
+      wasmPath: opts.wasm,
+      entry: opts.entry,
+      displayName: opts.name,
+      compilerBin: opts.compilerBin
+    });
+    process.stdout.write(`${JSON.stringify({ ok: true, ...out }, null, 2)}\n`);
+  });
+
+program
   .command("add-local")
   .requiredOption("--source <file>", "Clarity source file path")
   .requiredOption("--module <name>", "Module name")
@@ -245,47 +321,16 @@ program
     const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
     const sourceFile = path.resolve(opts.source);
     const moduleName = opts.module ?? path.basename(sourceFile, path.extname(sourceFile));
-    const wasmPath = opts.wasm
-      ? path.resolve(opts.wasm)
-      : path.resolve(process.cwd(), ".clarity", "build", `${moduleName}.wasm`);
-
-    await mkdir(path.dirname(wasmPath), { recursive: true });
-    await runCompiler(opts.compilerBin, sourceFile, wasmPath);
-
-    const manifest = localManifest({
+    const out = await compileRegisterStartIntrospect({
+      daemonUrl: daemon,
       sourceFile,
-      module: moduleName,
-      wasmPath,
+      moduleName,
+      wasmPath: opts.wasm,
       entry: opts.entry,
-      displayName: opts.name
+      displayName: opts.name,
+      compilerBin: opts.compilerBin
     });
-
-    const applyOut = await api<{ service: unknown }>(daemon, "/api/services/apply", {
-      method: "POST",
-      body: JSON.stringify({ manifest })
-    });
-
-    const serviceId = extractServiceId(applyOut);
-    await api<Record<string, unknown>>(daemon, `/api/services/${encodeURIComponent(serviceId)}/start`, {
-      method: "POST"
-    });
-    await api<Record<string, unknown>>(daemon, `/api/services/${encodeURIComponent(serviceId)}/introspect`, {
-      method: "POST"
-    });
-
-    process.stdout.write(
-      `${JSON.stringify(
-        {
-          ok: true,
-          serviceId,
-          sourceFile,
-          wasmPath,
-          module: moduleName
-        },
-        null,
-        2
-      )}\n`
-    );
+    process.stdout.write(`${JSON.stringify({ ok: true, ...out }, null, 2)}\n`);
   });
 
 program
