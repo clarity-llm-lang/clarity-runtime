@@ -61,7 +61,9 @@
                 "transport": { "enum": ["streamable_http", "sse_http"] },
                 "authRef": { "type": "string" },
                 "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 120000 },
-                "allowedTools": { "type": "array", "items": { "type": "string" } }
+                "allowedTools": { "type": "array", "items": { "type": "string" } },
+                "maxPayloadBytes": { "type": "integer", "minimum": 1024, "maximum": 10485760 },
+                "maxConcurrency": { "type": "integer", "minimum": 1, "maximum": 256 }
               },
               "additionalProperties": false
             }

@@ -52,6 +52,26 @@ function envKeyForAuthRef(authRef: string): string {
   return `CLARITY_REMOTE_AUTH_${authRef.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`;
 }
 
+function parsePositiveInteger(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function asPositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return undefined;
+  }
+  return value;
+}
+
+function byteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
 export interface AuditEvent {
   seq: number;
   at: string;
@@ -67,6 +87,7 @@ export class ServiceManager {
   private readonly starts = new Map<string, number>();
   private readonly logs = new Map<string, string[]>();
   private readonly remoteInitialized = new Set<string>();
+  private readonly remoteInFlight = new Map<string, number>();
   private readonly localModuleCache = new Map<string, WebAssembly.Module>();
   private readonly startFailures = new Map<string, number[]>();
   private readonly events: AuditEvent[] = [];
@@ -268,6 +289,7 @@ export class ServiceManager {
     this.starts.delete(serviceId);
     this.logs.delete(serviceId);
     this.remoteInitialized.delete(serviceId);
+    this.remoteInFlight.delete(serviceId);
     const removed = await this.registry.remove(serviceId);
     if (removed) {
       this.emitEvent({
@@ -570,26 +592,55 @@ export class ServiceManager {
       typeof origin === "string"
         ? Number(process.env.CLARITY_REMOTE_DEFAULT_TIMEOUT_MS ?? "20000")
         : (origin.timeoutMs ?? Number(process.env.CLARITY_REMOTE_DEFAULT_TIMEOUT_MS ?? "20000"));
+    const maxPayloadBytes =
+      typeof origin === "string"
+        ? (parsePositiveInteger(process.env.CLARITY_REMOTE_MAX_PAYLOAD_BYTES) ?? 1_048_576)
+        : (asPositiveInteger(origin.maxPayloadBytes) ?? parsePositiveInteger(process.env.CLARITY_REMOTE_MAX_PAYLOAD_BYTES) ?? 1_048_576);
+    const maxConcurrency =
+      typeof origin === "string"
+        ? (parsePositiveInteger(process.env.CLARITY_REMOTE_MAX_CONCURRENCY) ?? 8)
+        : (asPositiveInteger(origin.maxConcurrency) ?? parsePositiveInteger(process.env.CLARITY_REMOTE_MAX_CONCURRENCY) ?? 8);
     const requestId = `${serviceId}-${this.remoteRequestCounter++}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) ? timeoutMs : 20_000);
 
     const headers = this.resolveRemoteHeaders(typeof origin === "string" ? undefined : origin);
+    const inFlight = this.remoteInFlight.get(serviceId) ?? 0;
+    if (inFlight >= maxConcurrency) {
+      throw new Error(`remote concurrency limit reached (${inFlight}/${maxConcurrency})`);
+    }
+    this.remoteInFlight.set(serviceId, inFlight + 1);
+
+    const requestBody = JSON.stringify({
+      jsonrpc: "2.0",
+      id: requestId,
+      method,
+      params
+    });
+    const requestBytes = byteLength(requestBody);
+    if (requestBytes > maxPayloadBytes) {
+      this.remoteInFlight.set(serviceId, inFlight);
+      throw new Error(`remote request payload too large (${requestBytes} > ${maxPayloadBytes} bytes)`);
+    }
 
     try {
       const response = await fetch(endpoint, {
         method: "POST",
         headers,
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: requestId,
-          method,
-          params
-        }),
+        body: requestBody,
         signal: controller.signal
       });
 
+      const contentLength = Number(response.headers.get("content-length") ?? "");
+      if (Number.isFinite(contentLength) && contentLength > maxPayloadBytes) {
+        throw new Error(`remote response payload too large (${contentLength} > ${maxPayloadBytes} bytes)`);
+      }
+
       const raw = await response.text();
+      const responseBytes = byteLength(raw);
+      if (responseBytes > maxPayloadBytes) {
+        throw new Error(`remote response payload too large (${responseBytes} > ${maxPayloadBytes} bytes)`);
+      }
       if (!response.ok) {
         throw new Error(`remote ${response.status}: ${raw.slice(0, 200)}`);
       }
@@ -627,6 +678,12 @@ export class ServiceManager {
       throw error;
     } finally {
       clearTimeout(timeout);
+      const current = this.remoteInFlight.get(serviceId) ?? 1;
+      if (current <= 1) {
+        this.remoteInFlight.delete(serviceId);
+      } else {
+        this.remoteInFlight.set(serviceId, current - 1);
+      }
     }
   }
 

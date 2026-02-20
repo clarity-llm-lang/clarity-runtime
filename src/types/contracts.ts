@@ -44,6 +44,8 @@ export interface RemoteMcpOrigin {
   authRef?: string;
   timeoutMs?: number;
   allowedTools?: string[];
+  maxPayloadBytes?: number;
+  maxConcurrency?: number;
 }
 
 export interface RestartPolicy {

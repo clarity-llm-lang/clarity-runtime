@@ -68,6 +68,8 @@ function remoteManifest(input: {
   timeoutMs?: number;
   allowedTools?: string[];
   authRef?: string;
+  maxPayloadBytes?: number;
+  maxConcurrency?: number;
 }): MCPServiceManifest {
   return {
     apiVersion: "clarity.runtime/v1",
@@ -84,7 +86,9 @@ function remoteManifest(input: {
         transport: "streamable_http",
         ...(input.authRef ? { authRef: input.authRef } : {}),
         ...(typeof input.timeoutMs === "number" ? { timeoutMs: input.timeoutMs } : {}),
-        ...(input.allowedTools && input.allowedTools.length > 0 ? { allowedTools: input.allowedTools } : {})
+        ...(input.allowedTools && input.allowedTools.length > 0 ? { allowedTools: input.allowedTools } : {}),
+        ...(typeof input.maxPayloadBytes === "number" ? { maxPayloadBytes: input.maxPayloadBytes } : {}),
+        ...(typeof input.maxConcurrency === "number" ? { maxConcurrency: input.maxConcurrency } : {})
       },
       enabled: true,
       autostart: true,
@@ -345,9 +349,13 @@ program
   .option("--auth-ref <name>", "Auth secret reference name (resolved from env)")
   .option("--timeout-ms <ms>", "Remote request timeout in milliseconds")
   .option("--allow-tools <items>", "Comma-separated remote tool allowlist (optional)")
+  .option("--max-payload-bytes <bytes>", "Max response/request payload bytes for this remote service")
+  .option("--max-concurrency <n>", "Max concurrent in-flight remote requests for this service")
   .action(async (opts) => {
     const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
     const timeoutMs = opts.timeoutMs !== undefined ? Number(opts.timeoutMs) : undefined;
+    const maxPayloadBytes = opts.maxPayloadBytes !== undefined ? Number(opts.maxPayloadBytes) : undefined;
+    const maxConcurrency = opts.maxConcurrency !== undefined ? Number(opts.maxConcurrency) : undefined;
     const allowedTools = opts.allowTools
       ? String(opts.allowTools).split(",").map((s) => s.trim()).filter(Boolean)
       : undefined;
@@ -356,8 +364,10 @@ program
       module: opts.module,
       displayName: opts.name,
       authRef: opts.authRef,
-      timeoutMs: Number.isFinite(timeoutMs as number) ? timeoutMs : undefined,
-      allowedTools
+      timeoutMs: Number.isFinite(timeoutMs as number) && (timeoutMs as number) > 0 ? timeoutMs : undefined,
+      allowedTools,
+      maxPayloadBytes: Number.isFinite(maxPayloadBytes as number) && (maxPayloadBytes as number) >= 1024 ? maxPayloadBytes : undefined,
+      maxConcurrency: Number.isFinite(maxConcurrency as number) && (maxConcurrency as number) > 0 ? maxConcurrency : undefined
     });
 
     const out = await api<{ service: unknown }>(daemon, "/api/services/apply", {

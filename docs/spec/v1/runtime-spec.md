@@ -60,14 +60,16 @@
 - `remote_mcp.timeoutMs`: optional per-service timeout.
 - `remote_mcp.allowedTools`: optional per-service tool allowlist.
 - `remote_mcp.authRef`: optional auth reference resolved from environment secret key.
+- `remote_mcp.maxPayloadBytes`: optional per-service request/response payload limit.
+- `remote_mcp.maxConcurrency`: optional per-service in-flight request limit.
 
 ## CLI
-- `clarityctl add-local --source ... --module ... --wasm ...`
-- `clarityctl start-source --source ... [--module ...] [--wasm ...]`
-- `clarityctl add-remote --endpoint ... --module ...`
+- `clarityctl add <service>`
+- `clarityctl add-remote --endpoint ... --module ... [--timeout-ms ...] [--allow-tools ...] [--max-payload-bytes ...] [--max-concurrency ...]`
+- Legacy compatibility: `clarityctl add-local ...`, `clarityctl start-source ...`
 - `clarityctl list|status|start|stop|restart|introspect|logs|bootstrap|doctor`
 - `clarityctl gateway serve --stdio`
 
 ## Planned Next
-- Add policy enforcement and auth secret backend for remote services.
+- Add auth secret backend/provider model for remote services.
 - Merge and release native `clarityc start` compiler command.

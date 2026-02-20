@@ -177,6 +177,8 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
         display_name: { type: "string" },
         auth_ref: { type: "string" },
         timeout_ms: { type: "integer", minimum: 1 },
+        max_payload_bytes: { type: "integer", minimum: 1024 },
+        max_concurrency: { type: "integer", minimum: 1 },
         allowed_tools: { type: "array", items: { type: "string" } },
         tool_namespace: { type: "string" },
         autostart: { type: "boolean" },
@@ -199,6 +201,8 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
         display_name: { type: "string" },
         auth_ref: { type: "string" },
         timeout_ms: { type: "integer", minimum: 1 },
+        max_payload_bytes: { type: "integer", minimum: 1024 },
+        max_concurrency: { type: "integer", minimum: 1 },
         allowed_tools: { type: "array", items: { type: "string" } },
         tool_namespace: { type: "string" },
         autostart: { type: "boolean" },
@@ -231,6 +235,14 @@ function asInteger(input: unknown): number | undefined {
     return undefined;
   }
   return input;
+}
+
+function asIntegerMin(input: unknown, min: number): number | undefined {
+  const value = asInteger(input);
+  if (value === undefined || value < min) {
+    return undefined;
+  }
+  return value;
 }
 
 function asBoolean(input: unknown): boolean | undefined {
@@ -581,7 +593,9 @@ export class McpRouter {
 
       const module = asString(payload.module) ?? inferModuleFromEndpoint(endpoint);
       const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
-      const timeoutMs = asInteger(payload.timeout_ms);
+      const timeoutMs = asIntegerMin(payload.timeout_ms, 1);
+      const maxPayloadBytes = asIntegerMin(payload.max_payload_bytes, 1024);
+      const maxConcurrency = asIntegerMin(payload.max_concurrency, 1);
       const manifest: MCPServiceManifest = {
         apiVersion: "clarity.runtime/v1",
         kind: "MCPService",
@@ -597,6 +611,8 @@ export class McpRouter {
             transport: "streamable_http",
             ...(asString(payload.auth_ref) ? { authRef: asString(payload.auth_ref) } : {}),
             ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+            ...(typeof maxPayloadBytes === "number" ? { maxPayloadBytes } : {}),
+            ...(typeof maxConcurrency === "number" ? { maxConcurrency } : {}),
             ...(asStringList(payload.allowed_tools) ? { allowedTools: asStringList(payload.allowed_tools) } : {})
           },
           enabled: asBoolean(payload.enabled) ?? true,
@@ -643,7 +659,9 @@ export class McpRouter {
 
       const module = asString(payload.module) ?? inferModuleFromEndpoint(endpoint);
       const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
-      const timeoutMs = asInteger(payload.timeout_ms);
+      const timeoutMs = asIntegerMin(payload.timeout_ms, 1);
+      const maxPayloadBytes = asIntegerMin(payload.max_payload_bytes, 1024);
+      const maxConcurrency = asIntegerMin(payload.max_concurrency, 1);
       const manifest: MCPServiceManifest = {
         apiVersion: "clarity.runtime/v1",
         kind: "MCPService",
@@ -659,6 +677,8 @@ export class McpRouter {
             transport: "streamable_http",
             ...(asString(payload.auth_ref) ? { authRef: asString(payload.auth_ref) } : {}),
             ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+            ...(typeof maxPayloadBytes === "number" ? { maxPayloadBytes } : {}),
+            ...(typeof maxConcurrency === "number" ? { maxConcurrency } : {}),
             ...(asStringList(payload.allowed_tools) ? { allowedTools: asStringList(payload.allowed_tools) } : {})
           },
           enabled: asBoolean(payload.enabled) ?? true,
