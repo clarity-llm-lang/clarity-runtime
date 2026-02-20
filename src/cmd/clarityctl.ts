@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { access, mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 import type { MCPServiceManifest } from "../types/contracts.js";
@@ -171,6 +171,54 @@ async function runCompiler(compilerBin: string, sourceFile: string, wasmPath: st
   });
 }
 
+async function checkCompiler(compilerBin: string): Promise<{ ok: boolean; output?: string; error?: string }> {
+  try {
+    const output = await new Promise<string>((resolve, reject) => {
+      const child = spawn(compilerBin, ["--version"], {
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout.on("data", (chunk: Buffer | string) => {
+        stdout += String(chunk);
+      });
+      child.stderr.on("data", (chunk: Buffer | string) => {
+        stderr += String(chunk);
+      });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolve((stdout || stderr).trim());
+          return;
+        }
+        reject(new Error(stderr.trim() || `compiler exited with code ${code ?? "unknown"}`));
+      });
+    });
+    return { ok: true, output };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function collectClarityFiles(rootDir: string, recursive: boolean): Promise<string[]> {
+  const out: string[] = [];
+  const entries = await readdir(rootDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      if (recursive) {
+        out.push(...(await collectClarityFiles(fullPath, true)));
+      }
+      continue;
+    }
+    if (entry.isFile() && path.extname(entry.name) === ".clarity") {
+      out.push(fullPath);
+    }
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
 function resolveSourceAndModule(serviceInput: string, explicitModule?: string): { sourceFile: string; moduleName: string } {
   const resolvedInput = path.resolve(serviceInput);
   const hasClarityExtension = path.extname(resolvedInput) === ".clarity";
@@ -287,6 +335,49 @@ program
       compilerBin: opts.compilerBin
     });
     process.stdout.write(`${JSON.stringify({ ok: true, ...out }, null, 2)}\n`);
+  });
+
+program
+  .command("add-all [dir]")
+  .description("Compile, register, and start all .clarity files in a directory")
+  .option("--recursive", "Recurse into subdirectories")
+  .option("--entry <name>", "MCP entry function", "mcp_main")
+  .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
+  .action(async (dir, opts) => {
+    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const rootDir = path.resolve(dir ?? ".");
+    const files = await collectClarityFiles(rootDir, Boolean(opts.recursive));
+    if (files.length === 0) {
+      process.stdout.write(`${JSON.stringify({ ok: true, added: 0, services: [], note: "no .clarity files found" }, null, 2)}\n`);
+      return;
+    }
+
+    const services: Array<{ serviceId: string; sourceFile: string; wasmPath: string; module: string }> = [];
+    for (const sourceFile of files) {
+      const moduleName = path.basename(sourceFile, path.extname(sourceFile));
+      const result = await compileRegisterStartIntrospect({
+        daemonUrl: daemon,
+        sourceFile,
+        moduleName,
+        entry: opts.entry,
+        compilerBin: opts.compilerBin
+      });
+      services.push(result);
+    }
+
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ok: true,
+          rootDir,
+          scanned: files.length,
+          added: services.length,
+          services
+        },
+        null,
+        2
+      )}\n`
+    );
   });
 
 // Backward-compatible command: register a precompiled local wasm service.
@@ -418,10 +509,48 @@ program
 
 program
   .command("doctor")
-  .action(async () => {
+  .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
+  .action(async (opts) => {
     const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
-    const out = await api<Record<string, unknown>>(daemon, "/api/status");
-    process.stdout.write(`${JSON.stringify({ ok: true, checks: [{ name: "daemon", status: "pass" }], status: out }, null, 2)}\n`);
+    const checks: Array<{ name: string; status: "pass" | "fail"; detail?: string }> = [];
+    let statusOut: Record<string, unknown> | undefined;
+
+    try {
+      statusOut = await api<Record<string, unknown>>(daemon, "/api/status");
+      checks.push({ name: "daemon", status: "pass", detail: `reachable at ${daemon}` });
+    } catch (error) {
+      checks.push({
+        name: "daemon",
+        status: "fail",
+        detail: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    const compiler = await checkCompiler(opts.compilerBin);
+    if (compiler.ok) {
+      checks.push({ name: "compiler", status: "pass", detail: compiler.output || "compiler available" });
+    } else {
+      checks.push({ name: "compiler", status: "fail", detail: compiler.error });
+    }
+
+    const buildDir = path.resolve(process.cwd(), ".clarity", "build");
+    try {
+      await mkdir(buildDir, { recursive: true });
+      await access(buildDir);
+      checks.push({ name: "workspace", status: "pass", detail: `build dir ready: ${buildDir}` });
+    } catch (error) {
+      checks.push({
+        name: "workspace",
+        status: "fail",
+        detail: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    const ok = checks.every((check) => check.status === "pass");
+    process.stdout.write(`${JSON.stringify({ ok, checks, ...(statusOut ? { status: statusOut } : {}) }, null, 2)}\n`);
+    if (!ok) {
+      process.exitCode = 1;
+    }
   });
 
 const gateway = program.command("gateway");

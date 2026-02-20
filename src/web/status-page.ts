@@ -239,6 +239,7 @@ export function renderStatusPage(): string {
           <tr>
             <th>Service</th>
             <th>Origin</th>
+            <th>Policy</th>
             <th>State</th>
             <th>Health</th>
             <th>Interface</th>
@@ -293,9 +294,18 @@ async function refresh() {
     const toolCount = svc.interface?.tools ?? 0;
     const resCount = svc.interface?.resources ?? 0;
     const promptCount = svc.interface?.prompts ?? 0;
+    const restart = svc.policy?.restart
+      ? svc.policy.restart.mode + '/' + svc.policy.restart.maxRestarts + 'x/' + svc.policy.restart.windowSeconds + 's'
+      : 'n/a';
+    const remotePolicy = svc.policy?.remote
+      ? 'to=' + (svc.policy.remote.timeoutMs ?? 'default') + 'ms, tools=' + ((svc.policy.remote.allowedTools || []).length > 0 ? svc.policy.remote.allowedTools.join(',') : '*') +
+        ', payload=' + (svc.policy.remote.maxPayloadBytes ?? 'default') +
+        ', conc=' + (svc.policy.remote.maxConcurrency ?? 'default')
+      : '';
     return '<tr>' +
       '<td><strong>' + (svc.displayName || svc.serviceId) + '</strong><div class="id code">' + svc.serviceId + '</div></td>' +
       '<td><span class="code">' + svc.originType + '</span></td>' +
+      '<td><div class="code">' + restart + '</div>' + (remotePolicy ? '<div class="id code">' + remotePolicy + '</div>' : '') + '</td>' +
       '<td>' + badge(svc.lifecycle) + '</td>' +
       '<td><span class="code">' + svc.health + '</span></td>' +
       '<td>' + toolCount + ' tools, ' + resCount + ' resources, ' + promptCount + ' prompts</td>' +
@@ -310,7 +320,7 @@ async function refresh() {
       '</td>' +
     '</tr>';
   }).join('');
-  document.getElementById('rows').innerHTML = rows || '<tr><td colspan="6" style="color:#9daec4">No services registered</td></tr>';
+  document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:#9daec4">No services registered</td></tr>';
 
   const auditRows = (audit.items || []).slice().reverse().map((evt) => {
     const sid = evt.serviceId ? ' [' + evt.serviceId + ']' : '';

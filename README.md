@@ -78,6 +78,9 @@ npx clarityd
 # 3) Add a local service from source (mcp1 -> ./mcp1.clarity)
 npx clarityctl add mcp1
 
+# Optional: add all .clarity services in a folder
+npx clarityctl add-all ./examples --recursive
+
 # 4) Inspect + wire clients once
 npx clarityctl list
 npx clarityctl bootstrap --clients codex,claude
@@ -100,6 +103,7 @@ npm run dev:ctl -- list
 
 ```bash
 clarityctl add <service_or_source_path>
+clarityctl add-all [dir] [--recursive]
 clarityctl add-remote --endpoint <url> --module <name> [--auth-ref <name>] [--timeout-ms <ms>] [--allow-tools <a,b,c>] [--max-payload-bytes <bytes>] [--max-concurrency <n>]
 clarityctl list
 clarityctl status
@@ -111,6 +115,8 @@ clarityctl logs <service_id>
 clarityctl bootstrap --clients codex,claude
 clarityctl doctor
 ```
+
+`clarityctl doctor` now validates daemon connectivity, compiler availability, and local build workspace readiness.
 
 Legacy compatibility commands (still supported):
 

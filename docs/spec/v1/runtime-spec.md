@@ -65,9 +65,10 @@
 
 ## CLI
 - `clarityctl add <service>`
+- `clarityctl add-all [dir] [--recursive]`
 - `clarityctl add-remote --endpoint ... --module ... [--timeout-ms ...] [--allow-tools ...] [--max-payload-bytes ...] [--max-concurrency ...]`
 - Legacy compatibility: `clarityctl add-local ...`, `clarityctl start-source ...`
-- `clarityctl list|status|start|stop|restart|introspect|logs|bootstrap|doctor`
+- `clarityctl list|status|start|stop|restart|introspect|logs|bootstrap|doctor` (`doctor` checks daemon, compiler, workspace)
 - `clarityctl gateway serve --stdio`
 
 ## Planned Next

@@ -27,6 +27,16 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 }
 
 function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) {
+  const origin = record.manifest.spec.origin;
+  const remotePolicy = origin.type === "remote_mcp"
+    ? {
+        timeoutMs: origin.timeoutMs,
+        allowedTools: origin.allowedTools ?? [],
+        maxPayloadBytes: origin.maxPayloadBytes,
+        maxConcurrency: origin.maxConcurrency
+      }
+    : null;
+
   return {
     serviceId: record.manifest.metadata.serviceId,
     displayName: record.manifest.metadata.displayName,
@@ -37,6 +47,10 @@ function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) 
     health: record.runtime.health,
     uptimeSeconds: record.runtime.uptimeSeconds,
     restartCount: record.runtime.restartCount,
+    policy: {
+      restart: record.manifest.spec.restartPolicy,
+      remote: remotePolicy
+    },
     interface: record.interfaceSnapshot
       ? {
           interfaceRevision: record.interfaceSnapshot.interfaceRevision,
