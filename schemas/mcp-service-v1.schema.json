@@ -1,0 +1,87 @@
+{
+  "$id": "https://clarity.dev/schemas/mcp-service-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "clarity.runtime/v1" },
+    "kind": { "const": "MCPService" },
+    "metadata": {
+      "type": "object",
+      "required": ["sourceFile", "module"],
+      "properties": {
+        "serviceId": { "type": "string", "pattern": "^svc_[a-f0-9]{12}$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "sourceFile": { "type": "string" },
+        "workspaceRoot": { "type": "string" },
+        "module": { "type": "string" },
+        "version": { "type": "string" },
+        "artifactSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "spec": {
+      "type": "object",
+      "required": ["origin", "enabled", "autostart", "restartPolicy", "policyRef"],
+      "properties": {
+        "origin": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["type", "wasmPath", "entry"],
+              "properties": {
+                "type": { "const": "local_wasm" },
+                "wasmPath": { "type": "string" },
+                "entry": { "type": "string" },
+                "args": { "type": "array", "items": { "type": "string" } },
+                "env": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                      "name": { "type": "string" },
+                      "value": { "type": "string" },
+                      "secretRef": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["type", "endpoint", "transport"],
+              "properties": {
+                "type": { "const": "remote_mcp" },
+                "endpoint": { "type": "string", "format": "uri" },
+                "transport": { "enum": ["streamable_http", "sse_http"] },
+                "authRef": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "enabled": { "type": "boolean" },
+        "autostart": { "type": "boolean" },
+        "restartPolicy": {
+          "type": "object",
+          "required": ["mode", "maxRestarts", "windowSeconds"],
+          "properties": {
+            "mode": { "enum": ["never", "on-failure", "always"] },
+            "maxRestarts": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "windowSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 }
+          },
+          "additionalProperties": false
+        },
+        "policyRef": { "type": "string" },
+        "toolNamespace": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,109 @@
+# Clarity Runtime
+
+**One local control plane for every MCP server you use.**
+
+Clarity Runtime is a lightweight runtime + gateway for running, registering, and operating MCP services from a single place. It is built for a future where MCP services are compiled from Clarity, started with one command, and immediately visible to local coding agents.
+
+## Why This Exists
+
+Most MCP workflows today are fragmented:
+- each client needs separate config
+- local and remote servers are managed differently
+- there is no shared status surface for health, logs, and interface visibility
+
+Clarity Runtime solves this with a single daemon and gateway.
+
+## What You Get
+
+- Single control plane daemon (`clarityd`)
+- Single operator CLI (`clarityctl`)
+- Single status page (`/status`) with registered services and interfaces
+- Deterministic service identity (no required manual naming)
+- Local + remote MCP registration model
+- Codex + Claude bootstrap hooks (one-time client wiring)
+
+## Architecture
+
+```text
+               +----------------------+
+               |     clarityctl       |
+               | add/start/stop/etc.  |
+               +----------+-----------+
+                          |
+                          v
++-------------------------+--------------------------+
+|                     clarityd                       |
+|  registry | lifecycle supervisor | interface cache |
++-------------------------+--------------------------+
+                          |
+                  +-------+--------+
+                  |   MCP Gateway  |
+                  +-------+--------+
+                          |
+           +--------------+--------------+
+           |                             |
+           v                             v
+   Local Clarity MCPs             Remote MCP Services
+   (compiled to WASM)             (HTTP transports)
+```
+
+## Current State (v1 Scaffold)
+
+Implemented now:
+- service contracts and manifest schema (`clarity.runtime/v1`)
+- persistent registry (`.clarity/runtime/registry.json`)
+- daemon HTTP API and status page
+- add/list/start/stop/restart/introspect flows
+- bootstrap writers for Codex/Claude config files
+
+Planned next:
+- real MCP transport on `/mcp`
+- real stdio bridge for agent clients
+- direct `clarityc start` compiler integration
+- remote auth/policy hardening and isolation
+
+## Quick Start
+
+```bash
+npm install
+npm run dev:daemon
+```
+
+In another terminal:
+
+```bash
+npm run dev:ctl -- status
+npm run dev:ctl -- add-local --source ./examples/sample.clarity --module Sample --wasm ./examples/sample.wasm
+npm run dev:ctl -- list
+```
+
+Open the control layer:
+
+- [http://127.0.0.1:4707/status](http://127.0.0.1:4707/status)
+
+## CLI
+
+```bash
+clarityctl add-local --source <file.clarity> --module <name> --wasm <file.wasm>
+clarityctl add-remote --endpoint <url> --module <name>
+clarityctl list
+clarityctl status
+clarityctl start <service_id>
+clarityctl stop <service_id>
+clarityctl restart <service_id>
+clarityctl introspect <service_id>
+clarityctl logs <service_id>
+clarityctl bootstrap --clients codex,claude
+clarityctl doctor
+```
+
+## Spec
+
+- Runtime spec: `docs/spec/v1/runtime-spec.md`
+- Manifest schema: `schemas/mcp-service-v1.schema.json`
+
+## Vision
+
+`clarityc start server.clarity` should be enough.
+
+Compile, register, start, expose, and operate MCP services from one runtime without per-server client setup churn.

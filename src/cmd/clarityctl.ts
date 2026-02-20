@@ -1,0 +1,207 @@
+#!/usr/bin/env node
+import { Command } from "commander";
+import path from "node:path";
+import type { MCPServiceManifest } from "../types/contracts.js";
+
+const program = new Command();
+
+async function api<T>(pathname: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`http://127.0.0.1:4707${pathname}`, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      ...(init?.headers ?? {})
+    }
+  });
+
+  const text = await res.text();
+  const parsed = text ? JSON.parse(text) : {};
+  if (!res.ok) {
+    throw new Error(parsed.error ?? `${res.status} ${res.statusText}`);
+  }
+  return parsed as T;
+}
+
+function localManifest(input: {
+  sourceFile: string;
+  module: string;
+  wasmPath: string;
+  entry: string;
+  displayName?: string;
+}): MCPServiceManifest {
+  return {
+    apiVersion: "clarity.runtime/v1",
+    kind: "MCPService",
+    metadata: {
+      sourceFile: input.sourceFile,
+      module: input.module,
+      displayName: input.displayName
+    },
+    spec: {
+      origin: {
+        type: "local_wasm",
+        wasmPath: input.wasmPath,
+        entry: input.entry
+      },
+      enabled: true,
+      autostart: true,
+      restartPolicy: {
+        mode: "on-failure",
+        maxRestarts: 5,
+        windowSeconds: 60
+      },
+      policyRef: "default",
+      toolNamespace: input.module.toLowerCase()
+    }
+  };
+}
+
+function remoteManifest(input: {
+  endpoint: string;
+  module: string;
+  displayName?: string;
+}): MCPServiceManifest {
+  return {
+    apiVersion: "clarity.runtime/v1",
+    kind: "MCPService",
+    metadata: {
+      sourceFile: input.endpoint,
+      module: input.module,
+      displayName: input.displayName
+    },
+    spec: {
+      origin: {
+        type: "remote_mcp",
+        endpoint: input.endpoint,
+        transport: "streamable_http"
+      },
+      enabled: true,
+      autostart: true,
+      restartPolicy: {
+        mode: "on-failure",
+        maxRestarts: 5,
+        windowSeconds: 60
+      },
+      policyRef: "default",
+      toolNamespace: input.module.toLowerCase()
+    }
+  };
+}
+
+program.name("clarityctl").description("Clarity runtime control CLI");
+
+program
+  .command("list")
+  .action(async () => {
+    const out = await api<{ items: Array<Record<string, unknown>> }>("/api/services");
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+program
+  .command("status")
+  .action(async () => {
+    const out = await api<Record<string, unknown>>("/api/status");
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+program
+  .command("add-local")
+  .requiredOption("--source <file>", "Clarity source file path")
+  .requiredOption("--module <name>", "Module name")
+  .requiredOption("--wasm <file>", "Compiled wasm path")
+  .option("--entry <name>", "MCP entry function", "mcp_main")
+  .option("--name <display>", "Optional display name")
+  .action(async (opts) => {
+    const manifest = localManifest({
+      sourceFile: path.resolve(opts.source),
+      module: opts.module,
+      wasmPath: path.resolve(opts.wasm),
+      entry: opts.entry,
+      displayName: opts.name
+    });
+
+    const out = await api<{ service: unknown }>("/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({ manifest })
+    });
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+program
+  .command("add-remote")
+  .requiredOption("--endpoint <url>", "Remote MCP URL")
+  .requiredOption("--module <name>", "Logical module name")
+  .option("--name <display>", "Optional display name")
+  .action(async (opts) => {
+    const manifest = remoteManifest({
+      endpoint: opts.endpoint,
+      module: opts.module,
+      displayName: opts.name
+    });
+
+    const out = await api<{ service: unknown }>("/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({ manifest })
+    });
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+for (const action of ["start", "stop", "restart", "introspect"] as const) {
+  program
+    .command(`${action} <serviceId>`)
+    .action(async (serviceId) => {
+      const out = await api<Record<string, unknown>>(`/api/services/${encodeURIComponent(serviceId)}/${action}`, {
+        method: "POST"
+      });
+      process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+    });
+}
+
+program
+  .command("logs <serviceId>")
+  .option("--limit <n>", "Number of lines", "200")
+  .action(async (serviceId, opts) => {
+    const limit = Number(opts.limit);
+    const out = await api<{ lines: string[] }>(`/api/services/${encodeURIComponent(serviceId)}/logs?limit=${Number.isFinite(limit) ? limit : 200}`);
+    process.stdout.write(`${out.lines.join("\n")}\n`);
+  });
+
+program
+  .command("bootstrap")
+  .option("--clients <items>", "Comma separated clients", "codex,claude")
+  .action(async (opts) => {
+    const clients = String(opts.clients)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const out = await api<Record<string, unknown>>("/api/bootstrap", {
+      method: "POST",
+      body: JSON.stringify({ clients })
+    });
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+program
+  .command("doctor")
+  .action(async () => {
+    const out = await api<Record<string, unknown>>("/api/status");
+    process.stdout.write(`${JSON.stringify({ ok: true, checks: [{ name: "daemon", status: "pass" }], status: out }, null, 2)}\n`);
+  });
+
+program
+  .command("gateway")
+  .command("serve")
+  .option("--stdio", "Start stdio gateway placeholder")
+  .action(() => {
+    process.stdin.resume();
+    process.stdout.write("Clarity gateway stdio placeholder active\n");
+    process.stdin.on("data", () => {
+      process.stdout.write('{"jsonrpc":"2.0","method":"$error","params":{"message":"MCP stdio gateway not implemented yet"}}\n');
+    });
+  });
+
+program.parseAsync(process.argv).catch((err) => {
+  process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+  process.exit(1);
+});
