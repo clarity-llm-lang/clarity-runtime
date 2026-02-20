@@ -7,20 +7,18 @@ export function renderStatusPage(): string {
   <title>Clarity Runtime Status</title>
   <style>
     :root {
-      --bg-0: #0b1020;
-      --bg-1: #121a34;
-      --bg-2: #0e2b3c;
-      --glass: rgba(11, 16, 32, 0.58);
-      --glass-strong: rgba(11, 16, 32, 0.78);
-      --text: #e7eef7;
-      --muted: #9fb0c7;
-      --line: rgba(159, 176, 199, 0.22);
-      --violet: #6366f1;
-      --purple: #8b5cf6;
-      --cyan: #06b6d4;
-      --ok: #4ade80;
-      --warn: #facc15;
-      --bad: #f87171;
+      --bg0: #0b1020;
+      --bg1: #131b33;
+      --bg2: #173047;
+      --panel: rgba(10, 16, 30, 0.78);
+      --panel-2: rgba(11, 18, 34, 0.88);
+      --line: rgba(159, 176, 199, 0.2);
+      --text: #e8edf5;
+      --muted: #9daec4;
+      --accent: #6366f1;
+      --accent-2: #06b6d4;
+      --ok: #16a34a;
+      --bad: #dc2626;
     }
 
     * { box-sizing: border-box; }
@@ -29,65 +27,47 @@ export function renderStatusPage(): string {
     body {
       margin: 0;
       color: var(--text);
-      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      font-family: "SF Pro Text", "Avenir Next", "Segoe UI", -apple-system, sans-serif;
       background:
-        radial-gradient(circle at 88% -10%, rgba(99, 102, 241, 0.35), transparent 36%),
-        radial-gradient(circle at 0% 100%, rgba(6, 182, 212, 0.25), transparent 38%),
-        linear-gradient(135deg, var(--bg-0), var(--bg-1) 52%, var(--bg-2));
-      padding: 24px;
+        radial-gradient(circle at 86% -12%, rgba(99, 102, 241, 0.22), transparent 40%),
+        radial-gradient(circle at 0% 110%, rgba(6, 182, 212, 0.18), transparent 44%),
+        linear-gradient(145deg, var(--bg0), var(--bg1) 56%, var(--bg2));
+      padding: 28px;
     }
 
-    .shell {
-      max-width: 1220px;
-      margin: 0 auto;
-    }
+    .shell { max-width: 1180px; margin: 0 auto; }
 
-    .hero {
-      background: linear-gradient(145deg, rgba(99,102,241,0.2), rgba(6,182,212,0.16));
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      backdrop-filter: blur(7px);
-      padding: 18px 20px;
+    .topbar {
       display: flex;
-      align-items: center;
       justify-content: space-between;
-      gap: 14px;
-      flex-wrap: wrap;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 18px;
     }
 
-    .title-wrap { display: flex; align-items: center; gap: 12px; }
-
-    .mark {
-      width: 34px;
-      height: 34px;
-      transform: rotate(45deg);
-      border-radius: 7px;
-      background: linear-gradient(145deg, var(--violet), var(--cyan));
-      box-shadow: 0 0 0 1px rgba(255,255,255,0.16) inset;
-    }
-
-    h1 {
+    .title {
       margin: 0;
-      font-size: 22px;
+      font-size: 24px;
+      font-weight: 640;
       letter-spacing: 0.2px;
-      background: linear-gradient(90deg, var(--violet), var(--purple), var(--cyan));
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
     }
 
-    .sub { margin-top: 4px; color: var(--muted); font-size: 13px; }
+    .subtitle {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
 
-    .pulse {
+    .chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 12px;
+      color: var(--muted);
+      background: rgba(7, 12, 24, 0.55);
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      border: 1px solid var(--line);
-      background: var(--glass);
-      border-radius: 999px;
-      padding: 6px 10px;
-      font-size: 12px;
-      color: var(--muted);
     }
 
     .dot {
@@ -95,67 +75,65 @@ export function renderStatusPage(): string {
       height: 8px;
       border-radius: 999px;
       background: var(--ok);
-      box-shadow: 0 0 0 6px rgba(74, 222, 128, 0.17);
     }
 
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-      gap: 12px;
-      margin: 16px 0 18px;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin-bottom: 18px;
     }
 
     .card {
-      background: var(--glass);
+      background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 14px;
-      backdrop-filter: blur(7px);
+      border-radius: 10px;
+      padding: 13px;
     }
 
-    .k {
+    .label {
       color: var(--muted);
-      font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 1px;
+      letter-spacing: 0.9px;
+      font-size: 10px;
     }
 
-    .v {
-      font-size: 25px;
-      font-weight: 700;
+    .value {
       margin-top: 6px;
-      color: var(--text);
+      font-size: 24px;
+      font-weight: 650;
+      line-height: 1;
     }
 
     .table-wrap {
-      overflow: auto;
-      border-radius: 14px;
       border: 1px solid var(--line);
-      background: var(--glass-strong);
+      border-radius: 12px;
+      overflow: auto;
+      background: var(--panel-2);
     }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 960px;
-    }
+    table { width: 100%; min-width: 980px; border-collapse: collapse; }
 
     th, td {
-      text-align: left;
       padding: 11px 12px;
       border-bottom: 1px solid var(--line);
       vertical-align: top;
+      text-align: left;
+      font-size: 13px;
     }
 
     th {
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 1px;
       color: var(--muted);
-      background: rgba(14, 43, 60, 0.35);
+      text-transform: uppercase;
+      letter-spacing: 0.9px;
+      font-size: 10px;
+      font-weight: 600;
+      background: rgba(15, 23, 42, 0.5);
     }
 
     tr:last-child td { border-bottom: none; }
+
+    .id { color: var(--muted); font-size: 12px; margin-top: 4px; }
 
     .badge {
       border-radius: 999px;
@@ -163,18 +141,23 @@ export function renderStatusPage(): string {
       font-size: 11px;
       font-weight: 700;
       display: inline-block;
-      letter-spacing: 0.4px;
       border: 1px solid transparent;
     }
 
-    .run { color: #082a17; background: var(--ok); }
-    .stop { color: #c9d8e7; background: rgba(159,176,199,0.18); border-color: rgba(159,176,199,0.3); }
-    .crash { color: #3c0000; background: var(--bad); }
+    .run { background: rgba(22, 163, 74, 0.18); color: #7ff0ad; border-color: rgba(22, 163, 74, 0.35); }
+    .stop { background: rgba(148, 163, 184, 0.12); color: #c4d1df; border-color: rgba(148, 163, 184, 0.28); }
+    .crash { background: rgba(220, 38, 38, 0.16); color: #ffb5b5; border-color: rgba(220, 38, 38, 0.35); }
+
+    .code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #c7e9ff;
+      font-size: 12px;
+    }
 
     .btn {
-      color: #f0f9ff;
-      background: linear-gradient(135deg, var(--violet), var(--cyan));
-      border: none;
+      border: 1px solid rgba(99, 102, 241, 0.32);
+      color: #dfe8ff;
+      background: linear-gradient(180deg, rgba(99,102,241,0.22), rgba(99,102,241,0.1));
       border-radius: 8px;
       padding: 6px 9px;
       font-size: 11px;
@@ -184,35 +167,28 @@ export function renderStatusPage(): string {
       white-space: nowrap;
     }
 
-    .btn:hover { filter: brightness(1.08); }
-
-    .muted { color: var(--muted); }
-    code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 12px;
-      color: #c6f2ff;
+    .btn.secondary {
+      border-color: rgba(6, 182, 212, 0.3);
+      background: linear-gradient(180deg, rgba(6,182,212,0.2), rgba(6,182,212,0.1));
     }
+
+    .btn:hover { filter: brightness(1.1); }
 
     @media (max-width: 760px) {
       body { padding: 14px; }
-      .hero { padding: 14px; }
-      h1 { font-size: 20px; }
-      .v { font-size: 22px; }
+      .title { font-size: 20px; }
     }
   </style>
 </head>
 <body>
   <div class="shell">
-    <header class="hero">
+    <div class="topbar">
       <div>
-        <div class="title-wrap">
-          <span class="mark" aria-hidden="true"></span>
-          <h1>Clarity Gateway Control Plane</h1>
-        </div>
-        <div class="sub">Single runtime managing local and remote MCP services</div>
+        <h1 class="title">Clarity Runtime Control Plane</h1>
+        <div class="subtitle">Operational view of registered MCP services and interfaces</div>
       </div>
-      <div class="pulse"><span class="dot"></span> live status</div>
-    </header>
+      <div class="chip"><span class="dot"></span> Live</div>
+    </div>
 
     <div class="grid" id="summary"></div>
 
@@ -253,7 +229,7 @@ function summaryCards(data) {
     ['Stopped', s.stopped],
     ['Local', s.local],
     ['Remote', s.remote]
-  ].map(([k, v]) => '<div class="card"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>').join('');
+  ].map(([k, v]) => '<div class="card"><div class="label">' + k + '</div><div class="value">' + v + '</div></div>').join('');
 }
 
 async function action(id, op) {
@@ -269,20 +245,20 @@ async function refresh() {
     const resCount = svc.interface?.resources ?? 0;
     const promptCount = svc.interface?.prompts ?? 0;
     return '<tr>' +
-      '<td><strong>' + (svc.displayName || svc.serviceId) + '</strong><br><span class="muted"><code>' + svc.serviceId + '</code></span></td>' +
-      '<td><code>' + svc.originType + '</code></td>' +
+      '<td><strong>' + (svc.displayName || svc.serviceId) + '</strong><div class="id code">' + svc.serviceId + '</div></td>' +
+      '<td><span class="code">' + svc.originType + '</span></td>' +
       '<td>' + badge(svc.lifecycle) + '</td>' +
-      '<td><code>' + svc.health + '</code></td>' +
+      '<td><span class="code">' + svc.health + '</span></td>' +
       '<td>' + toolCount + ' tools, ' + resCount + ' resources, ' + promptCount + ' prompts</td>' +
       '<td>' +
         '<button class="btn" onclick="action(\'' + svc.serviceId + '\',\'start\')">Start</button>' +
         '<button class="btn" onclick="action(\'' + svc.serviceId + '\',\'stop\')">Stop</button>' +
         '<button class="btn" onclick="action(\'' + svc.serviceId + '\',\'restart\')">Restart</button>' +
-        '<button class="btn" onclick="action(\'' + svc.serviceId + '\',\'introspect\')">Refresh Interface</button>' +
+        '<button class="btn secondary" onclick="action(\'' + svc.serviceId + '\',\'introspect\')">Refresh Interface</button>' +
       '</td>' +
     '</tr>';
   }).join('');
-  document.getElementById('rows').innerHTML = rows || '<tr><td colspan="6" class="muted">No services registered</td></tr>';
+  document.getElementById('rows').innerHTML = rows || '<tr><td colspan="6" style="color:#9daec4">No services registered</td></tr>';
 }
 
 refresh();
