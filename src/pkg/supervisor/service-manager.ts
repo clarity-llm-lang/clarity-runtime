@@ -48,6 +48,10 @@ function parseAllowedHosts(value: string | undefined): Set<string> | null {
   return new Set(hosts);
 }
 
+function envKeyForAuthRef(authRef: string): string {
+  return `CLARITY_REMOTE_AUTH_${authRef.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`;
+}
+
 export class ServiceManager {
   private readonly registry: ServiceRegistry;
   private readonly starts = new Map<string, number>();
@@ -99,7 +103,7 @@ export class ServiceManager {
     if (existing.manifest.spec.origin.type === "remote_mcp") {
       try {
         this.enforceRemoteHostPolicy(existing.manifest.spec.origin);
-        await this.ensureRemoteInitialized(serviceId, existing.manifest.spec.origin.endpoint);
+        await this.ensureRemoteInitialized(serviceId, existing.manifest.spec.origin);
       } catch (error) {
         health = "DEGRADED";
         lastError = error instanceof Error ? error.message : String(error);
@@ -174,8 +178,8 @@ export class ServiceManager {
 
     if (service.manifest.spec.origin.type === "remote_mcp") {
       this.enforceRemoteHostPolicy(service.manifest.spec.origin);
+      await this.ensureRemoteInitialized(serviceId, service.manifest.spec.origin);
       const endpoint = service.manifest.spec.origin.endpoint;
-      await this.ensureRemoteInitialized(serviceId, endpoint);
 
       const [toolsResult, resourcesResult, promptsResult] = await Promise.all([
         this.remoteRequest(serviceId, endpoint, "tools/list", {}),
@@ -374,14 +378,14 @@ export class ServiceManager {
     );
   }
 
-  private async ensureRemoteInitialized(serviceId: string, endpoint: string): Promise<void> {
+  private async ensureRemoteInitialized(serviceId: string, origin: RemoteMcpOrigin): Promise<void> {
     if (this.remoteInitialized.has(serviceId)) {
       return;
     }
 
     await this.remoteRequest(
       serviceId,
-      { type: "remote_mcp", endpoint, transport: "streamable_http" },
+      origin,
       "initialize",
       {
         protocolVersion: "2024-11-05",
@@ -393,13 +397,15 @@ export class ServiceManager {
       }
     );
 
-    await this.remoteNotify(serviceId, endpoint, "notifications/initialized", {});
+    await this.remoteNotify(serviceId, origin.endpoint, "notifications/initialized", {});
     this.remoteInitialized.add(serviceId);
     this.appendLog(serviceId, "Remote MCP initialized");
   }
 
   private async remoteNotify(serviceId: string, endpoint: string, method: string, params: unknown): Promise<void> {
     try {
+      const service = await this.registry.get(serviceId);
+      const headers = this.resolveRemoteHeaders(service?.manifest.spec.origin.type === "remote_mcp" ? service.manifest.spec.origin : undefined);
       const payload = {
         jsonrpc: "2.0",
         method,
@@ -408,9 +414,7 @@ export class ServiceManager {
 
       await fetch(endpoint, {
         method: "POST",
-        headers: {
-          "content-type": "application/json"
-        },
+        headers,
         body: JSON.stringify(payload)
       });
     } catch (error) {
@@ -428,12 +432,12 @@ export class ServiceManager {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) ? timeoutMs : 20_000);
 
+    const headers = this.resolveRemoteHeaders(typeof origin === "string" ? undefined : origin);
+
     try {
       const response = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          "content-type": "application/json"
-        },
+        headers,
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: requestId,
@@ -487,6 +491,30 @@ export class ServiceManager {
     if (!allowedHosts.has(url.hostname.toLowerCase())) {
       throw new Error(`remote endpoint host '${url.hostname}' is not in CLARITY_REMOTE_ALLOWED_HOSTS`);
     }
+  }
+
+  private resolveRemoteHeaders(origin: RemoteMcpOrigin | undefined): Record<string, string> {
+    const headers: Record<string, string> = {
+      "content-type": "application/json"
+    };
+
+    if (!origin?.authRef) {
+      return headers;
+    }
+
+    const envKey = envKeyForAuthRef(origin.authRef);
+    const secret = process.env[envKey];
+    if (!secret) {
+      throw new Error(`missing remote auth secret in env '${envKey}'`);
+    }
+
+    if (secret.startsWith("Bearer ")) {
+      headers.Authorization = secret;
+      return headers;
+    }
+
+    headers.Authorization = `Bearer ${secret}`;
+    return headers;
   }
 
   private async discoverLocalFunctions(wasmPath: string): Promise<string[]> {

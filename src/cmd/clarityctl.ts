@@ -67,6 +67,7 @@ function remoteManifest(input: {
   displayName?: string;
   timeoutMs?: number;
   allowedTools?: string[];
+  authRef?: string;
 }): MCPServiceManifest {
   return {
     apiVersion: "clarity.runtime/v1",
@@ -81,6 +82,7 @@ function remoteManifest(input: {
         type: "remote_mcp",
         endpoint: input.endpoint,
         transport: "streamable_http",
+        ...(input.authRef ? { authRef: input.authRef } : {}),
         ...(typeof input.timeoutMs === "number" ? { timeoutMs: input.timeoutMs } : {}),
         ...(input.allowedTools && input.allowedTools.length > 0 ? { allowedTools: input.allowedTools } : {})
       },
@@ -291,6 +293,7 @@ program
   .requiredOption("--endpoint <url>", "Remote MCP URL")
   .requiredOption("--module <name>", "Logical module name")
   .option("--name <display>", "Optional display name")
+  .option("--auth-ref <name>", "Auth secret reference name (resolved from env)")
   .option("--timeout-ms <ms>", "Remote request timeout in milliseconds")
   .option("--allow-tools <items>", "Comma-separated remote tool allowlist (optional)")
   .action(async (opts) => {
@@ -303,6 +306,7 @@ program
       endpoint: opts.endpoint,
       module: opts.module,
       displayName: opts.name,
+      authRef: opts.authRef,
       timeoutMs: Number.isFinite(timeoutMs as number) ? timeoutMs : undefined,
       allowedTools
     });

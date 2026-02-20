@@ -89,7 +89,7 @@ Open the control layer: [http://127.0.0.1:4707/status](http://127.0.0.1:4707/sta
 ```bash
 clarityctl add-local --source <file.clarity> --module <name> --wasm <file.wasm>
 clarityctl start-source --source <file.clarity> [--module <name>] [--wasm <file.wasm>]
-clarityctl add-remote --endpoint <url> --module <name> [--timeout-ms <ms>] [--allow-tools <a,b,c>]
+clarityctl add-remote --endpoint <url> --module <name> [--auth-ref <name>] [--timeout-ms <ms>] [--allow-tools <a,b,c>]
 clarityctl list
 clarityctl status
 clarityctl start <service_id>
@@ -168,6 +168,7 @@ Use: `assets/clarity-github-avatar.png`
 
 - `add-remote --timeout-ms <ms>`: set per-service remote request timeout.
 - `add-remote --allow-tools <tool_a,tool_b>`: restrict callable remote tools.
+- `add-remote --auth-ref <name>`: resolve bearer secret from `CLARITY_REMOTE_AUTH_<NAME>`.
 - `CLARITY_REMOTE_ALLOWED_HOSTS=host1,host2`: optional global remote host allowlist.
 - `CLARITY_REMOTE_DEFAULT_TIMEOUT_MS=20000`: default timeout when manifest timeout is not set.
 
