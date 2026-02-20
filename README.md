@@ -47,22 +47,7 @@ Clarity Runtime solves this with a single daemon and gateway.
    (compiled to WASM)             (HTTP transports)
 ```
 
-## Current State (v1 Scaffold)
-
-Implemented now:
-- service contracts and manifest schema (`clarity.runtime/v1`)
-- persistent registry (`.clarity/runtime/registry.json`)
-- daemon HTTP API and status page
-- add/list/start/stop/restart/introspect flows
-- bootstrap writers for Codex/Claude config files
-
-Planned next:
-- real MCP transport on `/mcp`
-- real stdio bridge for agent clients
-- direct `clarityc start` compiler integration
-- remote auth/policy hardening and isolation
-
-## Quick Start
+## Demo Flow
 
 ```bash
 npm install
@@ -72,14 +57,30 @@ npm run dev:daemon
 In another terminal:
 
 ```bash
-npm run dev:ctl -- status
 npm run dev:ctl -- add-local --source ./examples/sample.clarity --module Sample --wasm ./examples/sample.wasm
+npm run dev:ctl -- add-remote --endpoint https://example.com/mcp --module ExternalDocs
 npm run dev:ctl -- list
+npm run dev:ctl -- bootstrap --clients codex,claude
 ```
 
 Open the control layer:
 
 - [http://127.0.0.1:4707/status](http://127.0.0.1:4707/status)
+
+## Current State (v1 Scaffold)
+
+Implemented now:
+- service contracts and manifest schema (`clarity.runtime/v1`)
+- persistent registry (`.clarity/runtime/registry.json`)
+- daemon HTTP API and status page
+- add/list/start/stop/restart/introspect flows
+- bootstrap writers for Codex/Claude config files
+
+Not implemented yet:
+- real MCP transport on `/mcp`
+- real stdio bridge for agent clients
+- direct `clarityc start` compiler integration
+- remote auth/policy hardening and isolation
 
 ## CLI
 
@@ -96,6 +97,25 @@ clarityctl logs <service_id>
 clarityctl bootstrap --clients codex,claude
 clarityctl doctor
 ```
+
+## Roadmap
+
+- [ ] Implement real MCP gateway transport (`/mcp`, streamable HTTP)
+- [ ] Implement stdio gateway process for local clients
+- [ ] Wire compiler path: `clarityc start <file.clarity>`
+- [ ] Add policy engine (timeouts, allowlists, concurrency, payload limits)
+- [ ] Add remote auth providers and secret references
+- [ ] Add quarantine/recovery and richer health diagnostics
+- [ ] Add interface diffing and audit/event timeline
+
+## Contributing
+
+1. Fork this repository.
+2. Create a branch from `main`.
+3. Make changes with tests/docs where relevant.
+4. Open a PR describing behavior changes and rationale.
+
+For larger architecture changes, open an issue first to align on the control-plane contract.
 
 ## Spec
 
