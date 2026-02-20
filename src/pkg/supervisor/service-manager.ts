@@ -4,6 +4,7 @@ import path from "node:path";
 import type {
   InterfaceSnapshot,
   MCPServiceManifest,
+  RemoteMcpOrigin,
   ServiceRecord
 } from "../../types/contracts.js";
 import { deriveInterfaceRevision } from "../registry/ids.js";
@@ -48,6 +49,16 @@ function parseFunctionArgs(args: unknown): string[] {
     }
     return JSON.stringify(item);
   });
+}
+
+function parseAllowedHosts(value: string | undefined): Set<string> | null {
+  if (!value) return null;
+  const hosts = value
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (hosts.length === 0) return null;
+  return new Set(hosts);
 }
 
 export class ServiceManager {
@@ -99,6 +110,7 @@ export class ServiceManager {
 
     if (existing.manifest.spec.origin.type === "remote_mcp") {
       try {
+        this.enforceRemoteHostPolicy(existing.manifest.spec.origin);
         await this.ensureRemoteInitialized(serviceId, existing.manifest.spec.origin.endpoint);
       } catch (error) {
         health = "DEGRADED";
@@ -173,6 +185,7 @@ export class ServiceManager {
     let snapshot: InterfaceSnapshot;
 
     if (service.manifest.spec.origin.type === "remote_mcp") {
+      this.enforceRemoteHostPolicy(service.manifest.spec.origin);
       const endpoint = service.manifest.spec.origin.endpoint;
       await this.ensureRemoteInitialized(serviceId, endpoint);
 
@@ -272,9 +285,17 @@ export class ServiceManager {
     }
 
     if (service.manifest.spec.origin.type === "remote_mcp") {
+      this.enforceRemoteHostPolicy(service.manifest.spec.origin);
+      if (
+        Array.isArray(service.manifest.spec.origin.allowedTools)
+        && service.manifest.spec.origin.allowedTools.length > 0
+        && !service.manifest.spec.origin.allowedTools.includes(toolName)
+      ) {
+        throw new Error(`tool '${toolName}' is not allowed by remote policy`);
+      }
       const result = await this.remoteRequest(
         serviceId,
-        service.manifest.spec.origin.endpoint,
+        service.manifest.spec.origin,
         "tools/call",
         {
           name: toolName,
@@ -372,7 +393,7 @@ export class ServiceManager {
 
     await this.remoteRequest(
       serviceId,
-      endpoint,
+      { type: "remote_mcp", endpoint, transport: "streamable_http" },
       "initialize",
       {
         protocolVersion: "2024-11-05",
@@ -409,10 +430,15 @@ export class ServiceManager {
     }
   }
 
-  private async remoteRequest(serviceId: string, endpoint: string, method: string, params: unknown): Promise<unknown> {
+  private async remoteRequest(serviceId: string, origin: RemoteMcpOrigin | string, method: string, params: unknown): Promise<unknown> {
+    const endpoint = typeof origin === "string" ? origin : origin.endpoint;
+    const timeoutMs =
+      typeof origin === "string"
+        ? Number(process.env.CLARITY_REMOTE_DEFAULT_TIMEOUT_MS ?? "20000")
+        : (origin.timeoutMs ?? Number(process.env.CLARITY_REMOTE_DEFAULT_TIMEOUT_MS ?? "20000"));
     const requestId = `${serviceId}-${this.remoteRequestCounter++}`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20_000);
+    const timeout = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) ? timeoutMs : 20_000);
 
     try {
       const response = await fetch(endpoint, {
@@ -460,6 +486,18 @@ export class ServiceManager {
       throw error;
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  private enforceRemoteHostPolicy(origin: RemoteMcpOrigin): void {
+    const allowedHosts = parseAllowedHosts(process.env.CLARITY_REMOTE_ALLOWED_HOSTS);
+    if (!allowedHosts) {
+      return;
+    }
+
+    const url = new URL(origin.endpoint);
+    if (!allowedHosts.has(url.hostname.toLowerCase())) {
+      throw new Error(`remote endpoint host '${url.hostname}' is not in CLARITY_REMOTE_ALLOWED_HOSTS`);
     }
   }
 

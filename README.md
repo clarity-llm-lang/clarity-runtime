@@ -89,7 +89,7 @@ Open the control layer: [http://127.0.0.1:4707/status](http://127.0.0.1:4707/sta
 ```bash
 clarityctl add-local --source <file.clarity> --module <name> --wasm <file.wasm>
 clarityctl start-source --source <file.clarity> [--module <name>] [--wasm <file.wasm>]
-clarityctl add-remote --endpoint <url> --module <name>
+clarityctl add-remote --endpoint <url> --module <name> [--timeout-ms <ms>] [--allow-tools <a,b,c>]
 clarityctl list
 clarityctl status
 clarityctl start <service_id>
@@ -115,6 +115,7 @@ Implemented in v1 scaffold:
 - stdio bridge mode via `clarityctl gateway serve --stdio`
 - compiler-assisted onboarding via `clarityctl start-source --source <file.clarity>` (compile + register + start + introspect)
 - local function execution tools for local services (`<namespace>__fn__<exported_function>`)
+- baseline remote policy controls (timeout + allowed-tools manifest policy + optional host allowlist)
 - bootstrap writers for Codex/Claude config files
 
 Not implemented yet:
@@ -146,7 +147,7 @@ Not implemented yet:
 | Compiler-driven onboarding | In progress | Runtime side done; native `clarityc start` implemented in `LLM-lang` branch and pending merge |
 | Local function execution | Done (baseline) | `<namespace>__fn__*` tools discovered from wasm exports and executed via compiler runtime |
 | In-process WASM host execution | Pending | Current local execution path uses compiler subprocess |
-| Auth/policy hardening | Pending | Not yet enforcing tool/network policy model |
+| Auth/policy hardening | In progress | Timeout/allowed-tools/host-allowlist baseline implemented; auth provider model still pending |
 
 ---
 
@@ -164,6 +165,13 @@ In GitHub: repository `Settings` -> `General` -> `Social preview` -> `Upload an 
 ## GitHub Avatar
 
 Use: `assets/clarity-github-avatar.png`
+
+## Remote Policy Knobs
+
+- `add-remote --timeout-ms <ms>`: set per-service remote request timeout.
+- `add-remote --allow-tools <tool_a,tool_b>`: restrict callable remote tools.
+- `CLARITY_REMOTE_ALLOWED_HOSTS=host1,host2`: optional global remote host allowlist.
+- `CLARITY_REMOTE_DEFAULT_TIMEOUT_MS=20000`: default timeout when manifest timeout is not set.
 
 ## Contributing
 

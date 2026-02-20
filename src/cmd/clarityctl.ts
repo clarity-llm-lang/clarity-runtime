@@ -65,6 +65,8 @@ function remoteManifest(input: {
   endpoint: string;
   module: string;
   displayName?: string;
+  timeoutMs?: number;
+  allowedTools?: string[];
 }): MCPServiceManifest {
   return {
     apiVersion: "clarity.runtime/v1",
@@ -78,7 +80,9 @@ function remoteManifest(input: {
       origin: {
         type: "remote_mcp",
         endpoint: input.endpoint,
-        transport: "streamable_http"
+        transport: "streamable_http",
+        ...(typeof input.timeoutMs === "number" ? { timeoutMs: input.timeoutMs } : {}),
+        ...(input.allowedTools && input.allowedTools.length > 0 ? { allowedTools: input.allowedTools } : {})
       },
       enabled: true,
       autostart: true,
@@ -287,12 +291,20 @@ program
   .requiredOption("--endpoint <url>", "Remote MCP URL")
   .requiredOption("--module <name>", "Logical module name")
   .option("--name <display>", "Optional display name")
+  .option("--timeout-ms <ms>", "Remote request timeout in milliseconds")
+  .option("--allow-tools <items>", "Comma-separated remote tool allowlist (optional)")
   .action(async (opts) => {
     const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const timeoutMs = opts.timeoutMs !== undefined ? Number(opts.timeoutMs) : undefined;
+    const allowedTools = opts.allowTools
+      ? String(opts.allowTools).split(",").map((s) => s.trim()).filter(Boolean)
+      : undefined;
     const manifest = remoteManifest({
       endpoint: opts.endpoint,
       module: opts.module,
-      displayName: opts.name
+      displayName: opts.name,
+      timeoutMs: Number.isFinite(timeoutMs as number) ? timeoutMs : undefined,
+      allowedTools
     });
 
     const out = await api<{ service: unknown }>(daemon, "/api/services/apply", {

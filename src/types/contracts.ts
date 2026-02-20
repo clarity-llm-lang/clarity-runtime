@@ -42,6 +42,8 @@ export interface RemoteMcpOrigin {
   endpoint: string;
   transport: "streamable_http" | "sse_http";
   authRef?: string;
+  timeoutMs?: number;
+  allowedTools?: string[];
 }
 
 export interface RestartPolicy {

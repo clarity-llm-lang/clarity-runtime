@@ -49,6 +49,8 @@
 - `apiVersion`: `clarity.runtime/v1`.
 - `kind`: `MCPService`.
 - `origin.type`: `local_wasm` or `remote_mcp`.
+- `remote_mcp.timeoutMs`: optional per-service timeout.
+- `remote_mcp.allowedTools`: optional per-service tool allowlist.
 
 ## CLI
 - `clarityctl add-local --source ... --module ... --wasm ...`

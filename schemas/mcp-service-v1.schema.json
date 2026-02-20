@@ -59,7 +59,9 @@
                 "type": { "const": "remote_mcp" },
                 "endpoint": { "type": "string", "format": "uri" },
                 "transport": { "enum": ["streamable_http", "sse_http"] },
-                "authRef": { "type": "string" }
+                "authRef": { "type": "string" },
+                "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 120000 },
+                "allowedTools": { "type": "array", "items": { "type": "string" } }
               },
               "additionalProperties": false
             }
