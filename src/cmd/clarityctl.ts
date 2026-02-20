@@ -8,7 +8,7 @@ import type { MCPServiceManifest } from "../types/contracts.js";
 
 const program = new Command();
 
-const DEFAULT_DAEMON_URL = process.env.CLARITYD_URL ?? "http://127.0.0.1:4707";
+const DEFAULT_DAEMON_URL = process.env.CLARITYD_URL ?? "http://localhost:4707";
 
 async function api<T>(baseUrl: string, pathname: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${baseUrl}${pathname}`, {

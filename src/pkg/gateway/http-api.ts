@@ -50,7 +50,7 @@ function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) 
 }
 
 export async function handleHttp(manager: ServiceManager, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const url = new URL(req.url ?? "/", "http://127.0.0.1");
+  const url = new URL(req.url ?? "/", "http://localhost");
   const method = req.method ?? "GET";
   const mcpRouter = new McpRouter(manager);
 
@@ -105,7 +105,7 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
           uptimeSeconds: Math.floor(process.uptime())
         },
         gateway: {
-          listen: "127.0.0.1:4707",
+          listen: "localhost:4707",
           mcpPath: "/mcp",
           healthy: true
         },

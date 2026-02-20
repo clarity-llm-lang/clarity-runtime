@@ -80,7 +80,7 @@ npm run dev:ctl -- list
 npm run dev:ctl -- bootstrap --clients codex,claude
 ```
 
-Open the control layer: [http://127.0.0.1:4707/status](http://127.0.0.1:4707/status)
+Open the control layer: [http://localhost:4707/status](http://localhost:4707/status)
 
 ---
 

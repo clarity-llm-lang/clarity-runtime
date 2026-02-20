@@ -26,7 +26,7 @@ program
     }, 1000).unref();
 
     const server = createServer(async (req, res) => {
-      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      const url = new URL(req.url ?? "/", "http://localhost");
 
       if (req.method === "POST" && url.pathname === "/api/bootstrap") {
         const chunks: Buffer[] = [];
@@ -80,9 +80,9 @@ program
     });
 
     const port = Number(opts.port);
-    server.listen(port, "127.0.0.1", () => {
-      process.stdout.write(`clarityd listening on http://127.0.0.1:${port}\n`);
-      process.stdout.write(`status page: http://127.0.0.1:${port}/status\n`);
+    server.listen(port, "localhost", () => {
+      process.stdout.write(`clarityd listening on http://localhost:${port}\n`);
+      process.stdout.write(`status page: http://localhost:${port}/status\n`);
     });
   });
 
