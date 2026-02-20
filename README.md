@@ -130,6 +130,7 @@ Not implemented yet:
 - [ ] Native compiler command (`clarityc start <file.clarity>`) in `LLM-lang`
 - [ ] Add policy engine (timeouts, allowlists, concurrency, payload limits)
 - [ ] Add remote auth providers and secret references
+- [ ] Add MCP self-provisioning tools (LLM can register/install services via MCP with approval + policy gates)
 - [ ] Add quarantine/recovery and richer health diagnostics
 - [ ] Add interface diffing and audit/event timeline
 
@@ -146,6 +147,7 @@ Not implemented yet:
 | Local function execution | Done (baseline) | `<namespace>__fn__*` tools discovered from wasm exports and executed via compiler runtime |
 | In-process WASM host execution | Done | Local function tools execute directly via wasm instantiate/call in runtime |
 | Auth/policy hardening | In progress | Timeout/allowed-tools/host-allowlist baseline implemented; auth provider model still pending |
+| MCP self-provisioning | Backlog | Add `runtime__register_*` style tools with explicit approval and policy checks |
 
 ---
 

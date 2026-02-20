@@ -62,4 +62,5 @@
 
 ## Planned Next
 - Add policy enforcement and auth secret backend for remote services.
+- Add MCP self-provisioning control tools (register/apply/start through MCP with strict approval and policy checks).
 - Merge and release native `clarityc start` compiler command.
