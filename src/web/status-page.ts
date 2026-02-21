@@ -506,20 +506,36 @@ async function refresh() {
       clarityToolCount: clarityTools.length
     });
 
-    const systemRow = '<tr>' +
+    const runtimeSystemRow = '<tr>' +
       '<td><strong>Runtime System</strong><div class="id code">system__runtime</div></td>' +
       '<td><span class="code">system</span></td>' +
       '<td><div class="code">built-in</div></td>' +
       '<td>' + badge('RUNNING') + '</td>' +
       '<td><span class="code">HEALTHY</span></td>' +
-      '<td>' + runtimeTools.length + ' runtime tools, ' + clarityTools.length + ' clarity tools</td>' +
+      '<td>' + runtimeTools.length + ' runtime tools</td>' +
       '<td>' +
         '<button class="btn ghost" data-key="system__runtime" data-kind="system" data-service="" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
         '<button class="btn ghost" data-service="system__runtime" onclick="openService(this.dataset.service)">Open</button>' +
       '</td>' +
     '</tr>';
-    const systemDetailRow = expanded.system__runtime
-      ? '<tr class="detail-row"><td colspan="7">' + renderSystemDetails(runtimeTools, clarityTools) + '</td></tr>'
+    const runtimeSystemDetailRow = expanded.system__runtime
+      ? '<tr class="detail-row"><td colspan="7">' + renderSystemDetails(runtimeTools, []) + '</td></tr>'
+      : '';
+
+    const claritySystemRow = '<tr>' +
+      '<td><strong>Clarity System</strong><div class="id code">system__clarity</div></td>' +
+      '<td><span class="code">system</span></td>' +
+      '<td><div class="code">built-in</div></td>' +
+      '<td>' + badge('RUNNING') + '</td>' +
+      '<td><span class="code">HEALTHY</span></td>' +
+      '<td>' + clarityTools.length + ' clarity tools</td>' +
+      '<td>' +
+        '<button class="btn ghost" data-key="system__clarity" data-kind="system" data-service="" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
+        '<button class="btn ghost" data-service="system__clarity" onclick="openService(this.dataset.service)">Open</button>' +
+      '</td>' +
+    '</tr>';
+    const claritySystemDetailRow = expanded.system__clarity
+      ? '<tr class="detail-row"><td colspan="7">' + renderSystemDetails([], clarityTools) + '</td></tr>'
       : '';
 
     const serviceRows = services.map((svc) => {
@@ -568,7 +584,7 @@ async function refresh() {
         '</td>' +
       '</tr>' + detailRow;
     }).join('');
-    const rows = systemRow + systemDetailRow + serviceRows;
+    const rows = runtimeSystemRow + runtimeSystemDetailRow + claritySystemRow + claritySystemDetailRow + serviceRows;
     document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:var(--panel-muted)">No services registered</td></tr>';
 
     if (!selectedServiceId) {
@@ -577,9 +593,15 @@ async function refresh() {
       document.getElementById('inspector').innerHTML =
         '<div class="detail-box">' +
           '<h3 class="detail-title">Runtime System</h3>' +
-          '<div class="code">Built-in runtime + clarity MCP tools.</div>' +
+          '<div class="code">Built-in runtime MCP tools.</div>' +
           '<h3 class="detail-title">Runtime Tool Names</h3>' +
           '<ul class="detail-list">' + runtimeTools.map((name) => '<li class="code">' + esc(name) + '</li>').join('') + '</ul>' +
+        '</div>';
+    } else if (selectedServiceId === 'system__clarity') {
+      document.getElementById('inspector').innerHTML =
+        '<div class="detail-box">' +
+          '<h3 class="detail-title">Clarity System</h3>' +
+          '<div class="code">Built-in clarity-assist MCP tools.</div>' +
           '<h3 class="detail-title">Clarity Tool Names</h3>' +
           '<ul class="detail-list">' + clarityTools.map((name) => '<li class="code">' + esc(name) + '</li>').join('') + '</ul>' +
         '</div>';

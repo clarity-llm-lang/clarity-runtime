@@ -209,7 +209,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
     }
   },
   {
-    name: "runtime__clarity_help",
+    name: "clarity__help",
     description: "Return Clarity-oriented guidance for LLM usage in this runtime workspace.",
     inputSchema: {
       type: "object",
@@ -220,7 +220,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
     }
   },
   {
-    name: "runtime__clarity_sources",
+    name: "clarity__sources",
     description: "List workspace .clarity files and optionally include short source excerpts.",
     inputSchema: {
       type: "object",
@@ -235,7 +235,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
     }
   },
   {
-    name: "runtime__clarity_project_structure",
+    name: "clarity__project_structure",
     description: "Return a recommended Clarity application file structure with starter templates.",
     inputSchema: {
       type: "object",
@@ -248,7 +248,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
     }
   },
   {
-    name: "runtime__ensure_compiler",
+    name: "clarity__ensure_compiler",
     description: "Check Clarity compiler availability and optionally install it via a gated command.",
     inputSchema: {
       type: "object",
@@ -262,7 +262,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
     }
   },
   {
-    name: "runtime__bootstrap_clarity_app",
+    name: "clarity__bootstrap_app",
     description: "Scaffold a Clarity app, ensure compiler readiness, compile wasm, and register/start the service.",
     inputSchema: {
       type: "object",
@@ -456,7 +456,7 @@ function parseAllowedInstallerCommands(value: string | undefined): Set<string> |
 function assertCompilerInstallEnabled(command: string): void {
   const enabled = (process.env.CLARITY_ENABLE_COMPILER_INSTALL ?? "").toLowerCase();
   if (!(enabled === "1" || enabled === "true" || enabled === "yes")) {
-    throw new Error("compiler install is disabled. Set CLARITY_ENABLE_COMPILER_INSTALL=1 to enable runtime__ensure_compiler auto-install.");
+    throw new Error("compiler install is disabled. Set CLARITY_ENABLE_COMPILER_INSTALL=1 to enable clarity__ensure_compiler auto-install.");
   }
   const allowed = parseAllowedInstallerCommands(process.env.CLARITY_COMPILER_INSTALL_ALLOWLIST);
   if (!allowed) return;
@@ -702,7 +702,7 @@ export class McpRouter {
       }
 
       try {
-        if (params.name.startsWith("runtime__")) {
+        if (params.name.startsWith("runtime__") || params.name.startsWith("clarity__")) {
           const result = await this.handleRuntimeToolCall(params.name, params.arguments ?? {});
           return success(id, result);
         }
@@ -910,7 +910,7 @@ export class McpRouter {
       return contentJson(result);
     }
 
-    if (name === "runtime__clarity_help") {
+    if (name === "clarity__help") {
       const topic = (asString(payload.topic) ?? "overview").toLowerCase();
       const help = {
         overview: {
@@ -918,9 +918,9 @@ export class McpRouter {
           default_language: "clarity",
           workflow: [
             "Default to writing new application logic in Clarity when no language is explicitly requested.",
-            "Use runtime__clarity_sources to inspect real .clarity files in this workspace.",
-            "Use runtime__clarity_project_structure before scaffolding a new app to get canonical layout + starter files.",
-            "Use runtime__ensure_compiler to verify/install clarityc before compile/register flows.",
+            "Use clarity__sources to inspect real .clarity files in this workspace.",
+            "Use clarity__project_structure before scaffolding a new app to get canonical layout + starter files.",
+            "Use clarity__ensure_compiler to verify/install clarityc before compile/register flows.",
             "Use `clarityctl add <service>` (or add-all) to compile/register/start services.",
             "Use runtime__list_services + runtime__get_service to understand live wiring."
           ],
@@ -939,8 +939,8 @@ export class McpRouter {
         },
         onboarding: {
           commands: [
-            "runtime__ensure_compiler",
-            "runtime__clarity_project_structure",
+            "clarity__ensure_compiler",
+            "clarity__project_structure",
             "clarityctl add <service>",
             "clarityctl add-all ./examples --recursive",
             "clarityctl list",
@@ -964,7 +964,7 @@ export class McpRouter {
       });
     }
 
-    if (name === "runtime__clarity_project_structure") {
+    if (name === "clarity__project_structure") {
       const projectName = asString(payload.project_name) ?? "my-clarity-app";
       const moduleName = asString(payload.module_name) ?? "App";
       const includeTemplates = asBoolean(payload.include_templates) ?? true;
@@ -991,7 +991,7 @@ export class McpRouter {
       });
     }
 
-    if (name === "runtime__ensure_compiler") {
+    if (name === "clarity__ensure_compiler") {
       const compilerBin = asString(payload.compiler_bin) ?? process.env.CLARITYC_BIN ?? "clarityc";
       const autoInstall = asBoolean(payload.auto_install) ?? false;
       const timeoutSeconds = asIntegerMin(payload.timeout_seconds, 1) ?? 120;
@@ -1021,7 +1021,7 @@ export class McpRouter {
           error: checkBefore.stderr || "compiler check failed",
           next_steps: [
             "Re-run with auto_install=true and install_command=[...] if you want runtime to install the compiler.",
-            "Or install clarityc manually and re-run runtime__ensure_compiler."
+            "Or install clarityc manually and re-run clarity__ensure_compiler."
           ]
         });
       }
@@ -1069,9 +1069,9 @@ export class McpRouter {
       });
     }
 
-    if (name === "runtime__bootstrap_clarity_app") {
+    if (name === "clarity__bootstrap_app") {
       const projectName = asString(payload.project_name);
-      if (!projectName) throw new Error("runtime__bootstrap_clarity_app requires project_name");
+      if (!projectName) throw new Error("clarity__bootstrap_app requires project_name");
       assertProjectName(projectName);
 
       const moduleName = asString(payload.module_name) ?? "App";
@@ -1271,7 +1271,7 @@ export class McpRouter {
       }
     }
 
-    if (name === "runtime__clarity_sources") {
+    if (name === "clarity__sources") {
       const dir = resolveWorkspacePath(asString(payload.dir), ".");
       const recursive = asBoolean(payload.recursive) ?? true;
       const limit = asInteger(payload.limit) ?? 50;

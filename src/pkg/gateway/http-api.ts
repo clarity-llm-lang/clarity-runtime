@@ -15,11 +15,11 @@ import {
 } from "../security/remote-auth.js";
 
 const CLARITY_SYSTEM_TOOLS = [
-  "runtime__clarity_help",
-  "runtime__clarity_sources",
-  "runtime__clarity_project_structure",
-  "runtime__ensure_compiler",
-  "runtime__bootstrap_clarity_app"
+  "clarity__help",
+  "clarity__sources",
+  "clarity__project_structure",
+  "clarity__ensure_compiler",
+  "clarity__bootstrap_app"
 ] as const;
 
 const RUNTIME_SYSTEM_TOOLS = [
