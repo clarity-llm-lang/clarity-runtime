@@ -22,6 +22,7 @@ program
     await registry.init();
 
     const manager = new ServiceManager(registry);
+    await manager.init();
     const authConfig = readAuthConfig({
       ...process.env,
       ...(opts.authToken ? { CLARITYD_AUTH_TOKEN: String(opts.authToken) } : {})

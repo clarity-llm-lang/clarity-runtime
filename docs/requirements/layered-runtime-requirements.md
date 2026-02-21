@@ -21,21 +21,21 @@ Execution order for larger runtime initiatives. The goal is to deliver each laye
   - deterministic idempotency for retries
 
 ## Layer 3: Durable Audit + Logs
-- Status: Planned
+- Status: Done (baseline)
 - Scope:
   - persist events and service logs across daemon restarts
   - retention policies and pagination
   - export-friendly audit queries
 
 ## Layer 4: End-to-End Runtime Test Suite
-- Status: Planned
+- Status: Done (baseline)
 - Scope:
   - daemon/API/MCP integration tests
   - remote policy/auth path tests
   - bootstrap and quarantine behavior tests
 
 ## Layer 5: Service Deprovision and Cleanup
-- Status: Planned
+- Status: Done (baseline)
 - Scope:
   - expose remove/uninstall routes in HTTP and MCP
   - optional artifact cleanup policy controls

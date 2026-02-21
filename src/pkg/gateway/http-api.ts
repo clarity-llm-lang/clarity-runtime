@@ -24,6 +24,7 @@ const SYSTEM_TOOLS = [
   "runtime__restart_service",
   "runtime__refresh_interface",
   "runtime__unquarantine_service",
+  "runtime__remove_service",
   "runtime__get_audit",
   "runtime__validate_auth_ref",
   "runtime__auth_provider_health",
@@ -452,6 +453,21 @@ export async function handleHttp(
         events,
         recentCalls
       });
+      return;
+    }
+
+    if (method === "DELETE" && serviceMatch) {
+      const id = decodeURIComponent(serviceMatch[1]);
+      const body = await readJsonBody(req);
+      const cleanupArtifacts = typeof (body as { cleanup_artifacts?: unknown }).cleanup_artifacts === "boolean"
+        ? ((body as { cleanup_artifacts: boolean }).cleanup_artifacts)
+        : false;
+      const out = await manager.remove(id, { cleanupArtifacts });
+      if (!out.removed) {
+        json(res, 404, { error: `service not found: ${id}` });
+        return;
+      }
+      json(res, 200, out);
       return;
     }
 

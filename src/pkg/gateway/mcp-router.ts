@@ -130,6 +130,19 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
     }
   },
   {
+    name: "runtime__remove_service",
+    description: "Remove a service registration and optionally delete its local artifact.",
+    inputSchema: {
+      type: "object",
+      required: ["service_id"],
+      properties: {
+        service_id: { type: "string" },
+        cleanup_artifacts: { type: "boolean" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: "runtime__get_audit",
     description: "Return recent runtime audit/events (latest first in returned slice order).",
     inputSchema: {
@@ -785,6 +798,14 @@ export class McpRouter {
       if (!serviceId) throw new Error("runtime__unquarantine_service requires service_id");
       const service = await this.manager.unquarantine(serviceId);
       return contentJson({ service: summarizeService(service) });
+    }
+
+    if (name === "runtime__remove_service") {
+      const serviceId = asString(payload.service_id);
+      if (!serviceId) throw new Error("runtime__remove_service requires service_id");
+      const cleanupArtifacts = asBoolean(payload.cleanup_artifacts) ?? false;
+      const out = await this.manager.remove(serviceId, { cleanupArtifacts });
+      return contentJson(out);
     }
 
     if (name === "runtime__get_audit") {
