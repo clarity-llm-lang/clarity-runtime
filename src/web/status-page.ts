@@ -203,6 +203,14 @@ export function renderStatusPage(): string {
       display: grid;
       gap: 4px;
     }
+    .inspector {
+      margin-top: 14px;
+      margin-bottom: 14px;
+    }
+    .bootstrap {
+      margin-top: 14px;
+      margin-bottom: 14px;
+    }
 
     .audit {
       max-height: 280px;
@@ -279,6 +287,19 @@ export function renderStatusPage(): string {
       </table>
     </div>
 
+    <div class="card inspector">
+      <h2 class="audit-title">Service Inspector</h2>
+      <div id="inspector" class="code" style="display:grid; gap:8px; color:#9daec4">Select a service row and click Open.</div>
+    </div>
+
+    <div class="card bootstrap">
+      <h2 class="audit-title">Client Bootstrap Config</h2>
+      <div id="bootstrap-config" class="code" style="display:grid; gap:8px; color:#9daec4">Loading bootstrap config...</div>
+      <div style="margin-top:8px;">
+        <button class="btn secondary" onclick="bootstrapClients()">Configure Codex + Claude</button>
+      </div>
+    </div>
+
     <div class="card audit">
       <h2 class="audit-title">Audit Timeline</h2>
       <ul id="audit" class="audit-list"></ul>
@@ -288,6 +309,7 @@ export function renderStatusPage(): string {
 const expanded = {};
 const detailCache = {};
 let latestSystemTools = [];
+let selectedServiceId = null;
 
 async function call(path, method = 'GET') {
   const res = await fetch(path, { method, headers: { 'content-type': 'application/json' } });
@@ -319,6 +341,15 @@ async function action(id, op) {
   await refresh();
 }
 
+async function bootstrapClients() {
+  await fetch('/api/bootstrap', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ clients: ['codex', 'claude'] })
+  });
+  await refresh();
+}
+
 function esc(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -345,35 +376,57 @@ function renderServiceDetails(serviceId, data) {
     return '<div class="detail-box"><div class="code" style="color:#ffb5b5">' + esc(data.error) + '</div></div>';
   }
 
-  const tools = Array.isArray(data.tools) ? data.tools : [];
+  const iface = data.interface || {};
+  const tools = Array.isArray(iface.tools) ? iface.tools.map((t) => t && t.name ? t.name : '').filter(Boolean) : [];
   const logs = Array.isArray(data.logs) ? data.logs : [];
+  const calls = Array.isArray(data.recentCalls) ? data.recentCalls : [];
   const toolItems = tools.length > 0
     ? '<ul class="detail-list">' + tools.map((name) => '<li class="code">' + esc(name) + '</li>').join('') + '</ul>'
     : '<div class="code">No interface tools yet. Try Refresh Interface.</div>';
   const logItems = logs.length > 0
     ? '<ul class="detail-list">' + logs.map((line) => '<li class="code">' + esc(line) + '</li>').join('') + '</ul>'
     : '<div class="code">No recent logs.</div>';
+  const callItems = calls.length > 0
+    ? '<ul class="detail-list">' + calls.map((row) => '<li class="code">' + esc(row.at + ' ' + row.message) + '</li>').join('') + '</ul>'
+    : '<div class="code">No recent tool calls.</div>';
 
   return '<div class="detail-box">' +
     '<h3 class="detail-title">Interface Tools</h3>' +
     toolItems +
+    '<h3 class="detail-title">Recent Tool Calls</h3>' +
+    callItems +
     '<h3 class="detail-title">Recent Logs / Calls</h3>' +
     logItems +
   '</div>';
+}
+
+function getSelectedFromQuery() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('service');
+}
+
+function setSelectedInQuery(serviceId) {
+  const params = new URLSearchParams(window.location.search);
+  if (serviceId) {
+    params.set('service', serviceId);
+  } else {
+    params.delete('service');
+  }
+  const next = window.location.pathname + '?' + params.toString();
+  window.history.replaceState({}, '', next);
+}
+
+async function openService(serviceId) {
+  selectedServiceId = serviceId;
+  setSelectedInQuery(serviceId);
+  await refresh();
 }
 
 async function toggleDetails(key, kind, serviceId) {
   expanded[key] = !expanded[key];
   if (expanded[key] && kind === 'service' && !detailCache[key]) {
     try {
-      const [iface, logs] = await Promise.all([
-        call('/api/services/' + encodeURIComponent(serviceId) + '/interface'),
-        call('/api/services/' + encodeURIComponent(serviceId) + '/logs?limit=15')
-      ]);
-      detailCache[key] = {
-        tools: Array.isArray(iface.tools) ? iface.tools.map((t) => t && t.name ? t.name : '').filter(Boolean) : [],
-        logs: Array.isArray(logs.lines) ? logs.lines : []
-      };
+      detailCache[key] = await call('/api/services/' + encodeURIComponent(serviceId) + '/details?log_limit=20&event_limit=60&call_limit=20');
     } catch (error) {
       detailCache[key] = {
         error: error instanceof Error ? error.message : String(error)
@@ -401,7 +454,16 @@ async function refresh() {
     const summarySafe = (data && data.summary) ? data.summary : { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 };
     const services = Array.isArray(data && data.services) ? data.services : [];
     const systemTools = Array.isArray(data && data.systemTools && data.systemTools.items) ? data.systemTools.items : [];
+    let bootstrap = { clients: [] };
+    try {
+      bootstrap = await call('/api/bootstrap/status');
+    } catch {
+      bootstrap = { clients: [] };
+    }
     latestSystemTools = systemTools;
+    if (selectedServiceId === null) {
+      selectedServiceId = getSelectedFromQuery();
+    }
     document.getElementById('summary').innerHTML = summaryCards({
       summary: summarySafe,
       systemToolCount: systemTools.length
@@ -415,7 +477,8 @@ async function refresh() {
       '<td><span class="code">HEALTHY</span></td>' +
       '<td>' + systemTools.length + ' tools, 0 resources, 0 prompts</td>' +
       '<td>' +
-        '<button class="btn ghost" onclick="toggleDetails(\'system__runtime\',\'system\',\'\')">Details</button>' +
+        '<button class="btn ghost" data-key="system__runtime" data-kind="system" data-service="" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
+        '<button class="btn ghost" data-service="system__runtime" onclick="openService(this.dataset.service)">Open</button>' +
       '</td>' +
     '</tr>';
     const systemDetailRow = expanded.system__runtime
@@ -449,7 +512,8 @@ async function refresh() {
         '<td><span class="code">' + svc.health + '</span></td>' +
         '<td>' + toolCount + ' tools, ' + resCount + ' resources, ' + promptCount + ' prompts</td>' +
         '<td>' +
-          '<button class="btn ghost" onclick="toggleDetails(\'' + key + '\',\'service\',\'' + svc.serviceId + '\')">Details</button>' +
+          '<button class="btn ghost" data-key="' + key + '" data-kind="service" data-service="' + svc.serviceId + '" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
+          '<button class="btn ghost" data-service="' + svc.serviceId + '" onclick="openService(this.dataset.service)">Open</button>' +
           '<button class="btn" data-service="' + svc.serviceId + '" data-op="start" onclick="action(this.dataset.service,this.dataset.op)">Start</button>' +
           '<button class="btn" data-service="' + svc.serviceId + '" data-op="stop" onclick="action(this.dataset.service,this.dataset.op)">Stop</button>' +
           '<button class="btn" data-service="' + svc.serviceId + '" data-op="restart" onclick="action(this.dataset.service,this.dataset.op)">Restart</button>' +
@@ -462,6 +526,46 @@ async function refresh() {
     }).join('');
     const rows = systemRow + systemDetailRow + serviceRows;
     document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:#9daec4">No services registered</td></tr>';
+
+    if (!selectedServiceId) {
+      document.getElementById('inspector').innerHTML = 'Select a service row and click Open.';
+    } else if (selectedServiceId === 'system__runtime') {
+      document.getElementById('inspector').innerHTML =
+        '<div class="detail-box">' +
+          '<h3 class="detail-title">Runtime System</h3>' +
+          '<div class="code">Built-in runtime MCP control/assist tools.</div>' +
+          '<h3 class="detail-title">Tool Names</h3>' +
+          '<ul class="detail-list">' + systemTools.map((name) => '<li class="code">' + esc(name) + '</li>').join('') + '</ul>' +
+        '</div>';
+    } else {
+      try {
+        const inspectorData = await call('/api/services/' + encodeURIComponent(selectedServiceId) + '/details?log_limit=60&event_limit=120&call_limit=30');
+        detailCache['svc__' + selectedServiceId] = inspectorData;
+        document.getElementById('inspector').innerHTML =
+          '<div class="detail-box">' +
+            '<h3 class="detail-title">Service</h3>' +
+            '<div class="code">' + esc((inspectorData.summary && inspectorData.summary.displayName) || selectedServiceId) + '</div>' +
+            '<div class="id code">' + esc(selectedServiceId) + '</div>' +
+          '</div>' +
+          renderServiceDetails(selectedServiceId, inspectorData);
+      } catch (error) {
+        document.getElementById('inspector').innerHTML =
+          '<div class="detail-box"><div class="code" style="color:#ffb5b5">' + esc(error instanceof Error ? error.message : String(error)) + '</div></div>';
+      }
+    }
+
+    const bootstrapClients = Array.isArray(bootstrap && bootstrap.clients) ? bootstrap.clients : [];
+    const bootstrapRows = bootstrapClients.map((row) => {
+      const configured = row && row.configured ? 'configured' : 'missing';
+      const cmd = row && row.command ? row.command : 'n/a';
+      const args = row && Array.isArray(row.args) && row.args.length > 0 ? row.args.join(' ') : '';
+      return '<div class="detail-box">' +
+        '<div><strong>' + esc(row.client || 'unknown') + '</strong> <span class="id code">(' + configured + ')</span></div>' +
+        '<div class="code">' + esc(row.path || '') + '</div>' +
+        '<div class="code">command: ' + esc(cmd + (args ? ' ' + args : '')) + '</div>' +
+      '</div>';
+    }).join('');
+    document.getElementById('bootstrap-config').innerHTML = bootstrapRows || '<div class="code">Bootstrap status unavailable.</div>';
 
     const auditItems = Array.isArray(audit && audit.items) ? audit.items : [];
     const auditRows = auditItems.slice().reverse().map((evt) => {
@@ -481,6 +585,8 @@ async function refresh() {
       systemToolCount: 0
     });
     document.getElementById('rows').innerHTML = '<tr><td colspan="7" style="color:#ffb5b5">UI render error: ' + String(error) + '</td></tr>';
+    document.getElementById('inspector').innerHTML = '<div class="code" style="color:#ffb5b5">UI render error</div>';
+    document.getElementById('bootstrap-config').innerHTML = '<div class="code" style="color:#ffb5b5">UI render error</div>';
     document.getElementById('audit').innerHTML = '<li class="audit-item"><div class="audit-msg" style="color:#ffb5b5">UI render error</div></li>';
   }
 }

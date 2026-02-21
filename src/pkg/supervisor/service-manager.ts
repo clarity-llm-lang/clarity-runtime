@@ -513,6 +513,11 @@ export class ServiceManager {
     return this.events.slice(Math.max(0, this.events.length - limit));
   }
 
+  getServiceEvents(serviceId: string, limit = 200): AuditEvent[] {
+    const filtered = this.events.filter((event) => event.serviceId === serviceId);
+    return filtered.slice(Math.max(0, filtered.length - limit));
+  }
+
   subscribeEvents(listener: (event: AuditEvent) => void): () => void {
     this.eventSubscribers.add(listener);
     return () => {

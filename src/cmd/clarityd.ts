@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
 import { Command } from "commander";
-import { bootstrapClaude, bootstrapCodex } from "../pkg/bootstrap/clients.js";
+import { bootstrapClaude, bootstrapCodex, bootstrapStatus } from "../pkg/bootstrap/clients.js";
 import { handleHttp } from "../pkg/gateway/http-api.js";
 import { deriveServiceId } from "../pkg/registry/ids.js";
 import { ServiceRegistry } from "../pkg/registry/registry.js";
@@ -49,6 +49,14 @@ program
         res.statusCode = 200;
         res.setHeader("content-type", "application/json; charset=utf-8");
         res.end(`${JSON.stringify({ results }, null, 2)}\n`);
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/bootstrap/status") {
+        const out = await bootstrapStatus();
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        res.end(`${JSON.stringify(out, null, 2)}\n`);
         return;
       }
 

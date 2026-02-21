@@ -481,6 +481,25 @@ for (const action of ["start", "stop", "restart", "introspect"] as const) {
 }
 
 program
+  .command("details <serviceId>")
+  .option("--log-limit <n>", "Recent log lines", "50")
+  .option("--event-limit <n>", "Recent events", "100")
+  .option("--call-limit <n>", "Recent tool calls", "20")
+  .action(async (serviceId, opts) => {
+    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const logLimit = Number(opts.logLimit);
+    const eventLimit = Number(opts.eventLimit);
+    const callLimit = Number(opts.callLimit);
+    const qs = new URLSearchParams({
+      log_limit: String(Number.isFinite(logLimit) ? logLimit : 50),
+      event_limit: String(Number.isFinite(eventLimit) ? eventLimit : 100),
+      call_limit: String(Number.isFinite(callLimit) ? callLimit : 20)
+    });
+    const out = await api<Record<string, unknown>>(daemon, `/api/services/${encodeURIComponent(serviceId)}/details?${qs.toString()}`);
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+program
   .command("logs <serviceId>")
   .option("--limit <n>", "Number of lines", "200")
   .action(async (serviceId, opts) => {

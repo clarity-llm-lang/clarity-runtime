@@ -82,6 +82,17 @@ function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) 
   };
 }
 
+function extractRecentCalls(events: Array<{ kind: string; at: string; message: string; data?: unknown }>, limit: number): Array<{ at: string; message: string; data?: unknown }> {
+  const calls = events
+    .filter((event) => event.kind === "service.tool_called")
+    .map((event) => ({
+      at: event.at,
+      message: event.message,
+      data: event.data
+    }));
+  return calls.slice(Math.max(0, calls.length - Math.max(1, limit)));
+}
+
 export async function handleHttp(manager: ServiceManager, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const method = req.method ?? "GET";
@@ -237,6 +248,51 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
       json(res, 200, {
         serviceId: id,
         lines: await manager.tailLogs(id, Number.isFinite(limit) ? limit : 200)
+      });
+      return;
+    }
+
+    const serviceEventsMatch = url.pathname.match(/^\/api\/services\/([^/]+)\/events$/);
+    if (method === "GET" && serviceEventsMatch) {
+      const id = decodeURIComponent(serviceEventsMatch[1]);
+      const limit = Number(url.searchParams.get("limit") ?? "200");
+      json(res, 200, {
+        serviceId: id,
+        items: manager.getServiceEvents(id, Number.isFinite(limit) ? limit : 200)
+      });
+      return;
+    }
+
+    const serviceDetailsMatch = url.pathname.match(/^\/api\/services\/([^/]+)\/details$/);
+    if (method === "GET" && serviceDetailsMatch) {
+      const id = decodeURIComponent(serviceDetailsMatch[1]);
+      const service = await manager.get(id);
+      if (!service) {
+        json(res, 404, { error: `service not found: ${id}` });
+        return;
+      }
+
+      const logLimit = Number(url.searchParams.get("log_limit") ?? "50");
+      const eventLimit = Number(url.searchParams.get("event_limit") ?? "100");
+      const callLimit = Number(url.searchParams.get("call_limit") ?? "20");
+      const logs = await manager.tailLogs(id, Number.isFinite(logLimit) ? logLimit : 50);
+      const events = manager.getServiceEvents(id, Number.isFinite(eventLimit) ? eventLimit : 100);
+      const recentCalls = extractRecentCalls(events, Number.isFinite(callLimit) ? callLimit : 20);
+
+      json(res, 200, {
+        serviceId: id,
+        summary: summarize(service),
+        service,
+        interface: service.interfaceSnapshot ?? {
+          interfaceRevision: null,
+          introspectedAt: null,
+          tools: [],
+          resources: [],
+          prompts: []
+        },
+        logs,
+        events,
+        recentCalls
       });
       return;
     }

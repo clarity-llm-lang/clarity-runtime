@@ -88,6 +88,8 @@ npx clarityctl bootstrap --clients codex,claude
 
 Open the control layer: [http://localhost:4707/status](http://localhost:4707/status)
 
+Bootstrap is not automatic by default. Run `clarityctl bootstrap --clients codex,claude` once, or use the status page "Client Bootstrap Config" section to configure and verify paths.
+
 `clarityctl add <name>` compiles `<name>.clarity` to `.clarity/build/<name>.wasm`, then registers and starts it.
 
 For local development (without build artifacts), you can still use:
@@ -111,6 +113,7 @@ clarityctl start <service_id>
 clarityctl stop <service_id>
 clarityctl restart <service_id>
 clarityctl introspect <service_id>
+clarityctl details <service_id> [--log-limit <n>] [--event-limit <n>] [--call-limit <n>]
 clarityctl logs <service_id>
 clarityctl bootstrap --clients codex,claude
 clarityctl doctor
