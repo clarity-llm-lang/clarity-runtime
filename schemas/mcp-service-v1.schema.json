@@ -29,7 +29,7 @@
             "triggers": {
               "type": "array",
               "minItems": 1,
-              "items": { "enum": ["timer", "event", "call", "api", "a2a"] }
+              "items": { "enum": ["timer", "event", "api", "a2a"] }
             },
             "inputs": { "type": "array", "items": { "type": "string" } },
             "outputs": { "type": "array", "items": { "type": "string" } },

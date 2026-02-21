@@ -23,7 +23,7 @@ export interface AgentDescriptor {
   name: string;
   role: string;
   objective: string;
-  triggers: Array<"timer" | "event" | "call" | "api" | "a2a">;
+  triggers: Array<"timer" | "event" | "api" | "a2a">;
   inputs?: string[];
   outputs?: string[];
   allowedMcpTools?: string[];

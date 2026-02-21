@@ -101,7 +101,7 @@ export interface AuditEvent {
 }
 
 export type AgentRunStatus = "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled";
-export type AgentTriggerType = "timer" | "event" | "call" | "api" | "a2a" | "unknown";
+export type AgentTriggerType = "timer" | "event" | "api" | "a2a" | "unknown";
 
 export interface AgentRunSummary {
   runId: string;
@@ -144,7 +144,7 @@ function asNonEmptyString(value: unknown): string | undefined {
 
 function normalizeTrigger(value: unknown): AgentTriggerType {
   const trigger = String(value ?? "").trim().toLowerCase();
-  if (trigger === "timer" || trigger === "event" || trigger === "call" || trigger === "api" || trigger === "a2a") {
+  if (trigger === "timer" || trigger === "event" || trigger === "api" || trigger === "a2a") {
     return trigger;
   }
   return "unknown";
@@ -157,8 +157,7 @@ function pickTriggerContext(trigger: AgentTriggerType, payload: Record<string, u
     timer: ["scheduleId", "scheduleExpr", "firedAt"],
     event: ["eventType", "eventId", "correlationId", "producer"],
     api: ["route", "method", "requestId", "caller"],
-    a2a: ["parentRunId", "fromAgentId", "handoffReason"],
-    call: ["callerType", "callerId"]
+    a2a: ["parentRunId", "fromAgentId", "handoffReason"]
   };
   const keys = trigger === "unknown" ? [] : keysets[trigger];
   for (const key of keys) {
@@ -798,14 +797,8 @@ export class ServiceManager {
         }
         current.handoffCount += 1;
       } else if (event.kind === "agent.tool_called") {
-        if (current.trigger === "unknown") {
-          current.trigger = "call";
-        }
         current.toolCallCount += 1;
       } else if (event.kind === "agent.llm_called") {
-        if (current.trigger === "unknown") {
-          current.trigger = "call";
-        }
         current.llmCallCount += 1;
       } else if (event.kind === "agent.run_completed") {
         current.status = "completed";

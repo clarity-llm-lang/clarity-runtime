@@ -518,7 +518,7 @@ function badge(state) {
 
 function normalizeTrigger(value) {
   const trigger = String(value || '').trim().toLowerCase();
-  if (trigger === 'timer' || trigger === 'event' || trigger === 'call' || trigger === 'api' || trigger === 'a2a') {
+  if (trigger === 'timer' || trigger === 'event' || trigger === 'api' || trigger === 'a2a') {
     return trigger;
   }
   return 'unknown';
@@ -891,12 +891,6 @@ function renderTriggerInterfaces(runs) {
       '<div class="code">eventType: ' + esc(readTriggerContext(run, 'eventType') || 'n/a') + '</div>' +
       '<div class="code">producer: ' + esc(readTriggerContext(run, 'producer') || 'n/a') + ', eventId: ' + esc(readTriggerContext(run, 'eventId') || 'n/a') + '</div></div>');
   }
-  if (latestByTrigger.call) {
-    const run = latestByTrigger.call;
-    blocks.push('<div class="detail-box"><h3 class="detail-title">Call Interface</h3>' +
-      '<div class="code">callerType: ' + esc(readTriggerContext(run, 'callerType') || 'n/a') + '</div>' +
-      '<div class="code">callerId: ' + esc(readTriggerContext(run, 'callerId') || 'n/a') + '</div></div>');
-  }
   if (latestByTrigger.a2a) {
     const run = latestByTrigger.a2a;
     blocks.push('<div class="detail-box"><h3 class="detail-title">A2A Interface</h3>' +
@@ -904,7 +898,7 @@ function renderTriggerInterfaces(runs) {
       '<div class="code">parentRunId: ' + esc(readTriggerContext(run, 'parentRunId') || 'n/a') + ', reason: ' + esc(readTriggerContext(run, 'handoffReason') || 'n/a') + '</div></div>');
   }
   if (blocks.length === 0) {
-    return '<div class="code">No observed trigger interface data yet. Run the agent via timer/event/call/api/a2a to populate this section.</div>';
+    return '<div class="code">No observed trigger interface data yet. Run the agent via timer/event/api/a2a to populate this section.</div>';
   }
   return '<div class="agent-meta-grid">' + blocks.join('') + '</div>';
 }
@@ -929,7 +923,7 @@ function renderAgentStandardFlow(agent, runs) {
   const observed = collectObservedCapabilities(runs);
   const triggerNodes = observed.triggers.size > 0
     ? Array.from(observed.triggers)
-    : ['timer', 'event', 'call', 'api', 'a2a'];
+    : ['timer', 'event', 'api', 'a2a'];
 
   const nodes = [];
   nodes.push('trigger: ' + triggerNodes.join('|'));

@@ -309,10 +309,10 @@ function buildAgentDescriptorFromOpts(
   if (!role || !objective) {
     throw new Error("agent services require --agent-role and --agent-objective");
   }
-  const allowedTriggers = new Set(["timer", "event", "call", "api", "a2a"]);
+  const allowedTriggers = new Set(["timer", "event", "api", "a2a"]);
   const triggers = parseCsvList(opts.agentTriggers);
   if (!triggers || triggers.length === 0) {
-    throw new Error("agent services require --agent-triggers (comma-separated: timer,event,call,api,a2a)");
+    throw new Error("agent services require --agent-triggers (comma-separated: timer,event,api,a2a)");
   }
   const normalizedTriggers = triggers.map((item) => item.toLowerCase());
   for (const trigger of normalizedTriggers) {
@@ -325,7 +325,7 @@ function buildAgentDescriptorFromOpts(
     name,
     role,
     objective,
-    triggers: normalizedTriggers as Array<"timer" | "event" | "call" | "api" | "a2a">,
+    triggers: normalizedTriggers as Array<"timer" | "event" | "api" | "a2a">,
     ...(parseCsvList(opts.agentInputs) ? { inputs: parseCsvList(opts.agentInputs) } : {}),
     ...(parseCsvList(opts.agentOutputs) ? { outputs: parseCsvList(opts.agentOutputs) } : {}),
     ...(parseCsvList(opts.agentMcpTools) ? { allowedMcpTools: parseCsvList(opts.agentMcpTools) } : {}),
@@ -445,7 +445,7 @@ program
   .option("--agent-name <name>", "Agent display name override (service-type=agent)")
   .option("--agent-role <role>", "Agent role (service-type=agent)")
   .option("--agent-objective <text>", "Agent objective (service-type=agent)")
-  .option("--agent-triggers <items>", "Comma-separated allowed triggers: timer,event,call,api,a2a (service-type=agent)")
+  .option("--agent-triggers <items>", "Comma-separated allowed triggers: timer,event,api,a2a (service-type=agent)")
   .option("--agent-inputs <items>", "Comma-separated expected inputs (service-type=agent)")
   .option("--agent-outputs <items>", "Comma-separated expected outputs (service-type=agent)")
   .option("--agent-mcp-tools <items>", "Comma-separated allowed MCP tools (service-type=agent)")
@@ -481,7 +481,7 @@ program
   .option("--service-type <type>", "Service type for all added services: mcp | agent", "mcp")
   .option("--agent-role <role>", "Agent role (service-type=agent)")
   .option("--agent-objective <text>", "Agent objective (service-type=agent)")
-  .option("--agent-triggers <items>", "Comma-separated allowed triggers: timer,event,call,api,a2a (service-type=agent)")
+  .option("--agent-triggers <items>", "Comma-separated allowed triggers: timer,event,api,a2a (service-type=agent)")
   .option("--agent-inputs <items>", "Comma-separated expected inputs (service-type=agent)")
   .option("--agent-outputs <items>", "Comma-separated expected outputs (service-type=agent)")
   .option("--agent-mcp-tools <items>", "Comma-separated allowed MCP tools (service-type=agent)")
@@ -544,7 +544,7 @@ program
   .option("--agent-name <name>", "Agent display name override (service-type=agent)")
   .option("--agent-role <role>", "Agent role (service-type=agent)")
   .option("--agent-objective <text>", "Agent objective (service-type=agent)")
-  .option("--agent-triggers <items>", "Comma-separated allowed triggers: timer,event,call,api,a2a (service-type=agent)")
+  .option("--agent-triggers <items>", "Comma-separated allowed triggers: timer,event,api,a2a (service-type=agent)")
   .option("--agent-inputs <items>", "Comma-separated expected inputs (service-type=agent)")
   .option("--agent-outputs <items>", "Comma-separated expected outputs (service-type=agent)")
   .option("--agent-mcp-tools <items>", "Comma-separated allowed MCP tools (service-type=agent)")
@@ -586,7 +586,7 @@ program
   .option("--agent-name <name>", "Agent display name override (service-type=agent)")
   .option("--agent-role <role>", "Agent role (service-type=agent)")
   .option("--agent-objective <text>", "Agent objective (service-type=agent)")
-  .option("--agent-triggers <items>", "Comma-separated allowed triggers: timer,event,call,api,a2a (service-type=agent)")
+  .option("--agent-triggers <items>", "Comma-separated allowed triggers: timer,event,api,a2a (service-type=agent)")
   .option("--agent-inputs <items>", "Comma-separated expected inputs (service-type=agent)")
   .option("--agent-outputs <items>", "Comma-separated expected outputs (service-type=agent)")
   .option("--agent-mcp-tools <items>", "Comma-separated allowed MCP tools (service-type=agent)")
@@ -626,7 +626,7 @@ program
   .option("--agent-name <name>", "Agent display name override (service-type=agent)")
   .option("--agent-role <role>", "Agent role (service-type=agent)")
   .option("--agent-objective <text>", "Agent objective (service-type=agent)")
-  .option("--agent-triggers <items>", "Comma-separated allowed triggers: timer,event,call,api,a2a (service-type=agent)")
+  .option("--agent-triggers <items>", "Comma-separated allowed triggers: timer,event,api,a2a (service-type=agent)")
   .option("--agent-inputs <items>", "Comma-separated expected inputs (service-type=agent)")
   .option("--agent-outputs <items>", "Comma-separated expected outputs (service-type=agent)")
   .option("--agent-mcp-tools <items>", "Comma-separated allowed MCP tools (service-type=agent)")

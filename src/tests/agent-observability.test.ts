@@ -128,7 +128,7 @@ test("ServiceManager summarizes agent runs from durable events", async () => {
     assert.equal(run1?.stepCount, 1);
     assert.equal(run1?.toolCallCount, 1);
     assert.equal(run1?.handoffCount, 1);
-    assert.equal(run1?.trigger, "call");
+    assert.equal(run1?.trigger, "a2a");
 
     const run2 = runs.find((run) => run.runId === "run-2");
     assert.ok(run2);

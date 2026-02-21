@@ -169,9 +169,9 @@ function validateAgentRunCreatedPayload(payload: Record<string, unknown>): strin
     return null;
   }
   const trigger = triggerRaw.toLowerCase();
-  const allowed = new Set(["timer", "event", "call", "api", "a2a"]);
+  const allowed = new Set(["timer", "event", "api", "a2a"]);
   if (!allowed.has(trigger)) {
-    return "invalid trigger: expected one of timer|event|call|api|a2a";
+    return "invalid trigger: expected one of timer|event|api|a2a";
   }
   const triggerContext = asObject(payload.triggerContext ?? payload.trigger_context);
   const hasField = (key: string): boolean => {
@@ -181,7 +181,6 @@ function validateAgentRunCreatedPayload(payload: Record<string, unknown>): strin
   const requiredByTrigger: Record<string, string[]> = {
     timer: ["scheduleId", "scheduleExpr", "firedAt"],
     event: ["eventType", "eventId", "correlationId", "producer"],
-    call: ["callerType", "callerId"],
     api: ["route", "method", "requestId", "caller"],
     a2a: ["parentRunId", "fromAgentId", "handoffReason"]
   };
@@ -218,7 +217,7 @@ async function validateDeclaredServiceTrigger(
     return `trigger is required for agent.run_created when service_id is set (${sid})`;
   }
   const trigger = triggerRaw.toLowerCase();
-  if (!declared.includes(trigger as "timer" | "event" | "call" | "api" | "a2a")) {
+  if (!declared.includes(trigger as "timer" | "event" | "api" | "a2a")) {
     return `trigger '${trigger}' is not declared by agent ${sid}; declared: ${declared.join(", ")}`;
   }
   return null;
