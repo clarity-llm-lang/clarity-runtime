@@ -129,6 +129,7 @@ clarityctl auth list-secrets
 clarityctl auth set-secret <auth_ref> <secret>
 clarityctl auth delete-secret <auth_ref>
 clarityctl bootstrap --clients codex,claude [--transport stdio|http] [--endpoint <url>]
+clarityctl bootstrap-remove --clients codex,claude
 clarityctl doctor
 ```
 

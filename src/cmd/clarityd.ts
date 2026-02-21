@@ -2,7 +2,14 @@
 import { createServer } from "node:http";
 import { Command } from "commander";
 import type { BootstrapOptions } from "../pkg/bootstrap/clients.js";
-import { bootstrapClaude, bootstrapCodex, bootstrapStatus } from "../pkg/bootstrap/clients.js";
+import {
+  bootstrapClaude,
+  bootstrapCodex,
+  bootstrapStatus,
+  unbootstrapClaude,
+  unbootstrapCodex,
+  upsertWorkspaceAgentsDefaults
+} from "../pkg/bootstrap/clients.js";
 import { HttpBodyError, readJsonBody } from "../pkg/http/body.js";
 import { handleHttp } from "../pkg/gateway/http-api.js";
 import { deriveServiceId } from "../pkg/registry/ids.js";
@@ -85,6 +92,7 @@ program
               ? { transport: "http", endpoint }
               : { transport: "stdio", command: "clarityctl", args: ["gateway", "serve", "--stdio"] };
           const results: Array<{ client: string; updated: boolean; path: string }> = [];
+          const updateAgentsMd = (parsed as { update_agents_md?: unknown }).update_agents_md === true;
 
           if (clients.includes("codex")) {
             const out = await bootstrapCodex(options);
@@ -95,7 +103,45 @@ program
             results.push({ client: "claude", ...out });
           }
 
-          json(200, { transport, ...(endpoint ? { endpoint } : {}), results });
+          const agentsResult = updateAgentsMd ? await upsertWorkspaceAgentsDefaults() : undefined;
+          json(200, {
+            transport,
+            ...(endpoint ? { endpoint } : {}),
+            ...(agentsResult ? { agents_md: agentsResult } : {}),
+            results
+          });
+        } catch (error) {
+          if (error instanceof HttpBodyError) {
+            json(error.status, { error: error.message });
+            return;
+          }
+          json(500, { error: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
+
+      if (req.method === "DELETE" && url.pathname === "/api/bootstrap") {
+        const auth = authorizeRequest(req, url, authConfig);
+        if (!auth.ok) {
+          json(auth.status, { error: auth.error ?? "unauthorized" });
+          return;
+        }
+
+        try {
+          const parsed = await readJsonBody(req);
+          const clients = Array.isArray((parsed as { clients?: unknown }).clients)
+            ? (parsed as { clients: unknown[] }).clients
+            : ["codex", "claude"];
+          const results: Array<{ client: string; updated: boolean; path: string }> = [];
+          if (clients.includes("codex")) {
+            const out = await unbootstrapCodex();
+            results.push({ client: "codex", ...out });
+          }
+          if (clients.includes("claude")) {
+            const out = await unbootstrapClaude();
+            results.push({ client: "claude", ...out });
+          }
+          json(200, { removed: true, results });
         } catch (error) {
           if (error instanceof HttpBodyError) {
             json(error.status, { error: error.message });
