@@ -100,6 +100,23 @@ export interface AuditEvent {
   data?: unknown;
 }
 
+export type AgentRunStatus = "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled";
+
+export interface AgentRunSummary {
+  runId: string;
+  agent: string;
+  status: AgentRunStatus;
+  startedAt?: string;
+  updatedAt: string;
+  completedAt?: string;
+  waitingReason?: string;
+  failureReason?: string;
+  stepCount: number;
+  handoffCount: number;
+  toolCallCount: number;
+  eventCount: number;
+}
+
 interface WorkerValue {
   kind: "undefined" | "string" | "number" | "boolean" | "bigint";
   value?: string | number | boolean;
@@ -611,6 +628,119 @@ export class ServiceManager {
     return filtered.slice(Math.max(0, filtered.length - limit));
   }
 
+  getRecentAgentEvents(limit = 200): AuditEvent[] {
+    const filtered = this.events.filter((event) => event.kind.startsWith("agent."));
+    return filtered.slice(Math.max(0, filtered.length - limit));
+  }
+
+  getAgentRunEvents(runId: string, limit = 200): AuditEvent[] {
+    const normalized = runId.trim();
+    if (!normalized) {
+      return [];
+    }
+    const filtered = this.events.filter((event) => {
+      if (!event.kind.startsWith("agent.")) {
+        return false;
+      }
+      const payload = asObject(event.data);
+      const eventRunId = String(payload.runId ?? payload.run_id ?? "");
+      return eventRunId === normalized;
+    });
+    return filtered.slice(Math.max(0, filtered.length - limit));
+  }
+
+  getAgentRuns(limit = 100): AgentRunSummary[] {
+    type MutableRun = AgentRunSummary & { seenStepIds: Set<string> };
+    const runs = new Map<string, MutableRun>();
+    for (const event of this.events) {
+      if (!event.kind.startsWith("agent.")) {
+        continue;
+      }
+      const payload = asObject(event.data);
+      const runId = String(payload.runId ?? payload.run_id ?? "").trim();
+      if (!runId) {
+        continue;
+      }
+      const agent = String(payload.agent ?? payload.agent_name ?? "unknown").trim() || "unknown";
+      const current = runs.get(runId) ?? {
+        runId,
+        agent,
+        status: "queued" as AgentRunStatus,
+        startedAt: undefined,
+        updatedAt: event.at,
+        completedAt: undefined,
+        waitingReason: undefined,
+        failureReason: undefined,
+        stepCount: 0,
+        handoffCount: 0,
+        toolCallCount: 0,
+        eventCount: 0,
+        seenStepIds: new Set<string>()
+      };
+      current.agent = agent;
+      current.updatedAt = event.at;
+      current.eventCount += 1;
+
+      if (event.kind === "agent.run_created") {
+        current.status = "queued";
+      } else if (event.kind === "agent.run_started") {
+        current.status = "running";
+        current.startedAt ??= event.at;
+      } else if (event.kind === "agent.waiting") {
+        current.status = "waiting";
+        const reason = String(payload.reason ?? payload.waitingReason ?? "").trim();
+        if (reason) {
+          current.waitingReason = reason;
+        }
+      } else if (event.kind === "agent.step_started") {
+        const stepId = String(payload.stepId ?? payload.step_id ?? "").trim();
+        if (stepId.length > 0) {
+          if (!current.seenStepIds.has(stepId)) {
+            current.stepCount += 1;
+            current.seenStepIds.add(stepId);
+          }
+        } else {
+          current.stepCount += 1;
+        }
+      } else if (event.kind === "agent.handoff") {
+        current.handoffCount += 1;
+      } else if (event.kind === "agent.tool_called") {
+        current.toolCallCount += 1;
+      } else if (event.kind === "agent.run_completed") {
+        current.status = "completed";
+        current.completedAt = event.at;
+      } else if (event.kind === "agent.run_failed") {
+        current.status = "failed";
+        current.completedAt = event.at;
+        const failure = String(payload.error ?? payload.reason ?? "").trim();
+        current.failureReason = failure || event.message;
+      } else if (event.kind === "agent.run_cancelled") {
+        current.status = "cancelled";
+        current.completedAt = event.at;
+      }
+
+      runs.set(runId, current);
+    }
+
+    return [...runs.values()]
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, Math.max(1, limit))
+      .map((run) => ({
+        runId: run.runId,
+        agent: run.agent,
+        status: run.status,
+        startedAt: run.startedAt,
+        updatedAt: run.updatedAt,
+        completedAt: run.completedAt,
+        waitingReason: run.waitingReason,
+        failureReason: run.failureReason,
+        stepCount: run.stepCount,
+        handoffCount: run.handoffCount,
+        toolCallCount: run.toolCallCount,
+        eventCount: run.eventCount
+      }));
+  }
+
   subscribeEvents(listener: (event: AuditEvent) => void): () => void {
     this.eventSubscribers.add(listener);
     return () => {
@@ -1058,7 +1188,8 @@ export class ServiceManager {
     data?: unknown;
   }): void {
     const allowLifecycle = this.lifecycleAuditEnabled && input.kind.startsWith("service.");
-    if (!AUDIT_EVENT_ALLOWLIST.has(input.kind) && !allowLifecycle) {
+    const allowAgent = input.kind.startsWith("agent.");
+    if (!AUDIT_EVENT_ALLOWLIST.has(input.kind) && !allowLifecycle && !allowAgent) {
       return;
     }
     const event: AuditEvent = {

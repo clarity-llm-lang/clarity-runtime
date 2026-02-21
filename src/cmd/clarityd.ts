@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
 import { Command } from "commander";
+import type { BootstrapOptions } from "../pkg/bootstrap/clients.js";
 import { bootstrapClaude, bootstrapCodex, bootstrapStatus } from "../pkg/bootstrap/clients.js";
 import { HttpBodyError, readJsonBody } from "../pkg/http/body.js";
 import { handleHttp } from "../pkg/gateway/http-api.js";
@@ -56,20 +57,45 @@ program
         try {
           const parsed = await readJsonBody(req);
           const clients = Array.isArray((parsed as { clients?: unknown }).clients) ? (parsed as { clients: unknown[] }).clients : [];
-          const command = "clarityctl";
-          const args = ["gateway", "serve", "--stdio"];
+          const transportRaw = typeof (parsed as { transport?: unknown }).transport === "string" ? (parsed as { transport: string }).transport : "stdio";
+          const transport = transportRaw === "http" ? "http" : "stdio";
+          const endpointRaw =
+            typeof (parsed as { endpoint?: unknown }).endpoint === "string"
+              ? (parsed as { endpoint: string }).endpoint.trim()
+              : "";
+          const endpoint =
+            transport === "http"
+              ? (endpointRaw || `${req.headers["x-forwarded-proto"] === "https" ? "https" : "http"}://${req.headers.host ?? "localhost"}/mcp`)
+              : undefined;
+          if (transport === "http") {
+            let parsedEndpoint: URL;
+            try {
+              parsedEndpoint = new URL(endpoint ?? "");
+            } catch {
+              json(400, { error: "invalid endpoint: must be a valid http(s) URL" });
+              return;
+            }
+            if (parsedEndpoint.protocol !== "http:" && parsedEndpoint.protocol !== "https:") {
+              json(400, { error: "invalid endpoint: must be http or https" });
+              return;
+            }
+          }
+          const options: BootstrapOptions =
+            transport === "http"
+              ? { transport: "http", endpoint }
+              : { transport: "stdio", command: "clarityctl", args: ["gateway", "serve", "--stdio"] };
           const results: Array<{ client: string; updated: boolean; path: string }> = [];
 
           if (clients.includes("codex")) {
-            const out = await bootstrapCodex(command, args);
+            const out = await bootstrapCodex(options);
             results.push({ client: "codex", ...out });
           }
           if (clients.includes("claude")) {
-            const out = await bootstrapClaude(command, args);
+            const out = await bootstrapClaude(options);
             results.push({ client: "claude", ...out });
           }
 
-          json(200, { results });
+          json(200, { transport, ...(endpoint ? { endpoint } : {}), results });
         } catch (error) {
           if (error instanceof HttpBodyError) {
             json(error.status, { error: error.message });

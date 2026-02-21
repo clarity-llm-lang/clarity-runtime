@@ -52,6 +52,29 @@ export function renderStatusPage(): string {
       margin-bottom: 18px;
     }
 
+    .tabs {
+      display: inline-flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .tab {
+      border: 1px solid rgba(80, 103, 138, 0.35);
+      background: rgba(8, 14, 29, 0.5);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .tab.active {
+      background: linear-gradient(180deg, rgba(207, 231, 247, 0.98), rgba(188, 222, 240, 0.95));
+      border-color: rgba(8, 143, 178, 0.44);
+      color: #0f4257;
+    }
+
     .title {
       margin: 0;
       font-size: 24px;
@@ -156,6 +179,7 @@ export function renderStatusPage(): string {
     }
 
     .run { background: rgba(22, 163, 74, 0.14); color: #0f7a39; border-color: rgba(22, 163, 74, 0.35); }
+    .wait { background: rgba(217, 119, 6, 0.13); color: #935608; border-color: rgba(217, 119, 6, 0.32); }
     .stop { background: rgba(71, 85, 105, 0.12); color: #465b77; border-color: rgba(71, 85, 105, 0.28); }
     .crash { background: rgba(220, 38, 38, 0.12); color: #a72525; border-color: rgba(220, 38, 38, 0.35); }
 
@@ -276,43 +300,84 @@ export function renderStatusPage(): string {
       <div class="chip"><span class="dot"></span> Live</div>
     </div>
 
-    <div class="grid" id="summary"></div>
-
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Service</th>
-            <th>Origin</th>
-            <th>Policy</th>
-            <th>State</th>
-            <th>Health</th>
-            <th>Interface</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="rows"></tbody>
-      </table>
+    <div class="tabs">
+      <button id="tab-mcp" class="tab active" onclick="setTab('mcp')">MCP</button>
+      <button id="tab-agents" class="tab" onclick="setTab('agents')">Agents</button>
     </div>
 
-    <div class="card bootstrap">
-      <h2 class="audit-title">Client Bootstrap Config</h2>
-      <div id="bootstrap-config" class="code" style="display:grid; gap:8px; color:var(--panel-muted)">Loading bootstrap config...</div>
-      <div style="margin-top:8px;">
-        <button class="btn secondary" onclick="bootstrapClients()">Configure Codex + Claude</button>
+    <div id="mcp-panel">
+      <div class="grid" id="summary"></div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Service</th>
+              <th>Origin</th>
+              <th>Policy</th>
+              <th>State</th>
+              <th>Health</th>
+              <th>Interface</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+
+      <div class="card bootstrap">
+        <h2 class="audit-title">Client Bootstrap Config</h2>
+        <div id="bootstrap-config" class="code" style="display:grid; gap:8px; color:var(--panel-muted)">Loading bootstrap config...</div>
+        <div style="margin-top:8px; display:grid; gap:8px;">
+          <label class="code" for="bootstrap-transport">Transport</label>
+          <select id="bootstrap-transport" class="btn secondary" onchange="onBootstrapTransportChange()">
+            <option value="http" selected>http</option>
+            <option value="stdio">stdio</option>
+          </select>
+          <label class="code" for="bootstrap-endpoint">HTTP Endpoint</label>
+          <input id="bootstrap-endpoint" class="code" style="padding:8px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2); color:var(--panel-text);" />
+          <button class="btn secondary" onclick="bootstrapClients()">Configure Codex + Claude</button>
+        </div>
+      </div>
+
+      <div class="card audit">
+        <h2 class="audit-title">Audit Timeline</h2>
+        <ul id="audit" class="audit-list"></ul>
       </div>
     </div>
 
-    <div class="card audit">
-      <h2 class="audit-title">Audit Timeline</h2>
-      <ul id="audit" class="audit-list"></ul>
+    <div id="agents-panel" style="display:none">
+      <div class="grid" id="agent-summary"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Run</th>
+              <th>Agent</th>
+              <th>Status</th>
+              <th>Counters</th>
+              <th>Updated</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="agent-rows"></tbody>
+        </table>
+      </div>
+
+      <div class="card audit">
+        <h2 class="audit-title">Agent Timeline</h2>
+        <ul id="agent-audit" class="audit-list"></ul>
+      </div>
     </div>
   </div>
 <script>
 const expanded = {};
 const detailCache = {};
+const agentExpanded = {};
+const agentDetailCache = {};
 let latestRuntimeTools = [];
 let latestClarityTools = [];
+let activeTab = 'mcp';
 const queryParams = new URLSearchParams(window.location.search);
 const authToken = queryParams.get('token') || window.localStorage.getItem('clarity_auth_token');
 if (authToken) {
@@ -343,7 +408,13 @@ function normalizeToolItems(raw) {
 }
 
 function badge(state) {
-  const cls = state === 'RUNNING' ? 'run' : state === 'CRASHED' || state === 'QUARANTINED' ? 'crash' : 'stop';
+  const cls = state === 'RUNNING'
+    ? 'run'
+    : state === 'WAITING'
+      ? 'wait'
+      : state === 'CRASHED' || state === 'QUARANTINED' || state === 'FAILED' || state === 'CANCELLED'
+        ? 'crash'
+        : 'stop';
   return '<span class="badge ' + cls + '">' + esc(state) + '</span>';
 }
 
@@ -363,14 +434,58 @@ function summaryCards(data) {
   ].map(([k, v]) => '<div class="card"><div class="label">' + k + '</div><div class="value">' + v + '</div></div>').join('');
 }
 
+function agentSummaryCards(summary) {
+  const s = summary || {};
+  return [
+    ['Runs', Number(s.totalRuns || 0)],
+    ['Running', Number(s.running || 0)],
+    ['Waiting', Number(s.waiting || 0)],
+    ['Completed', Number(s.completed || 0)],
+    ['Failed', Number(s.failed || 0)],
+    ['Cancelled', Number(s.cancelled || 0)]
+  ].map(([k, v]) => '<div class="card"><div class="label">' + k + '</div><div class="value">' + v + '</div></div>').join('');
+}
+
+function setTab(tab) {
+  activeTab = tab === 'agents' ? 'agents' : 'mcp';
+  const mcpPanel = document.getElementById('mcp-panel');
+  const agentsPanel = document.getElementById('agents-panel');
+  const mcpTab = document.getElementById('tab-mcp');
+  const agentsTab = document.getElementById('tab-agents');
+  if (!mcpPanel || !agentsPanel || !mcpTab || !agentsTab) return;
+  const mcpActive = activeTab === 'mcp';
+  mcpPanel.style.display = mcpActive ? '' : 'none';
+  agentsPanel.style.display = mcpActive ? 'none' : '';
+  mcpTab.classList.toggle('active', mcpActive);
+  agentsTab.classList.toggle('active', !mcpActive);
+}
+
 async function action(id, op) {
   await call('/api/services/' + encodeURIComponent(id) + '/' + op, 'POST');
   await refresh();
 }
 
 async function bootstrapClients() {
-  await call('/api/bootstrap', 'POST', JSON.stringify({ clients: ['codex', 'claude'] }));
+  const transportEl = document.getElementById('bootstrap-transport');
+  const endpointEl = document.getElementById('bootstrap-endpoint');
+  const transport = transportEl && transportEl.value === 'stdio' ? 'stdio' : 'http';
+  const endpoint = endpointEl && typeof endpointEl.value === 'string'
+    ? endpointEl.value.trim()
+    : '';
+  await call('/api/bootstrap', 'POST', JSON.stringify({
+    clients: ['codex', 'claude'],
+    transport,
+    ...(transport === 'http' && endpoint ? { endpoint } : {})
+  }));
   await refresh();
+}
+
+function onBootstrapTransportChange() {
+  const transportEl = document.getElementById('bootstrap-transport');
+  const endpointEl = document.getElementById('bootstrap-endpoint');
+  if (!transportEl || !endpointEl) return;
+  const isHttp = transportEl.value !== 'stdio';
+  endpointEl.disabled = !isHttp;
 }
 
 function esc(value) {
@@ -455,6 +570,19 @@ function renderServiceDetails(serviceId, data) {
   '</div>';
 }
 
+function renderAgentRunDetails(runId, events) {
+  const rows = (events || []).map((evt) => {
+    const sid = evt.serviceId ? ' [' + esc(evt.serviceId) + ']' : '';
+    return '<li class="code">' + esc(evt.at + ' · ' + evt.kind + sid + ' · ' + evt.message) + '</li>';
+  }).join('');
+  return '<div class="detail-box">' +
+    '<h3 class="detail-title">Run</h3>' +
+    '<div class="code">' + esc(runId) + '</div>' +
+    '<h3 class="detail-title">Events</h3>' +
+    (rows ? '<ul class="detail-list">' + rows + '</ul>' : '<div class="code">No events for this run.</div>') +
+  '</div>';
+}
+
 async function toggleDetails(key, kind, serviceId) {
   expanded[key] = !expanded[key];
   if (expanded[key] && kind === 'service' && !detailCache[key]) {
@@ -475,16 +603,37 @@ async function toggleDetails(key, kind, serviceId) {
   await refresh();
 }
 
+async function toggleAgentDetails(runId) {
+  agentExpanded[runId] = !agentExpanded[runId];
+  if (agentExpanded[runId] && !agentDetailCache[runId]) {
+    try {
+      const result = await call('/api/agents/runs/' + encodeURIComponent(runId) + '/events?limit=120');
+      agentDetailCache[runId] = Array.isArray(result && result.items) ? result.items : [];
+    } catch (error) {
+      agentDetailCache[runId] = [{
+        at: new Date().toISOString(),
+        kind: 'agent.error',
+        serviceId: '',
+        message: error instanceof Error ? error.message : String(error)
+      }];
+    }
+  }
+  await refresh();
+}
+
 async function refresh() {
   try {
-    const [statusResult, auditResult] = await Promise.allSettled([
+    const [statusResult, auditResult, agentRunsResult, agentEventsResult] = await Promise.allSettled([
       call('/api/status'),
-      call('/api/audit?limit=25')
+      call('/api/audit?limit=25'),
+      call('/api/agents/runs?limit=120'),
+      call('/api/agents/events?limit=120')
     ]);
     const data = statusResult.status === 'fulfilled'
       ? statusResult.value
       : {
         summary: { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
+        agents: { totalRuns: 0, running: 0, waiting: 0, completed: 0, failed: 0, cancelled: 0 },
         services: [],
         systemTools: {
           items: [],
@@ -495,8 +644,17 @@ async function refresh() {
     const audit = auditResult.status === 'fulfilled'
       ? auditResult.value
       : { items: [] };
+    const agentRunsBody = agentRunsResult.status === 'fulfilled'
+      ? agentRunsResult.value
+      : { items: [] };
+    const agentEventsBody = agentEventsResult.status === 'fulfilled'
+      ? agentEventsResult.value
+      : { items: [] };
     const summarySafe = (data && data.summary) ? data.summary : { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 };
+    const agentSummarySafe = (data && data.agents) ? data.agents : { totalRuns: 0, running: 0, waiting: 0, completed: 0, failed: 0, cancelled: 0 };
     const services = Array.isArray(data && data.services) ? data.services : [];
+    const agentRuns = Array.isArray(agentRunsBody && agentRunsBody.items) ? agentRunsBody.items : [];
+    const agentEvents = Array.isArray(agentEventsBody && agentEventsBody.items) ? agentEventsBody.items : [];
     const runtimeTools = normalizeToolItems(data && data.systemTools && data.systemTools.runtime && data.systemTools.runtime.items);
     const clarityTools = normalizeToolItems(data && data.systemTools && data.systemTools.clarity && data.systemTools.clarity.items);
     let bootstrap = { clients: [] };
@@ -511,6 +669,7 @@ async function refresh() {
       summary: summarySafe,
       systemServiceCount: 2
     });
+    document.getElementById('agent-summary').innerHTML = agentSummaryCards(agentSummarySafe);
 
     const runtimeSystemRow = '<tr>' +
       '<td><strong>Runtime System</strong><div class="id code">system__runtime</div></td>' +
@@ -590,17 +749,54 @@ async function refresh() {
     const rows = runtimeSystemRow + runtimeSystemDetailRow + claritySystemRow + claritySystemDetailRow + serviceRows;
     document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:var(--panel-muted)">No services registered</td></tr>';
 
+    const agentRows = agentRuns.map((run) => {
+      const runId = esc(run.runId || 'unknown');
+      const key = String(run.runId || '');
+      const status = String(run.status || 'queued').toUpperCase();
+      const counters = 'steps=' + Number(run.stepCount || 0) + ', handoffs=' + Number(run.handoffCount || 0) + ', calls=' + Number(run.toolCallCount || 0);
+      const detailRow = agentExpanded[key]
+        ? '<tr class="detail-row"><td colspan="6">' + renderAgentRunDetails(key, agentDetailCache[key]) + '</td></tr>'
+        : '';
+      return '<tr>' +
+        '<td><strong class="code">' + runId + '</strong></td>' +
+        '<td><span class="code">' + esc(run.agent || 'unknown') + '</span></td>' +
+        '<td>' + badge(status) + '</td>' +
+        '<td><span class="code">' + esc(counters) + '</span></td>' +
+        '<td><span class="code">' + esc(run.updatedAt || '') + '</span></td>' +
+        '<td><button class="btn ghost" data-run-id="' + runId + '" onclick="toggleAgentDetails(this.dataset.runId)">Details</button></td>' +
+      '</tr>' + detailRow;
+    }).join('');
+    document.getElementById('agent-rows').innerHTML = agentRows || '<tr><td colspan="6" style="color:var(--panel-muted)">No agent runs yet</td></tr>';
+
     const bootstrapClients = Array.isArray(bootstrap && bootstrap.clients) ? bootstrap.clients : [];
+    const bootstrapTransportEl = document.getElementById('bootstrap-transport');
+    const bootstrapEndpointEl = document.getElementById('bootstrap-endpoint');
+    if (bootstrapEndpointEl && !bootstrapEndpointEl.value) {
+      bootstrapEndpointEl.value = window.location.origin + '/mcp';
+    }
     const bootstrapRows = bootstrapClients.map((row) => {
       const configured = row && row.configured ? 'configured' : 'missing';
+      const transport = row && row.transport ? row.transport : (row && row.endpoint ? 'http' : 'stdio');
+      const endpoint = row && row.endpoint ? row.endpoint : '';
       const cmd = row && row.command ? row.command : 'n/a';
       const args = row && Array.isArray(row.args) && row.args.length > 0 ? row.args.join(' ') : '';
       return '<div class="detail-box">' +
         '<div><strong>' + esc(row.client || 'unknown') + '</strong> <span class="id code">(' + configured + ')</span></div>' +
         '<div class="code">' + esc(row.path || '') + '</div>' +
+        '<div class="code">transport: ' + esc(transport) + '</div>' +
+        (endpoint ? '<div class="code">url: ' + esc(endpoint) + '</div>' : '') +
         '<div class="code">command: ' + esc(cmd + (args ? ' ' + args : '')) + '</div>' +
       '</div>';
     }).join('');
+    const codexCfg = bootstrapClients.find((row) => row && row.client === 'codex');
+    if (bootstrapTransportEl) {
+      const selectedTransport = codexCfg && codexCfg.transport === 'stdio' ? 'stdio' : 'http';
+      bootstrapTransportEl.value = selectedTransport;
+    }
+    if (bootstrapEndpointEl && codexCfg && codexCfg.endpoint) {
+      bootstrapEndpointEl.value = codexCfg.endpoint;
+    }
+    onBootstrapTransportChange();
     document.getElementById('bootstrap-config').innerHTML = bootstrapRows || '<div class="code">Bootstrap status unavailable.</div>';
 
     const auditItems = Array.isArray(audit && audit.items) ? audit.items : [];
@@ -615,6 +811,16 @@ async function refresh() {
       ? 'Status endpoint unavailable'
       : (auditResult.status === 'rejected' ? 'Audit endpoint unavailable' : 'No events yet');
     document.getElementById('audit').innerHTML = auditRows || '<li class="audit-item"><div class="audit-msg" style="color:var(--panel-muted)">' + auditFallback + '</div></li>';
+
+    const agentAuditRows = agentEvents.slice().reverse().map((evt) => {
+      const runId = evt && evt.data && typeof evt.data.runId === 'string' ? ' [' + esc(evt.data.runId) + ']' : '';
+      return '<li class="audit-item">' +
+        '<div class="audit-meta">' + esc(evt.at) + ' · ' + esc(evt.kind) + runId + '</div>' +
+        '<div class="audit-msg">' + esc(evt.message || '') + '</div>' +
+      '</li>';
+    }).join('');
+    const agentAuditFallback = agentEventsResult.status === 'rejected' ? 'Agent endpoint unavailable' : 'No agent events yet';
+    document.getElementById('agent-audit').innerHTML = agentAuditRows || '<li class="audit-item"><div class="audit-msg" style="color:var(--panel-muted)">' + agentAuditFallback + '</div></li>';
   } catch (error) {
     document.getElementById('summary').innerHTML = summaryCards({
       summary: { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
@@ -623,9 +829,13 @@ async function refresh() {
     document.getElementById('rows').innerHTML = '<tr><td colspan="7" style="color:#a72525">UI render error: ' + String(error) + '</td></tr>';
     document.getElementById('bootstrap-config').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';
     document.getElementById('audit').innerHTML = '<li class="audit-item"><div class="audit-msg" style="color:#a72525">UI render error</div></li>';
+    document.getElementById('agent-summary').innerHTML = agentSummaryCards({ totalRuns: 0, running: 0, waiting: 0, completed: 0, failed: 0, cancelled: 0 });
+    document.getElementById('agent-rows').innerHTML = '<tr><td colspan="6" style="color:#a72525">UI render error: ' + String(error) + '</td></tr>';
+    document.getElementById('agent-audit').innerHTML = '<li class="audit-item"><div class="audit-msg" style="color:#a72525">UI render error</div></li>';
   }
 }
 
+setTab(activeTab);
 refresh();
 setInterval(refresh, 4000);
 </script>

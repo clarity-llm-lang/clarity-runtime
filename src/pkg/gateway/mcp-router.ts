@@ -154,6 +154,29 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
     }
   },
   {
+    name: "runtime__get_agent_runs",
+    description: "Return recent agent orchestration runs with status and counters.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 1000 }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__get_agent_events",
+    description: "Return recent agent orchestration events, optionally scoped to run_id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 2000 },
+        run_id: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: "runtime__validate_auth_ref",
     description: "Validate a remote authRef configuration and return redacted diagnostics.",
     inputSchema: {
@@ -848,6 +871,23 @@ export class McpRouter {
       const limit = asInteger(payload.limit) ?? 200;
       return contentJson({
         items: this.manager.getRecentEvents(limit)
+      });
+    }
+
+    if (name === "runtime__get_agent_runs") {
+      const limit = asInteger(payload.limit) ?? 100;
+      return contentJson({
+        items: this.manager.getAgentRuns(limit)
+      });
+    }
+
+    if (name === "runtime__get_agent_events") {
+      const limit = asInteger(payload.limit) ?? 200;
+      const runId = asString(payload.run_id);
+      return contentJson({
+        items: runId
+          ? this.manager.getAgentRunEvents(runId, limit)
+          : this.manager.getRecentAgentEvents(limit)
       });
     }
 

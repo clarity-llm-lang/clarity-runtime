@@ -630,16 +630,30 @@ authCmd
 program
   .command("bootstrap")
   .option("--clients <items>", "Comma separated clients", "codex,claude")
+  .option("--transport <mode>", "Bootstrap transport: stdio | http", "stdio")
+  .option("--endpoint <url>", "HTTP endpoint to use when --transport http")
   .action(async (opts) => {
     const runtime = runtimeOpts();
     const clients = String(opts.clients)
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
+    const transport = String(opts.transport ?? "stdio").trim().toLowerCase();
+    if (transport !== "stdio" && transport !== "http") {
+      throw new Error("invalid --transport: expected 'stdio' or 'http'");
+    }
+    const endpoint = typeof opts.endpoint === "string" ? opts.endpoint.trim() : "";
+    if (transport === "http" && !endpoint) {
+      throw new Error("--endpoint is required when --transport http");
+    }
 
     const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/bootstrap", runtime.authToken, {
       method: "POST",
-      body: JSON.stringify({ clients })
+      body: JSON.stringify({
+        clients,
+        transport,
+        ...(transport === "http" ? { endpoint } : {})
+      })
     });
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });
