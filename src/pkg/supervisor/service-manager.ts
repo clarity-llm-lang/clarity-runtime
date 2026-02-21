@@ -81,6 +81,10 @@ interface TelemetryFile {
   logs: Record<string, string[]>;
 }
 
+const AUDIT_EVENT_ALLOWLIST = new Set([
+  "mcp.tool_called"
+]);
+
 export interface AuditEvent {
   seq: number;
   at: string;
@@ -1046,6 +1050,9 @@ export class ServiceManager {
     message: string;
     data?: unknown;
   }): void {
+    if (!AUDIT_EVENT_ALLOWLIST.has(input.kind)) {
+      return;
+    }
     const event: AuditEvent = {
       seq: this.eventSeq++,
       at: nowIso(),

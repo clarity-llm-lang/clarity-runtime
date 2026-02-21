@@ -98,7 +98,7 @@ function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) 
 
 function extractRecentCalls(events: Array<{ kind: string; at: string; message: string; data?: unknown }>, limit: number): Array<{ at: string; message: string; data?: unknown }> {
   const calls = events
-    .filter((event) => event.kind === "service.tool_called")
+    .filter((event) => event.kind === "mcp.tool_called")
     .map((event) => ({
       at: event.at,
       message: event.message,
@@ -283,16 +283,6 @@ export async function handleHttp(
         env: process.env,
         cwd: process.cwd()
       });
-      manager.recordRuntimeEvent({
-        kind: "security.auth_secret_upserted",
-        level: "info",
-        message: "Remote auth secret updated",
-        data: {
-          authRef: out.authRef,
-          provider: out.provider,
-          path: out.path
-        }
-      });
       json(res, 200, out);
       return;
     }
@@ -314,17 +304,6 @@ export async function handleHttp(
         env: process.env,
         cwd: process.cwd()
       });
-      manager.recordRuntimeEvent({
-        kind: "security.auth_secret_deleted",
-        level: "info",
-        message: "Remote auth secret deleted",
-        data: {
-          authRef: out.authRef,
-          provider: out.provider,
-          path: out.path,
-          deleted: out.deleted
-        }
-      });
       json(res, 200, out);
       return;
     }
@@ -338,16 +317,6 @@ export async function handleHttp(
       const out = await validateRemoteAuthRef(authRef, {
         env: process.env,
         cwd: process.cwd()
-      });
-      manager.recordRuntimeEvent({
-        kind: "security.auth_ref_validated",
-        level: out.valid ? "info" : "warn",
-        message: out.valid ? "Remote authRef validated" : "Remote authRef validation failed",
-        data: {
-          authRef,
-          provider: out.provider,
-          valid: out.valid
-        }
       });
       json(res, 200, out);
       return;
@@ -365,16 +334,6 @@ export async function handleHttp(
       const out = await validateRemoteAuthRef(authRef, {
         env: process.env,
         cwd: process.cwd()
-      });
-      manager.recordRuntimeEvent({
-        kind: "security.auth_ref_validated",
-        level: out.valid ? "info" : "warn",
-        message: out.valid ? "Remote authRef validated" : "Remote authRef validation failed",
-        data: {
-          authRef,
-          provider: out.provider,
-          valid: out.valid
-        }
       });
       json(res, 200, out);
       return;

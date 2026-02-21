@@ -704,6 +704,16 @@ export class McpRouter {
       try {
         if (params.name.startsWith("runtime__") || params.name.startsWith("clarity__")) {
           const result = await this.handleRuntimeToolCall(params.name, params.arguments ?? {});
+          this.manager.recordRuntimeEvent({
+            kind: "mcp.tool_called",
+            level: "info",
+            message: `MCP tool called: ${params.name}`,
+            data: {
+              tool: params.name,
+              category: params.name.startsWith("clarity__") ? "clarity_system" : "runtime_system",
+              success: true
+            }
+          });
           return success(id, result);
         }
 
@@ -713,8 +723,29 @@ export class McpRouter {
         }
 
         const result = await this.manager.callTool(routed.serviceId, routed.remoteToolName, params.arguments ?? {});
+        this.manager.recordRuntimeEvent({
+          kind: "mcp.tool_called",
+          serviceId: routed.serviceId,
+          level: "info",
+          message: `MCP tool called: ${params.name}`,
+          data: {
+            tool: params.name,
+            category: "service",
+            routedTool: routed.remoteToolName,
+            success: true
+          }
+        });
         return success(id, result);
       } catch (error) {
+        this.manager.recordRuntimeEvent({
+          kind: "mcp.tool_called",
+          level: "warn",
+          message: `MCP tool call failed: ${params.name}`,
+          data: {
+            tool: params.name,
+            success: false
+          }
+        });
         return failure(
           id,
           -32000,
@@ -827,16 +858,6 @@ export class McpRouter {
         env: process.env,
         cwd: process.cwd()
       });
-      this.manager.recordRuntimeEvent({
-        kind: "security.auth_ref_validated",
-        level: validation.valid ? "info" : "warn",
-        message: validation.valid ? "Remote authRef validated" : "Remote authRef validation failed",
-        data: {
-          authRef,
-          provider: validation.provider,
-          valid: validation.valid
-        }
-      });
       return contentJson(validation);
     }
 
@@ -869,16 +890,6 @@ export class McpRouter {
         env: process.env,
         cwd: process.cwd()
       });
-      this.manager.recordRuntimeEvent({
-        kind: "security.auth_secret_upserted",
-        level: "info",
-        message: "Remote auth secret updated",
-        data: {
-          authRef: result.authRef,
-          provider: result.provider,
-          path: result.path
-        }
-      });
       return contentJson({
         authRef: result.authRef,
         provider: result.provider,
@@ -895,17 +906,6 @@ export class McpRouter {
       const result = await deleteRemoteAuthSecret(authRef, {
         env: process.env,
         cwd: process.cwd()
-      });
-      this.manager.recordRuntimeEvent({
-        kind: "security.auth_secret_deleted",
-        level: "info",
-        message: "Remote auth secret deleted",
-        data: {
-          authRef: result.authRef,
-          provider: result.provider,
-          path: result.path,
-          deleted: result.deleted
-        }
       });
       return contentJson(result);
     }

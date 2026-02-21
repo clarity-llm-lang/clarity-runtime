@@ -244,6 +244,7 @@ Not implemented yet:
 - `GET /api/events`: SSE stream for live runtime events.
 - Status page now includes an audit timeline and `Unquarantine` action for quarantined services.
 - Telemetry persists across daemon restarts in `.clarity/runtime/telemetry.json`.
+- Audit policy now records MCP tool invocations (`mcp.tool_called`) and does not persist secret/lifecycle event details.
 - Auth lifecycle/validation APIs:
   - `GET /api/security/auth/providers`
   - `GET|POST /api/security/auth/validate`

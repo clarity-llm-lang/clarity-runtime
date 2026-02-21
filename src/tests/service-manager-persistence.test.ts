@@ -48,6 +48,13 @@ test("ServiceManager persists audit events and logs across restarts", async () =
     const applied = await manager1.applyManifest(manifest);
     const serviceId = applied.manifest.metadata.serviceId!;
     await manager1.start(serviceId);
+    manager1.recordRuntimeEvent({
+      kind: "mcp.tool_called",
+      serviceId,
+      level: "info",
+      message: "MCP tool called: clarity__sources",
+      data: { tool: "clarity__sources", category: "clarity_system", success: true }
+    });
 
     const beforeEvents = manager1.getRecentEvents(200);
     const beforeLogs = await manager1.tailLogs(serviceId, 200);
@@ -64,7 +71,7 @@ test("ServiceManager persists audit events and logs across restarts", async () =
     const afterLogs = await manager2.tailLogs(serviceId, 200);
     assert.ok(afterEvents.length >= beforeEvents.length);
     assert.ok(afterLogs.length >= beforeLogs.length);
-    assert.ok(afterEvents.some((event) => event.kind === "service.manifest_applied"));
+    assert.ok(afterEvents.some((event) => event.kind === "mcp.tool_called"));
   } finally {
     if (manager1) {
       await manager1.shutdown();
