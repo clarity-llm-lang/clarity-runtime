@@ -272,6 +272,11 @@ export function renderStatusPage(): string {
       display: grid;
       gap: 4px;
     }
+    .agent-meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
     .flow-diagram {
       display: flex;
       flex-wrap: wrap;
@@ -476,6 +481,7 @@ const agentExpanded = {};
 const agentDetailCache = {};
 let latestRuntimeTools = [];
 let latestClarityTools = [];
+let latestServices = [];
 let activeTab = 'mcp';
 let activeAgentTriggerFilter = 'all';
 let bootstrapFormDirty = false;
@@ -774,6 +780,70 @@ function filterRunsByTrigger(runs, filter) {
   return (Array.isArray(runs) ? runs : []).filter((run) => normalizeTrigger(run && run.trigger) === selected);
 }
 
+function asLower(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function findServiceForDependency(depName) {
+  const needle = asLower(depName);
+  if (!needle) return null;
+  for (const svc of (Array.isArray(latestServices) ? latestServices : [])) {
+    const candidates = [
+      svc && svc.serviceId,
+      svc && svc.displayName,
+      svc && svc.module,
+      svc && svc.agent && svc.agent.agentId,
+      svc && svc.agent && svc.agent.name
+    ].map(asLower).filter(Boolean);
+    if (candidates.includes(needle)) {
+      return svc;
+    }
+  }
+  return null;
+}
+
+function renderDependencyStatusList(values) {
+  const deps = Array.isArray(values)
+    ? values.filter((item) => typeof item === 'string' && item.trim().length > 0)
+    : [];
+  if (deps.length === 0) {
+    return '<div class="code">No dependencies declared.</div>';
+  }
+  return '<ul class="detail-list">' + deps.map((dep) => {
+    const service = findServiceForDependency(dep);
+    if (!service) {
+      return '<li class="code"><strong>' + esc(dep) + '</strong> <span class="id">not found in portal</span></li>';
+    }
+    const sid = String(service.serviceId || '');
+    const state = String(service.lifecycle || 'UNKNOWN');
+    const health = String(service.health || 'UNKNOWN');
+    return '<li class="code"><strong>' + esc(dep) + '</strong> ' +
+      badge(state) +
+      '<span class="id"> health=' + esc(health) + ', serviceId=' + esc(sid) + '</span> ' +
+      '<button class="btn ghost" data-service-id="' + esc(sid) + '" onclick="openServiceDetails(this.dataset.serviceId)">Open</button>' +
+      '</li>';
+  }).join('') + '</ul>';
+}
+
+async function openServiceDetails(serviceId) {
+  const svc = (Array.isArray(latestServices) ? latestServices : []).find((item) => String(item && item.serviceId || '') === String(serviceId || ''));
+  if (!svc) {
+    return;
+  }
+  const tab = classifyServiceType(svc) === 'agent' ? 'agents' : 'mcp';
+  setTab(tab);
+  const key = 'svc__' + String(serviceId);
+  expanded[key] = true;
+  if (!detailCache[key]) {
+    try {
+      detailCache[key] = await call('/api/services/' + encodeURIComponent(serviceId) + '/details?log_limit=60&event_limit=120&call_limit=30');
+    } catch (error) {
+      detailCache[key] = { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+  await refresh();
+}
+
 function renderSystemDetails(runtimeTools, clarityTools) {
   const runtimeItems = (runtimeTools || []).map((tool) => '<li class="code">' + esc(tool.name) + '</li>').join('');
   const clarityItems = (clarityTools || []).map((tool) => '<li class="code">' + esc(tool.name) + '</li>').join('');
@@ -840,22 +910,38 @@ function renderServiceDetails(serviceId, data) {
     }
     return '<ul class="detail-list">' + items.map((item) => '<li class="code">' + esc(item) + '</li>').join('') + '</ul>';
   };
+  const defaultTriggerFlow = '<div class="detail-box">' +
+    '<h3 class="detail-title">How This Agent Can Be Triggered</h3>' +
+    '<div>' +
+      '<span class="trigger">timer</span>' +
+      '<span class="trigger">event</span>' +
+      '<span class="trigger">call</span>' +
+      '<span class="trigger">api</span>' +
+      '<span class="trigger">a2a</span>' +
+    '</div>' +
+    '<h3 class="detail-title">Standard Flow</h3>' +
+    '<div class="flow-diagram">' +
+      '<span class="flow-node">trigger</span><span class="flow-arrow">→</span>' +
+      '<span class="flow-node">run_created</span><span class="flow-arrow">→</span>' +
+      '<span class="flow-node">step</span><span class="flow-arrow">→</span>' +
+      '<span class="flow-node">mcp/llm</span><span class="flow-arrow">→</span>' +
+      '<span class="flow-node">handoff(optional)</span><span class="flow-arrow">→</span>' +
+      '<span class="flow-node">completed|failed</span>' +
+    '</div>' +
+  '</div>';
   const agentMeta = agent
-    ? '<h3 class="detail-title">Agent Metadata</h3>' +
+    ? defaultTriggerFlow +
+      '<h3 class="detail-title">Agent Metadata</h3>' +
       '<div class="code">agentId=' + esc(agent.agentId || 'unknown') + ', name=' + esc(agent.name || 'unknown') + '</div>' +
       '<div class="code">role=' + esc(agent.role || 'unknown') + ', objective=' + esc(agent.objective || 'unknown') + '</div>' +
-      '<h3 class="detail-title">Inputs</h3>' +
-      listOrNone(agent.inputs, 'No inputs declared.') +
-      '<h3 class="detail-title">Outputs</h3>' +
-      listOrNone(agent.outputs, 'No outputs declared.') +
-      '<h3 class="detail-title">Dependencies</h3>' +
-      listOrNone(agent.dependsOn, 'No dependencies declared.') +
-      '<h3 class="detail-title">Handoff Targets</h3>' +
-      listOrNone(agent.handoffTargets, 'No handoff targets declared.') +
-      '<h3 class="detail-title">Allowed MCP Tools</h3>' +
-      listOrNone(agent.allowedMcpTools, 'No MCP tool allowlist declared.') +
-      '<h3 class="detail-title">Allowed LLM Providers</h3>' +
-      listOrNone(agent.allowedLlmProviders, 'No LLM provider allowlist declared.')
+      '<div class="agent-meta-grid">' +
+        '<div><h3 class="detail-title">Inputs</h3>' + listOrNone(agent.inputs, 'No inputs declared.') + '</div>' +
+        '<div><h3 class="detail-title">Outputs</h3>' + listOrNone(agent.outputs, 'No outputs declared.') + '</div>' +
+        '<div><h3 class="detail-title">Dependencies</h3>' + renderDependencyStatusList(agent.dependsOn) + '</div>' +
+        '<div><h3 class="detail-title">Handoff Targets</h3>' + listOrNone(agent.handoffTargets, 'No handoff targets declared.') + '</div>' +
+        '<div><h3 class="detail-title">Allowed MCP Tools</h3>' + listOrNone(agent.allowedMcpTools, 'No MCP tool allowlist declared.') + '</div>' +
+        '<div><h3 class="detail-title">Allowed LLM Providers</h3>' + listOrNone(agent.allowedLlmProviders, 'No LLM provider allowlist declared.') + '</div>' +
+      '</div>'
     : '';
 
   return '<div class="detail-box">' +
@@ -1091,6 +1177,7 @@ async function refresh() {
       agentServices: Number(summarySafe.agentServices || 0)
     };
     const services = Array.isArray(data && data.services) ? data.services : [];
+    latestServices = services;
     const mcpServices = services.filter((svc) => classifyServiceType(svc) === 'mcp');
     const agentServices = services.filter((svc) => classifyServiceType(svc) === 'agent');
     const agentRuns = Array.isArray(agentRunsBody && agentRunsBody.items) ? agentRunsBody.items : [];
@@ -1190,7 +1277,6 @@ async function refresh() {
           '<button class="btn" data-service="' + serviceId + '" data-op="start" onclick="action(this.dataset.service,this.dataset.op)">Start</button>' +
           '<button class="btn" data-service="' + serviceId + '" data-op="stop" onclick="action(this.dataset.service,this.dataset.op)">Stop</button>' +
           '<button class="btn" data-service="' + serviceId + '" data-op="restart" onclick="action(this.dataset.service,this.dataset.op)">Restart</button>' +
-          '<button class="btn secondary" data-service="' + serviceId + '" data-op="introspect" onclick="action(this.dataset.service,this.dataset.op)">Refresh Interface</button>' +
           (svc.lifecycle === 'QUARANTINED'
             ? '<button class="btn secondary" data-service="' + serviceId + '" data-op="unquarantine" onclick="action(this.dataset.service,this.dataset.op)">Unquarantine</button>'
             : '') +
@@ -1246,7 +1332,6 @@ async function refresh() {
           '<button class="btn" data-service="' + serviceId + '" data-op="start" onclick="action(this.dataset.service,this.dataset.op)">Start</button>' +
           '<button class="btn" data-service="' + serviceId + '" data-op="stop" onclick="action(this.dataset.service,this.dataset.op)">Stop</button>' +
           '<button class="btn" data-service="' + serviceId + '" data-op="restart" onclick="action(this.dataset.service,this.dataset.op)">Restart</button>' +
-          '<button class="btn secondary" data-service="' + serviceId + '" data-op="introspect" onclick="action(this.dataset.service,this.dataset.op)">Refresh Interface</button>' +
           (svc.lifecycle === 'QUARANTINED'
             ? '<button class="btn secondary" data-service="' + serviceId + '" data-op="unquarantine" onclick="action(this.dataset.service,this.dataset.op)">Unquarantine</button>'
             : '') +
