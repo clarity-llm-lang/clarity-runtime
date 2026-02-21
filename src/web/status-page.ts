@@ -861,7 +861,7 @@ function readTriggerContext(run, key) {
   return '';
 }
 
-function renderTriggerInterfaces(runs) {
+function renderTriggerInterfaces(agent, runs) {
   const list = Array.isArray(runs) ? runs : [];
   const latestByTrigger = {};
   for (const run of list) {
@@ -894,8 +894,10 @@ function renderTriggerInterfaces(runs) {
   if (latestByTrigger.a2a) {
     const run = latestByTrigger.a2a;
     blocks.push('<div class="detail-box"><h3 class="detail-title">A2A Interface</h3>' +
-      '<div class="code">fromAgentId: ' + esc(readTriggerContext(run, 'fromAgentId') || 'n/a') + '</div>' +
-      '<div class="code">parentRunId: ' + esc(readTriggerContext(run, 'parentRunId') || 'n/a') + ', reason: ' + esc(readTriggerContext(run, 'handoffReason') || 'n/a') + '</div></div>');
+      '<div class="code">agentId: ' + esc((agent && agent.agentId) || 'n/a') + '</div>' +
+      '<div class="code">orchestratorAgentId: ' + esc(readTriggerContext(run, 'fromAgentId') || 'n/a') + '</div>' +
+      '<div class="code">orchestratorRunId: ' + esc(readTriggerContext(run, 'parentRunId') || 'n/a') + '</div>' +
+      '<div class="code">handoffReason: ' + esc(readTriggerContext(run, 'handoffReason') || 'n/a') + '</div></div>');
   }
   if (blocks.length === 0) {
     return '<div class="code">No observed trigger interface data yet. Run the agent via timer/event/api/a2a to populate this section.</div>';
@@ -1018,7 +1020,7 @@ function renderServiceDetails(serviceId, data, agentRunsForService) {
   const agentMeta = agent
     ? defaultTriggerFlow +
       '<h3 class="detail-title">Trigger Interfaces (Observed)</h3>' +
-      renderTriggerInterfaces(agentRunsForService) +
+      renderTriggerInterfaces(agent, agentRunsForService) +
       '<h3 class="detail-title">Agent Metadata</h3>' +
       '<div class="code">agentId=' + esc(agent.agentId || 'unknown') + ', name=' + esc(agent.name || 'unknown') + '</div>' +
       '<div class="code">role=' + esc(agent.role || 'unknown') + ', objective=' + esc(agent.objective || 'unknown') + '</div>' +
