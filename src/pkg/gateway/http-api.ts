@@ -51,11 +51,11 @@ const RUNTIME_SYSTEM_TOOLS = [
 const SYSTEM_TOOLS = [...RUNTIME_SYSTEM_TOOLS, ...CLARITY_SYSTEM_TOOLS].map((t) => t.name);
 const FAVICON_SVG_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../../../../assets/clarity-github-avatar.svg"
+  "../../../assets/clarity-github-avatar.svg"
 );
 const FAVICON_PNG_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../../../../assets/clarity-github-avatar.png"
+  "../../../assets/clarity-github-avatar.png"
 );
 
 function json(res: ServerResponse, status: number, data: unknown): void {
