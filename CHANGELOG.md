@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.4.0...v0.5.0) (2026-02-21)
+
+
+### Features
+
+* add v0.9 agent observability and roadmap ([f0ae79f](https://github.com/clarity-llm-lang/clarity-runtime/commit/f0ae79f49173b309a9ade23f7bac8c3467676803))
+* audit only mcp tool calls and suppress secret lifecycle logs ([4d4090d](https://github.com/clarity-llm-lang/clarity-runtime/commit/4d4090d10b86e8217034db51afa697edc714b8bf))
+* finalize runtime v0.9 UI and docs updates ([9d5a10b](https://github.com/clarity-llm-lang/clarity-runtime/commit/9d5a10b2fc5643bdc5e0ebf6baf881fca5d8795b))
+
+
+### Bug Fixes
+
+* add bootstrap panel minimize toggle ([b4ecf60](https://github.com/clarity-llm-lang/clarity-runtime/commit/b4ecf603d8eac2d2152ed79c6e324cfeb17f5914))
+
 ## [0.4.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.3.0...v0.4.0) (2026-02-21)
 
 
