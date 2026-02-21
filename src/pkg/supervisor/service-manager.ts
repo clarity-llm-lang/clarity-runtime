@@ -554,6 +554,16 @@ export class ServiceManager {
     };
   }
 
+  recordRuntimeEvent(input: {
+    kind: string;
+    level: "info" | "warn" | "error";
+    message: string;
+    serviceId?: string;
+    data?: unknown;
+  }): void {
+    this.emitEvent(input);
+  }
+
   async tickUptimes(): Promise<void> {
     const all = await this.registry.list();
     const running = new Set(

@@ -10,9 +10,8 @@ Execution order for larger runtime initiatives. The goal is to deliver each laye
   - initial providers: `env:`, `file:`, `header_env:`
   - path/header validation for safer secret handling
 - Remaining:
-  - secret rotation APIs
-  - provider health/validation endpoint
-  - explicit redaction/audit policy for auth operations
+  - expanded isolation policy controls for multi-tenant/remote trust zones
+  - optional key-management backends (beyond env/file)
 
 ## Layer 2: Transactional Clarity Bootstrap
 - Status: Planned

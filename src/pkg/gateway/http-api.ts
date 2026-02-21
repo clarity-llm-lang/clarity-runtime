@@ -6,6 +6,13 @@ import { McpRouter } from "./mcp-router.js";
 import { HttpBodyError, readJsonBody } from "../http/body.js";
 import { validateManifest } from "../rpc/manifest.js";
 import { authorizeRequest, type AuthConfig } from "../security/auth.js";
+import {
+  deleteRemoteAuthSecret,
+  getRemoteAuthProviderHealth,
+  listRemoteAuthFileSecrets,
+  upsertRemoteAuthSecret,
+  validateRemoteAuthRef
+} from "../security/remote-auth.js";
 
 const SYSTEM_TOOLS = [
   "runtime__status_summary",
@@ -18,6 +25,11 @@ const SYSTEM_TOOLS = [
   "runtime__refresh_interface",
   "runtime__unquarantine_service",
   "runtime__get_audit",
+  "runtime__validate_auth_ref",
+  "runtime__auth_provider_health",
+  "runtime__list_auth_secrets",
+  "runtime__set_auth_secret",
+  "runtime__delete_auth_secret",
   "runtime__clarity_help",
   "runtime__clarity_sources",
   "runtime__clarity_project_structure",
@@ -217,6 +229,140 @@ export async function handleHttp(
       json(res, 200, {
         items: manager.getRecentEvents(Number.isFinite(limit) ? limit : 200)
       });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/security/auth/providers") {
+      json(res, 200, await getRemoteAuthProviderHealth({
+        env: process.env,
+        cwd: process.cwd()
+      }));
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/security/auth/secrets") {
+      const items = await listRemoteAuthFileSecrets({
+        env: process.env,
+        cwd: process.cwd()
+      });
+      json(res, 200, { count: items.length, items });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/security/auth/secrets") {
+      if ((process.env.CLARITY_ENABLE_MCP_PROVISIONING ?? "").trim() !== "1") {
+        json(res, 403, { error: "auth secret writes are disabled (set CLARITY_ENABLE_MCP_PROVISIONING=1)" });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const authRef = typeof (body as { auth_ref?: unknown }).auth_ref === "string"
+        ? ((body as { auth_ref: string }).auth_ref)
+        : "";
+      const secret = typeof (body as { secret?: unknown }).secret === "string"
+        ? ((body as { secret: string }).secret)
+        : "";
+      if (!authRef || !secret) {
+        json(res, 400, { error: "expected { auth_ref, secret }" });
+        return;
+      }
+      const out = await upsertRemoteAuthSecret(authRef, secret, {
+        env: process.env,
+        cwd: process.cwd()
+      });
+      manager.recordRuntimeEvent({
+        kind: "security.auth_secret_upserted",
+        level: "info",
+        message: "Remote auth secret updated",
+        data: {
+          authRef: out.authRef,
+          provider: out.provider,
+          path: out.path
+        }
+      });
+      json(res, 200, out);
+      return;
+    }
+
+    if (method === "DELETE" && url.pathname === "/api/security/auth/secrets") {
+      if ((process.env.CLARITY_ENABLE_MCP_PROVISIONING ?? "").trim() !== "1") {
+        json(res, 403, { error: "auth secret deletes are disabled (set CLARITY_ENABLE_MCP_PROVISIONING=1)" });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const authRef = typeof (body as { auth_ref?: unknown }).auth_ref === "string"
+        ? ((body as { auth_ref: string }).auth_ref)
+        : "";
+      if (!authRef) {
+        json(res, 400, { error: "expected { auth_ref }" });
+        return;
+      }
+      const out = await deleteRemoteAuthSecret(authRef, {
+        env: process.env,
+        cwd: process.cwd()
+      });
+      manager.recordRuntimeEvent({
+        kind: "security.auth_secret_deleted",
+        level: "info",
+        message: "Remote auth secret deleted",
+        data: {
+          authRef: out.authRef,
+          provider: out.provider,
+          path: out.path,
+          deleted: out.deleted
+        }
+      });
+      json(res, 200, out);
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/security/auth/validate") {
+      const authRef = url.searchParams.get("auth_ref") ?? "";
+      if (!authRef) {
+        json(res, 400, { error: "query parameter 'auth_ref' is required" });
+        return;
+      }
+      const out = await validateRemoteAuthRef(authRef, {
+        env: process.env,
+        cwd: process.cwd()
+      });
+      manager.recordRuntimeEvent({
+        kind: "security.auth_ref_validated",
+        level: out.valid ? "info" : "warn",
+        message: out.valid ? "Remote authRef validated" : "Remote authRef validation failed",
+        data: {
+          authRef,
+          provider: out.provider,
+          valid: out.valid
+        }
+      });
+      json(res, 200, out);
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/security/auth/validate") {
+      const body = await readJsonBody(req);
+      const authRef = typeof (body as { auth_ref?: unknown }).auth_ref === "string"
+        ? ((body as { auth_ref: string }).auth_ref)
+        : "";
+      if (!authRef) {
+        json(res, 400, { error: "expected { auth_ref }" });
+        return;
+      }
+      const out = await validateRemoteAuthRef(authRef, {
+        env: process.env,
+        cwd: process.cwd()
+      });
+      manager.recordRuntimeEvent({
+        kind: "security.auth_ref_validated",
+        level: out.valid ? "info" : "warn",
+        message: out.valid ? "Remote authRef validated" : "Remote authRef validation failed",
+        data: {
+          authRef,
+          provider: out.provider,
+          valid: out.valid
+        }
+      });
+      json(res, 200, out);
       return;
     }
 

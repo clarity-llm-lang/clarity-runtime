@@ -3,7 +3,13 @@ import test from "node:test";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { resolveRemoteAuthHeaders } from "../pkg/security/remote-auth.js";
+import {
+  deleteRemoteAuthSecret,
+  listRemoteAuthFileSecrets,
+  resolveRemoteAuthHeaders,
+  upsertRemoteAuthSecret,
+  validateRemoteAuthRef
+} from "../pkg/security/remote-auth.js";
 
 test("resolveRemoteAuthHeaders supports legacy env authRef", async () => {
   const headers = await resolveRemoteAuthHeaders("my-api", {
@@ -84,5 +90,94 @@ test("resolveRemoteAuthHeaders blocks file traversal outside configured root", a
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test("validateRemoteAuthRef returns redacted diagnostics", async () => {
+  const result = await validateRemoteAuthRef("header_env:X-API-Key:REMOTE_API_KEY", {
+    env: {
+      REMOTE_API_KEY: "secret-value"
+    }
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.provider, "header_env");
+  assert.equal(result.redactedTarget, "X-API-Key:***");
+  assert.deepEqual(result.headerKeys, ["X-API-Key"]);
+});
+
+test("upsertRemoteAuthSecret and deleteRemoteAuthSecret manage file provider secrets", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-auth-write-"));
+  try {
+    const writeResult = await upsertRemoteAuthSecret("file:svc/main.token", "abc123", {
+      env: {
+        CLARITY_REMOTE_AUTH_FILE_ROOT: root
+      },
+      cwd: root
+    });
+    assert.equal(writeResult.provider, "file");
+
+    const headers = await resolveRemoteAuthHeaders("file:svc/main.token", {
+      env: {
+        CLARITY_REMOTE_AUTH_FILE_ROOT: root
+      },
+      cwd: root
+    });
+    assert.deepEqual(headers, {
+      Authorization: "Bearer abc123"
+    });
+
+    const deleted = await deleteRemoteAuthSecret("file:svc/main.token", {
+      env: {
+        CLARITY_REMOTE_AUTH_FILE_ROOT: root
+      },
+      cwd: root
+    });
+    assert.equal(deleted.deleted, true);
+
+    await assert.rejects(
+      () =>
+        resolveRemoteAuthHeaders("file:svc/main.token", {
+          env: {
+            CLARITY_REMOTE_AUTH_FILE_ROOT: root
+          },
+          cwd: root
+        }),
+      /ENOENT|no such file or directory/i
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("listRemoteAuthFileSecrets returns file-based authRef handles", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-auth-list-"));
+  try {
+    await upsertRemoteAuthSecret("file:a/one.token", "1", {
+      env: {
+        CLARITY_REMOTE_AUTH_FILE_ROOT: root
+      },
+      cwd: root
+    });
+    await upsertRemoteAuthSecret("file:b/two.token", "2", {
+      env: {
+        CLARITY_REMOTE_AUTH_FILE_ROOT: root
+      },
+      cwd: root
+    });
+
+    const items = await listRemoteAuthFileSecrets({
+      env: {
+        CLARITY_REMOTE_AUTH_FILE_ROOT: root
+      },
+      cwd: root
+    });
+
+    assert.deepEqual(items.map((i) => i.authRef), [
+      "file:a/one.token",
+      "file:b/two.token"
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
