@@ -9,6 +9,7 @@ import type {
 import { deriveInterfaceRevision, deriveServiceId } from "../registry/ids.js";
 import { ServiceRegistry } from "../registry/registry.js";
 import { normalizeNamespace } from "../security/namespace.js";
+import { resolveRemoteAuthHeaders } from "../security/remote-auth.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -48,10 +49,6 @@ function parseAllowedHosts(value: string | undefined): Set<string> | null {
     .filter(Boolean);
   if (hosts.length === 0) return null;
   return new Set(hosts);
-}
-
-function envKeyForAuthRef(authRef: string): string {
-  return `CLARITY_REMOTE_AUTH_${authRef.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`;
 }
 
 function parsePositiveInteger(value: string | undefined): number | undefined {
@@ -625,7 +622,7 @@ export class ServiceManager {
   private async remoteNotify(serviceId: string, endpoint: string, method: string, params: unknown): Promise<void> {
     try {
       const service = await this.registry.get(serviceId);
-      const headers = this.resolveRemoteHeaders(service?.manifest.spec.origin.type === "remote_mcp" ? service.manifest.spec.origin : undefined);
+      const headers = await this.resolveRemoteHeaders(service?.manifest.spec.origin.type === "remote_mcp" ? service.manifest.spec.origin : undefined);
       const payload = {
         jsonrpc: "2.0",
         method,
@@ -660,7 +657,7 @@ export class ServiceManager {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) ? timeoutMs : 20_000);
 
-    const headers = this.resolveRemoteHeaders(typeof origin === "string" ? undefined : origin);
+    const headers = await this.resolveRemoteHeaders(typeof origin === "string" ? undefined : origin);
     const inFlight = this.remoteInFlight.get(serviceId) ?? 0;
     if (inFlight >= maxConcurrency) {
       throw new Error(`remote concurrency limit reached (${inFlight}/${maxConcurrency})`);
@@ -755,7 +752,7 @@ export class ServiceManager {
     }
   }
 
-  private resolveRemoteHeaders(origin: RemoteMcpOrigin | undefined): Record<string, string> {
+  private async resolveRemoteHeaders(origin: RemoteMcpOrigin | undefined): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       "content-type": "application/json"
     };
@@ -764,19 +761,11 @@ export class ServiceManager {
       return headers;
     }
 
-    const envKey = envKeyForAuthRef(origin.authRef);
-    const secret = process.env[envKey];
-    if (!secret) {
-      throw new Error(`missing remote auth secret in env '${envKey}'`);
-    }
-
-    if (secret.startsWith("Bearer ")) {
-      headers.Authorization = secret;
-      return headers;
-    }
-
-    headers.Authorization = `Bearer ${secret}`;
-    return headers;
+    const authHeaders = await resolveRemoteAuthHeaders(origin.authRef, {
+      env: process.env,
+      cwd: process.cwd()
+    });
+    return { ...headers, ...authHeaders };
   }
 
   private async discoverLocalFunctions(wasmPath: string): Promise<string[]> {

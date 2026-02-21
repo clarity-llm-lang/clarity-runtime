@@ -155,7 +155,7 @@ Implemented in v1 scaffold:
 
 Not implemented yet:
 - direct native `clarityc start` command in the compiler repo (runtime side is ready via `clarityctl add`; compiler integration should make runtime an explicit requirement)
-- remote auth/policy hardening and isolation
+- remote auth/policy isolation hardening and secret lifecycle operations
 
 ---
 
@@ -164,7 +164,7 @@ Not implemented yet:
 - [x] Runtime-side compiler path (`clarityctl add <service>`)
 - [ ] Native compiler command (`clarityc start <file.clarity>`) in `LLM-lang`
 - [x] Add policy engine baseline (timeouts, allowlists, concurrency, payload limits)
-- [ ] Add remote auth providers and secret references
+- [ ] Add full remote auth providers and secret lifecycle operations (provider backend landed; isolation/lifecycle remaining)
 - [x] Add MCP self-provisioning tools (LLM can register/install services via MCP with approval + policy gates)
 - [x] Add quarantine/recovery and richer health diagnostics
 - [x] Add interface diffing and audit/event timeline
@@ -181,7 +181,7 @@ Not implemented yet:
 | Compiler-driven onboarding | In progress | Runtime side done; native `clarityc start` implemented in `LLM-lang` branch and pending merge |
 | Local function execution | Done (baseline) | `<namespace>__fn__*` tools discovered from wasm exports and executed via compiler runtime |
 | In-process WASM host execution | Done | Local function tools execute directly via wasm instantiate/call in runtime |
-| Auth/policy hardening | In progress | Timeout/allowed-tools/payload-size/concurrency/host-allowlist baseline implemented; auth provider model still pending |
+| Auth/policy hardening | In progress | Timeout/allowed-tools/payload-size/concurrency/host-allowlist baseline implemented; auth provider backend (`legacy env`, `env`, `file`, `header_env`) added; isolation/lifecycle pending |
 | MCP self-provisioning | Done (gated) | `runtime__register_local`, `runtime__register_remote`, `runtime__apply_manifest` behind `CLARITY_ENABLE_MCP_PROVISIONING=1` |
 
 ---
@@ -190,6 +190,7 @@ Not implemented yet:
 
 - Runtime spec: `docs/spec/v1/runtime-spec.md`
 - Manifest schema: `schemas/mcp-service-v1.schema.json`
+- Layered requirements: `docs/requirements/layered-runtime-requirements.md`
 
 ## Remote Policy Knobs
 
@@ -197,11 +198,12 @@ Not implemented yet:
 - `add-remote --allow-tools <tool_a,tool_b>`: restrict callable remote tools.
 - `add-remote --max-payload-bytes <bytes>`: set max request/response payload bytes per remote service.
 - `add-remote --max-concurrency <n>`: set max concurrent in-flight remote requests per service.
-- `add-remote --auth-ref <name>`: resolve bearer secret from `CLARITY_REMOTE_AUTH_<NAME>`.
+- `add-remote --auth-ref <ref>`: remote auth reference (supports `legacy-name`, `env:ENV_VAR`, `file:relative/path`, `header_env:Header-Name:ENV_VAR`).
 - `CLARITY_REMOTE_ALLOWED_HOSTS=host1,host2`: optional global remote host allowlist.
 - `CLARITY_REMOTE_DEFAULT_TIMEOUT_MS=20000`: default timeout when manifest timeout is not set.
 - `CLARITY_REMOTE_MAX_PAYLOAD_BYTES=1048576`: default max request/response payload bytes when manifest value is not set.
 - `CLARITY_REMOTE_MAX_CONCURRENCY=8`: default max in-flight remote requests per service when manifest value is not set.
+- `CLARITY_REMOTE_AUTH_FILE_ROOT=/absolute/path`: optional root directory for `file:` auth refs (defaults to `.clarity/secrets` under workspace).
 - `CLARITY_ENABLE_MCP_PROVISIONING=1`: enable runtime MCP self-provisioning tools (`runtime__register_*`, `runtime__apply_manifest`).
 - `CLARITY_ENABLE_COMPILER_INSTALL=1`: allow `runtime__ensure_compiler` to execute install commands.
 - `CLARITY_COMPILER_INSTALL_ALLOWLIST=brew,apt-get`: optional installer command allowlist for `runtime__ensure_compiler`.

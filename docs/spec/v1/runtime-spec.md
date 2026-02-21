@@ -67,7 +67,11 @@
 - `origin.type`: `local_wasm` or `remote_mcp`.
 - `remote_mcp.timeoutMs`: optional per-service timeout.
 - `remote_mcp.allowedTools`: optional per-service tool allowlist.
-- `remote_mcp.authRef`: optional auth reference resolved from environment secret key.
+- `remote_mcp.authRef`: optional auth reference with provider syntax.
+  - Legacy env form: `<name>` -> `CLARITY_REMOTE_AUTH_<NAME_SANITIZED>`
+  - Env form: `env:<ENV_VAR>`
+  - File form: `file:<relative/path>` (resolved under `CLARITY_REMOTE_AUTH_FILE_ROOT` or `.clarity/secrets`)
+  - Header form: `header_env:<Header-Name>:<ENV_VAR>`
 - `remote_mcp.maxPayloadBytes`: optional per-service request/response payload limit.
 - `remote_mcp.maxConcurrency`: optional per-service in-flight request limit.
 
@@ -80,5 +84,5 @@
 - `clarityctl gateway serve --stdio`
 
 ## Planned Next
-- Add auth secret backend/provider model for remote services.
+- Add auth secret lifecycle operations and isolation controls for remote services.
 - Merge and release native `clarityc start` compiler command.

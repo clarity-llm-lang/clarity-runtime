@@ -10,11 +10,14 @@ export function renderStatusPage(): string {
       --bg0: #0b1020;
       --bg1: #131b33;
       --bg2: #173047;
-      --panel: rgba(10, 16, 30, 0.78);
-      --panel-2: rgba(11, 18, 34, 0.88);
-      --line: rgba(159, 176, 199, 0.2);
+      --panel: rgba(234, 240, 248, 0.92);
+      --panel-2: rgba(242, 246, 252, 0.95);
+      --panel-3: rgba(248, 251, 255, 0.96);
+      --line: rgba(60, 82, 112, 0.24);
       --text: #e8edf5;
       --muted: #9daec4;
+      --panel-text: #1e2e46;
+      --panel-muted: #4d6380;
       --accent: #6366f1;
       --accent-2: #06b6d4;
       --ok: #16a34a;
@@ -89,10 +92,11 @@ export function renderStatusPage(): string {
       border: 1px solid var(--line);
       border-radius: 10px;
       padding: 13px;
+      color: var(--panel-text);
     }
 
     .label {
-      color: var(--muted);
+      color: var(--panel-muted);
       text-transform: uppercase;
       letter-spacing: 0.9px;
       font-size: 10px;
@@ -103,6 +107,7 @@ export function renderStatusPage(): string {
       font-size: 24px;
       font-weight: 650;
       line-height: 1;
+      color: var(--panel-text);
     }
 
     .table-wrap {
@@ -121,20 +126,21 @@ export function renderStatusPage(): string {
       vertical-align: top;
       text-align: left;
       font-size: 13px;
+      color: var(--panel-text);
     }
 
     th {
-      color: var(--muted);
+      color: var(--panel-muted);
       text-transform: uppercase;
       letter-spacing: 0.9px;
       font-size: 10px;
       font-weight: 600;
-      background: rgba(15, 23, 42, 0.5);
+      background: rgba(223, 231, 241, 0.86);
     }
 
     tr:last-child td { border-bottom: none; }
 
-    .id { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .id { color: var(--panel-muted); font-size: 12px; margin-top: 4px; }
 
     .badge {
       border-radius: 999px;
@@ -145,20 +151,20 @@ export function renderStatusPage(): string {
       border: 1px solid transparent;
     }
 
-    .run { background: rgba(22, 163, 74, 0.18); color: #7ff0ad; border-color: rgba(22, 163, 74, 0.35); }
-    .stop { background: rgba(148, 163, 184, 0.12); color: #c4d1df; border-color: rgba(148, 163, 184, 0.28); }
-    .crash { background: rgba(220, 38, 38, 0.16); color: #ffb5b5; border-color: rgba(220, 38, 38, 0.35); }
+    .run { background: rgba(22, 163, 74, 0.14); color: #0f7a39; border-color: rgba(22, 163, 74, 0.35); }
+    .stop { background: rgba(71, 85, 105, 0.12); color: #465b77; border-color: rgba(71, 85, 105, 0.28); }
+    .crash { background: rgba(220, 38, 38, 0.12); color: #a72525; border-color: rgba(220, 38, 38, 0.35); }
 
     .code {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      color: #c7e9ff;
+      color: #2a4e74;
       font-size: 12px;
     }
 
     .btn {
-      border: 1px solid rgba(99, 102, 241, 0.32);
-      color: #dfe8ff;
-      background: linear-gradient(180deg, rgba(99,102,241,0.22), rgba(99,102,241,0.1));
+      border: 1px solid rgba(53, 76, 116, 0.34);
+      color: #1d2f4a;
+      background: linear-gradient(180deg, rgba(245, 249, 255, 0.96), rgba(226, 235, 247, 0.94));
       border-radius: 8px;
       padding: 6px 9px;
       font-size: 11px;
@@ -169,18 +175,19 @@ export function renderStatusPage(): string {
     }
 
     .btn.secondary {
-      border-color: rgba(6, 182, 212, 0.3);
-      background: linear-gradient(180deg, rgba(6,182,212,0.2), rgba(6,182,212,0.1));
+      border-color: rgba(8, 143, 178, 0.44);
+      color: #0f4257;
+      background: linear-gradient(180deg, rgba(193, 234, 246, 0.98), rgba(163, 221, 239, 0.94));
     }
 
-    .btn:hover { filter: brightness(1.1); }
+    .btn:hover { filter: brightness(1.03); }
     .btn.ghost {
-      border-color: rgba(148, 163, 184, 0.35);
-      background: rgba(10, 16, 30, 0.55);
-      color: #cbd7e6;
+      border-color: rgba(71, 85, 105, 0.28);
+      background: rgba(255, 255, 255, 0.62);
+      color: #2a3d58;
     }
     .detail-row td {
-      background: rgba(8, 14, 28, 0.72);
+      background: rgba(230, 237, 246, 0.9);
       border-top: none;
     }
     .detail-box {
@@ -189,9 +196,10 @@ export function renderStatusPage(): string {
       padding: 10px;
       display: grid;
       gap: 8px;
+      background: var(--panel-3);
     }
     .detail-title {
-      color: var(--muted);
+      color: var(--panel-muted);
       text-transform: uppercase;
       letter-spacing: 0.8px;
       font-size: 10px;
@@ -220,7 +228,7 @@ export function renderStatusPage(): string {
     .audit-title {
       margin: 0 0 8px;
       font-size: 13px;
-      color: var(--muted);
+      color: var(--panel-muted);
       text-transform: uppercase;
       letter-spacing: 0.8px;
     }
@@ -237,18 +245,18 @@ export function renderStatusPage(): string {
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 8px 10px;
-      background: rgba(10, 16, 30, 0.72);
+      background: var(--panel-3);
       font-size: 12px;
     }
 
     .audit-meta {
-      color: var(--muted);
+      color: var(--panel-muted);
       font-size: 11px;
       margin-bottom: 3px;
     }
 
     .audit-msg {
-      color: var(--text);
+      color: var(--panel-text);
       word-break: break-word;
     }
 
@@ -289,12 +297,12 @@ export function renderStatusPage(): string {
 
     <div class="card inspector">
       <h2 class="audit-title">Service Inspector</h2>
-      <div id="inspector" class="code" style="display:grid; gap:8px; color:#9daec4">Select a service row and click Open.</div>
+      <div id="inspector" class="code" style="display:grid; gap:8px; color:var(--panel-muted)">Select a service row and click Open.</div>
     </div>
 
     <div class="card bootstrap">
       <h2 class="audit-title">Client Bootstrap Config</h2>
-      <div id="bootstrap-config" class="code" style="display:grid; gap:8px; color:#9daec4">Loading bootstrap config...</div>
+      <div id="bootstrap-config" class="code" style="display:grid; gap:8px; color:var(--panel-muted)">Loading bootstrap config...</div>
       <div style="margin-top:8px;">
         <button class="btn secondary" onclick="bootstrapClients()">Configure Codex + Claude</button>
       </div>
@@ -378,7 +386,7 @@ function renderServiceDetails(serviceId, data) {
   }
 
   if (data.error) {
-    return '<div class="detail-box"><div class="code" style="color:#ffb5b5">' + esc(data.error) + '</div></div>';
+    return '<div class="detail-box"><div class="code" style="color:#a72525">' + esc(data.error) + '</div></div>';
   }
 
   const iface = data.interface || {};
@@ -537,7 +545,7 @@ async function refresh() {
       '</tr>' + detailRow;
     }).join('');
     const rows = systemRow + systemDetailRow + serviceRows;
-    document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:#9daec4">No services registered</td></tr>';
+    document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:var(--panel-muted)">No services registered</td></tr>';
 
     if (!selectedServiceId) {
       document.getElementById('inspector').innerHTML = 'Select a service row and click Open.';
@@ -562,7 +570,7 @@ async function refresh() {
           renderServiceDetails(selectedServiceId, inspectorData);
       } catch (error) {
         document.getElementById('inspector').innerHTML =
-          '<div class="detail-box"><div class="code" style="color:#ffb5b5">' + esc(error instanceof Error ? error.message : String(error)) + '</div></div>';
+          '<div class="detail-box"><div class="code" style="color:#a72525">' + esc(error instanceof Error ? error.message : String(error)) + '</div></div>';
       }
     }
 
@@ -590,16 +598,16 @@ async function refresh() {
     const auditFallback = statusResult.status === 'rejected'
       ? 'Status endpoint unavailable'
       : (auditResult.status === 'rejected' ? 'Audit endpoint unavailable' : 'No events yet');
-    document.getElementById('audit').innerHTML = auditRows || '<li class="audit-item"><div class="audit-msg" style="color:#9daec4">' + auditFallback + '</div></li>';
+    document.getElementById('audit').innerHTML = auditRows || '<li class="audit-item"><div class="audit-msg" style="color:var(--panel-muted)">' + auditFallback + '</div></li>';
   } catch (error) {
     document.getElementById('summary').innerHTML = summaryCards({
       summary: { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
       systemToolCount: 0
     });
-    document.getElementById('rows').innerHTML = '<tr><td colspan="7" style="color:#ffb5b5">UI render error: ' + String(error) + '</td></tr>';
-    document.getElementById('inspector').innerHTML = '<div class="code" style="color:#ffb5b5">UI render error</div>';
-    document.getElementById('bootstrap-config').innerHTML = '<div class="code" style="color:#ffb5b5">UI render error</div>';
-    document.getElementById('audit').innerHTML = '<li class="audit-item"><div class="audit-msg" style="color:#ffb5b5">UI render error</div></li>';
+    document.getElementById('rows').innerHTML = '<tr><td colspan="7" style="color:#a72525">UI render error: ' + String(error) + '</td></tr>';
+    document.getElementById('inspector').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';
+    document.getElementById('bootstrap-config').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';
+    document.getElementById('audit').innerHTML = '<li class="audit-item"><div class="audit-msg" style="color:#a72525">UI render error</div></li>';
   }
 }
 
