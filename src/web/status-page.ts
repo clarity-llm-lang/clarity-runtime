@@ -322,6 +322,10 @@ export function renderStatusPage(): string {
       gap: 8px;
       margin-bottom: 10px;
     }
+    .run-summary {
+      display: grid;
+      gap: 4px;
+    }
 
     .audit {
       max-height: 280px;
@@ -868,7 +872,70 @@ function renderToolCatalog(title, subtitle, tools) {
   '</div>';
 }
 
-function renderServiceDetails(serviceId, data) {
+function readTriggerContext(run, key) {
+  const ctx = run && run.triggerContext && typeof run.triggerContext === 'object' ? run.triggerContext : {};
+  if (ctx[key] !== undefined && ctx[key] !== null && String(ctx[key]).trim().length > 0) {
+    return String(ctx[key]);
+  }
+  const snake = key.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
+  if (ctx[snake] !== undefined && ctx[snake] !== null && String(ctx[snake]).trim().length > 0) {
+    return String(ctx[snake]);
+  }
+  if (run && run[key] !== undefined && run[key] !== null && String(run[key]).trim().length > 0) {
+    return String(run[key]);
+  }
+  return '';
+}
+
+function renderTriggerInterfaces(runs) {
+  const list = Array.isArray(runs) ? runs : [];
+  const latestByTrigger = {};
+  for (const run of list) {
+    const trigger = normalizeTrigger(run && run.trigger);
+    if (trigger === 'unknown') continue;
+    const at = String(run && run.updatedAt || '');
+    if (!latestByTrigger[trigger] || at > String(latestByTrigger[trigger].updatedAt || '')) {
+      latestByTrigger[trigger] = run;
+    }
+  }
+  const blocks = [];
+  if (latestByTrigger.timer) {
+    const run = latestByTrigger.timer;
+    blocks.push('<div class="detail-box"><h3 class="detail-title">Timer Interface</h3>' +
+      '<div class="code">Schedule regex/pattern: ' + esc(readTriggerContext(run, 'scheduleExpr') || 'n/a') + '</div>' +
+      '<div class="code">scheduleId: ' + esc(readTriggerContext(run, 'scheduleId') || 'n/a') + '</div></div>');
+  }
+  if (latestByTrigger.api) {
+    const run = latestByTrigger.api;
+    blocks.push('<div class="detail-box"><h3 class="detail-title">API Interface</h3>' +
+      '<div class="code">Endpoint: ' + esc(readTriggerContext(run, 'method') || 'METHOD') + ' ' + esc(readTriggerContext(run, 'route') || '/unknown') + '</div>' +
+      '<div class="code">requestId: ' + esc(readTriggerContext(run, 'requestId') || 'n/a') + ', caller: ' + esc(readTriggerContext(run, 'caller') || 'n/a') + '</div></div>');
+  }
+  if (latestByTrigger.event) {
+    const run = latestByTrigger.event;
+    blocks.push('<div class="detail-box"><h3 class="detail-title">Event Interface</h3>' +
+      '<div class="code">eventType: ' + esc(readTriggerContext(run, 'eventType') || 'n/a') + '</div>' +
+      '<div class="code">producer: ' + esc(readTriggerContext(run, 'producer') || 'n/a') + ', eventId: ' + esc(readTriggerContext(run, 'eventId') || 'n/a') + '</div></div>');
+  }
+  if (latestByTrigger.call) {
+    const run = latestByTrigger.call;
+    blocks.push('<div class="detail-box"><h3 class="detail-title">Call Interface</h3>' +
+      '<div class="code">callerType: ' + esc(readTriggerContext(run, 'callerType') || 'n/a') + '</div>' +
+      '<div class="code">callerId: ' + esc(readTriggerContext(run, 'callerId') || 'n/a') + '</div></div>');
+  }
+  if (latestByTrigger.a2a) {
+    const run = latestByTrigger.a2a;
+    blocks.push('<div class="detail-box"><h3 class="detail-title">A2A Interface</h3>' +
+      '<div class="code">fromAgentId: ' + esc(readTriggerContext(run, 'fromAgentId') || 'n/a') + '</div>' +
+      '<div class="code">parentRunId: ' + esc(readTriggerContext(run, 'parentRunId') || 'n/a') + ', reason: ' + esc(readTriggerContext(run, 'handoffReason') || 'n/a') + '</div></div>');
+  }
+  if (blocks.length === 0) {
+    return '<div class="code">No observed trigger interface data yet. Run the agent via timer/event/call/api/a2a to populate this section.</div>';
+  }
+  return '<div class="agent-meta-grid">' + blocks.join('') + '</div>';
+}
+
+function renderServiceDetails(serviceId, data, agentRunsForService) {
   if (!data) {
     return '<div class="detail-box"><div class="code">Loading details...</div></div>';
   }
@@ -931,6 +998,8 @@ function renderServiceDetails(serviceId, data) {
   '</div>';
   const agentMeta = agent
     ? defaultTriggerFlow +
+      '<h3 class="detail-title">Trigger Interfaces (Observed)</h3>' +
+      renderTriggerInterfaces(agentRunsForService) +
       '<h3 class="detail-title">Agent Metadata</h3>' +
       '<div class="code">agentId=' + esc(agent.agentId || 'unknown') + ', name=' + esc(agent.name || 'unknown') + '</div>' +
       '<div class="code">role=' + esc(agent.role || 'unknown') + ', objective=' + esc(agent.objective || 'unknown') + '</div>' +
@@ -1071,9 +1140,11 @@ function renderAgentRunsForService(svc, allRuns) {
   const matched = (Array.isArray(allRuns) ? allRuns : [])
     .filter((run) => runBelongsToService(run, svc))
     .slice(0, 12);
-  const chips = matched.slice(0, 4).map((run) => triggerBadge(run.trigger)).join('');
+  const latest = matched.length > 0 ? matched[0] : null;
   const summary = matched.length > 0
-    ? '<div class="code">' + matched.length + ' run(s) matched</div><div>' + chips + '</div>'
+    ? '<div class="code">' + matched.length + ' run(s) matched</div>' +
+      '<div class="run-summary"><div>' + badge(String(latest.status || '').toUpperCase()) + ' ' + triggerBadge(latest.trigger) + '</div>' +
+      '<div class="code">latest=' + esc(String(latest.runId || 'unknown')) + ' · ' + formatLocalTime(latest.updatedAt || '') + '</div></div>'
     : '<div class="code">No runs matched this service yet.</div>';
   const items = matched.map((run) => {
     const runId = String(run.runId || 'unknown');
@@ -1263,7 +1334,7 @@ async function refresh() {
       const key = 'svc__' + svc.serviceId;
       const keyAttr = esc(key);
       const detailRow = expanded[key]
-        ? '<tr class="detail-row"><td colspan="7">' + renderServiceDetails(svc.serviceId, detailCache[key]) + '</td></tr>'
+        ? '<tr class="detail-row"><td colspan="7">' + renderServiceDetails(svc.serviceId, detailCache[key], []) + '</td></tr>'
         : '';
       return '<tr>' +
         '<td><strong>' + displayName + '</strong><div class="id code">' + serviceId + '</div></td>' +
@@ -1313,12 +1384,12 @@ async function refresh() {
       const key = 'svc__' + svc.serviceId;
       const keyAttr = esc(key);
       const matchedRuns = filteredAgentRuns.filter((run) => runBelongsToService(run, svc));
-      const runChips = matchedRuns.slice(0, 3).map((run) => triggerBadge(run.trigger)).join('');
+      const latestRun = matchedRuns.length > 0 ? matchedRuns[0] : null;
       const runColumn = matchedRuns.length > 0
-        ? '<div class="code">' + matchedRuns.length + ' run(s)</div><div>' + runChips + '</div>'
-        : '<div class="code">No runs</div>';
+        ? '<div class="run-summary"><div class="code">' + matchedRuns.length + ' run(s)</div><div>' + badge(String(latestRun.status || '').toUpperCase()) + ' ' + triggerBadge(latestRun.trigger) + '</div></div>'
+        : '<div class="code">0 runs</div>';
       const detailRow = expanded[key]
-        ? '<tr class="detail-row"><td colspan="7">' + renderServiceDetails(svc.serviceId, detailCache[key]) + renderAgentRunsForService(svc, filteredAgentRuns) + '</td></tr>'
+        ? '<tr class="detail-row"><td colspan="7">' + renderServiceDetails(svc.serviceId, detailCache[key], matchedRuns) + renderAgentRunsForService(svc, filteredAgentRuns) + '</td></tr>'
         : '';
       return '<tr>' +
         '<td><strong>' + displayName + '</strong><div class="id code">' + serviceId + '</div><div class="id code">role=' + esc(roleLabel) + (objectiveLabel ? ', objective=' + esc(objectiveLabel) : '') + '</div></td>' +
