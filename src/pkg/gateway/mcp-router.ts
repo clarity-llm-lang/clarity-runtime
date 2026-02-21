@@ -332,6 +332,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
         module: { type: "string" },
         display_name: { type: "string" },
         service_type: { enum: ["mcp", "agent"] },
+        agent_descriptor: { type: "object" },
         entry: { type: "string" },
         tool_namespace: { type: "string" },
         autostart: { type: "boolean" },
@@ -353,6 +354,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
         module: { type: "string" },
         display_name: { type: "string" },
         service_type: { enum: ["mcp", "agent"] },
+        agent_descriptor: { type: "object" },
         auth_ref: { type: "string" },
         timeout_ms: { type: "integer", minimum: 1 },
         max_payload_bytes: { type: "integer", minimum: 1024 },
@@ -378,6 +380,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
         module: { type: "string" },
         display_name: { type: "string" },
         service_type: { enum: ["mcp", "agent"] },
+        agent_descriptor: { type: "object" },
         auth_ref: { type: "string" },
         timeout_ms: { type: "integer", minimum: 1 },
         max_payload_bytes: { type: "integer", minimum: 1024 },
@@ -444,6 +447,45 @@ function asServiceType(input: unknown): "mcp" | "agent" | undefined {
     return input;
   }
   return undefined;
+}
+
+function asAgentDescriptor(input: unknown): {
+  agentId: string;
+  name: string;
+  role: string;
+  objective: string;
+  inputs?: string[];
+  outputs?: string[];
+  allowedMcpTools?: string[];
+  allowedLlmProviders?: string[];
+  handoffTargets?: string[];
+  dependsOn?: string[];
+  version?: string;
+} | undefined {
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+  const obj = input as Record<string, unknown>;
+  const agentId = asString(obj.agent_id ?? obj.agentId);
+  const name = asString(obj.name);
+  const role = asString(obj.role);
+  const objective = asString(obj.objective);
+  if (!agentId || !name || !role || !objective) {
+    return undefined;
+  }
+  return {
+    agentId,
+    name,
+    role,
+    objective,
+    ...(asStringList(obj.inputs) ? { inputs: asStringList(obj.inputs)! } : {}),
+    ...(asStringList(obj.outputs) ? { outputs: asStringList(obj.outputs)! } : {}),
+    ...(asStringList(obj.allowed_mcp_tools ?? obj.allowedMcpTools) ? { allowedMcpTools: asStringList(obj.allowed_mcp_tools ?? obj.allowedMcpTools)! } : {}),
+    ...(asStringList(obj.allowed_llm_providers ?? obj.allowedLlmProviders) ? { allowedLlmProviders: asStringList(obj.allowed_llm_providers ?? obj.allowedLlmProviders)! } : {}),
+    ...(asStringList(obj.handoff_targets ?? obj.handoffTargets) ? { handoffTargets: asStringList(obj.handoff_targets ?? obj.handoffTargets)! } : {}),
+    ...(asStringList(obj.depends_on ?? obj.dependsOn) ? { dependsOn: asStringList(obj.depends_on ?? obj.dependsOn)! } : {}),
+    ...(asString(obj.version) ? { version: asString(obj.version)! } : {})
+  };
 }
 
 function inferModuleFromPath(wasmPath: string): string {
@@ -1408,6 +1450,10 @@ export class McpRouter {
 
       const module = asString(payload.module) ?? inferModuleFromPath(wasmPath);
       const serviceType = asServiceType(payload.service_type) ?? "mcp";
+      const agentDescriptor = asAgentDescriptor(payload.agent_descriptor);
+      if (serviceType === "agent" && !agentDescriptor) {
+        throw new Error("runtime__register_local requires agent_descriptor for service_type=agent");
+      }
       const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
       const sourceFile = asString(payload.source_file) ?? wasmPath;
       const manifest: MCPServiceManifest = {
@@ -1417,6 +1463,7 @@ export class McpRouter {
           sourceFile,
           module,
           serviceType,
+          ...(agentDescriptor ? { agent: agentDescriptor } : {}),
           ...(asString(payload.display_name) ? { displayName: asString(payload.display_name) } : {})
         },
         spec: {
@@ -1469,6 +1516,10 @@ export class McpRouter {
 
       const module = asString(payload.module) ?? inferModuleFromEndpoint(endpoint);
       const serviceType = asServiceType(payload.service_type) ?? "mcp";
+      const agentDescriptor = asAgentDescriptor(payload.agent_descriptor);
+      if (serviceType === "agent" && !agentDescriptor) {
+        throw new Error("runtime__register_remote requires agent_descriptor for service_type=agent");
+      }
       const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
       const timeoutMs = asIntegerMin(payload.timeout_ms, 1);
       const maxPayloadBytes = asIntegerMin(payload.max_payload_bytes, 1024);
@@ -1480,6 +1531,7 @@ export class McpRouter {
           sourceFile: endpoint,
           module,
           serviceType,
+          ...(agentDescriptor ? { agent: agentDescriptor } : {}),
           ...(asString(payload.display_name) ? { displayName: asString(payload.display_name) } : {})
         },
         spec: {
@@ -1537,6 +1589,10 @@ export class McpRouter {
 
       const module = asString(payload.module) ?? inferModuleFromEndpoint(endpoint);
       const serviceType = asServiceType(payload.service_type) ?? "mcp";
+      const agentDescriptor = asAgentDescriptor(payload.agent_descriptor);
+      if (serviceType === "agent" && !agentDescriptor) {
+        throw new Error("runtime__register_via_url requires agent_descriptor for service_type=agent");
+      }
       const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
       const timeoutMs = asIntegerMin(payload.timeout_ms, 1);
       const maxPayloadBytes = asIntegerMin(payload.max_payload_bytes, 1024);
@@ -1548,6 +1604,7 @@ export class McpRouter {
           sourceFile: endpoint,
           module,
           serviceType,
+          ...(agentDescriptor ? { agent: agentDescriptor } : {}),
           ...(asString(payload.display_name) ? { displayName: asString(payload.display_name) } : {})
         },
         spec: {

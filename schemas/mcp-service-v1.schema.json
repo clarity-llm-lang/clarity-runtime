@@ -18,10 +18,41 @@
         "version": { "type": "string" },
         "artifactSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "serviceType": { "enum": ["mcp", "agent"] },
+        "agent": {
+          "type": "object",
+          "required": ["agentId", "name", "role", "objective"],
+          "properties": {
+            "agentId": { "type": "string", "minLength": 1 },
+            "name": { "type": "string", "minLength": 1 },
+            "role": { "type": "string", "minLength": 1 },
+            "objective": { "type": "string", "minLength": 1 },
+            "inputs": { "type": "array", "items": { "type": "string" } },
+            "outputs": { "type": "array", "items": { "type": "string" } },
+            "allowedMcpTools": { "type": "array", "items": { "type": "string" } },
+            "allowedLlmProviders": { "type": "array", "items": { "type": "string" } },
+            "handoffTargets": { "type": "array", "items": { "type": "string" } },
+            "dependsOn": { "type": "array", "items": { "type": "string" } },
+            "version": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "serviceType": { "const": "agent" }
+            },
+            "required": ["serviceType"]
+          },
+          "then": {
+            "required": ["agent"]
+          }
+        }
+      ]
     },
     "spec": {
       "type": "object",
