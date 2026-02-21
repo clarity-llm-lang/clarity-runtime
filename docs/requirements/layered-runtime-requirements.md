@@ -14,7 +14,7 @@ Execution order for larger runtime initiatives. The goal is to deliver each laye
   - optional key-management backends (beyond env/file)
 
 ## Layer 2: Transactional Clarity Bootstrap
-- Status: Planned
+- Status: Done (baseline)
 - Scope:
   - preflight checks before writing files
   - rollback for partial bootstrap failures

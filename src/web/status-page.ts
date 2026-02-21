@@ -316,7 +316,8 @@ export function renderStatusPage(): string {
 <script>
 const expanded = {};
 const detailCache = {};
-let latestSystemTools = [];
+let latestRuntimeTools = [];
+let latestClarityTools = [];
 let selectedServiceId = null;
 const queryParams = new URLSearchParams(window.location.search);
 const authToken = queryParams.get('token') || window.localStorage.getItem('clarity_auth_token');
@@ -341,10 +342,12 @@ function badge(state) {
 
 function summaryCards(data) {
   const s = data.summary;
-  const systemCount = typeof data.systemToolCount === 'number' ? data.systemToolCount : 0;
+  const runtimeCount = typeof data.runtimeToolCount === 'number' ? data.runtimeToolCount : 0;
+  const clarityCount = typeof data.clarityToolCount === 'number' ? data.clarityToolCount : 0;
   return [
     ['Services', s.total],
-    ['System Tools', systemCount],
+    ['Runtime Tools', runtimeCount],
+    ['Clarity Tools', clarityCount],
     ['Running', s.running],
     ['Degraded', s.degraded],
     ['Stopped', s.stopped],
@@ -372,11 +375,14 @@ function esc(value) {
     .replaceAll("'", '&#39;');
 }
 
-function renderSystemDetails(systemTools) {
-  const items = (systemTools || []).map((name) => '<li class="code">' + esc(name) + '</li>').join('');
+function renderSystemDetails(runtimeTools, clarityTools) {
+  const runtimeItems = (runtimeTools || []).map((name) => '<li class="code">' + esc(name) + '</li>').join('');
+  const clarityItems = (clarityTools || []).map((name) => '<li class="code">' + esc(name) + '</li>').join('');
   return '<div class="detail-box">' +
-    '<h3 class="detail-title">System Tool Names</h3>' +
-    (items ? '<ul class="detail-list">' + items + '</ul>' : '<div class="code">No system tools reported</div>') +
+    '<h3 class="detail-title">Runtime Tool Names</h3>' +
+    (runtimeItems ? '<ul class="detail-list">' + runtimeItems + '</ul>' : '<div class="code">No runtime tools reported</div>') +
+    '<h3 class="detail-title">Clarity Tool Names</h3>' +
+    (clarityItems ? '<ul class="detail-list">' + clarityItems + '</ul>' : '<div class="code">No clarity tools reported</div>') +
   '</div>';
 }
 
@@ -447,7 +453,10 @@ async function toggleDetails(key, kind, serviceId) {
     }
   }
   if (expanded[key] && kind === 'system') {
-    detailCache[key] = { systemTools: latestSystemTools || [] };
+    detailCache[key] = {
+      runtimeTools: latestRuntimeTools || [],
+      clarityTools: latestClarityTools || []
+    };
   }
   await refresh();
 }
@@ -460,26 +469,41 @@ async function refresh() {
     ]);
     const data = statusResult.status === 'fulfilled'
       ? statusResult.value
-      : { summary: { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 }, services: [], systemTools: { items: [] } };
+      : {
+        summary: { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
+        services: [],
+        systemTools: {
+          items: [],
+          runtime: { items: [] },
+          clarity: { items: [] }
+        }
+      };
     const audit = auditResult.status === 'fulfilled'
       ? auditResult.value
       : { items: [] };
     const summarySafe = (data && data.summary) ? data.summary : { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 };
     const services = Array.isArray(data && data.services) ? data.services : [];
-    const systemTools = Array.isArray(data && data.systemTools && data.systemTools.items) ? data.systemTools.items : [];
+    const runtimeTools = Array.isArray(data && data.systemTools && data.systemTools.runtime && data.systemTools.runtime.items)
+      ? data.systemTools.runtime.items
+      : [];
+    const clarityTools = Array.isArray(data && data.systemTools && data.systemTools.clarity && data.systemTools.clarity.items)
+      ? data.systemTools.clarity.items
+      : [];
     let bootstrap = { clients: [] };
     try {
       bootstrap = await call('/api/bootstrap/status');
     } catch {
       bootstrap = { clients: [] };
     }
-    latestSystemTools = systemTools;
+    latestRuntimeTools = runtimeTools;
+    latestClarityTools = clarityTools;
     if (selectedServiceId === null) {
       selectedServiceId = getSelectedFromQuery();
     }
     document.getElementById('summary').innerHTML = summaryCards({
       summary: summarySafe,
-      systemToolCount: systemTools.length
+      runtimeToolCount: runtimeTools.length,
+      clarityToolCount: clarityTools.length
     });
 
     const systemRow = '<tr>' +
@@ -488,14 +512,14 @@ async function refresh() {
       '<td><div class="code">built-in</div></td>' +
       '<td>' + badge('RUNNING') + '</td>' +
       '<td><span class="code">HEALTHY</span></td>' +
-      '<td>' + systemTools.length + ' tools, 0 resources, 0 prompts</td>' +
+      '<td>' + runtimeTools.length + ' runtime tools, ' + clarityTools.length + ' clarity tools</td>' +
       '<td>' +
         '<button class="btn ghost" data-key="system__runtime" data-kind="system" data-service="" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
         '<button class="btn ghost" data-service="system__runtime" onclick="openService(this.dataset.service)">Open</button>' +
       '</td>' +
     '</tr>';
     const systemDetailRow = expanded.system__runtime
-      ? '<tr class="detail-row"><td colspan="7">' + renderSystemDetails(systemTools) + '</td></tr>'
+      ? '<tr class="detail-row"><td colspan="7">' + renderSystemDetails(runtimeTools, clarityTools) + '</td></tr>'
       : '';
 
     const serviceRows = services.map((svc) => {
@@ -553,9 +577,11 @@ async function refresh() {
       document.getElementById('inspector').innerHTML =
         '<div class="detail-box">' +
           '<h3 class="detail-title">Runtime System</h3>' +
-          '<div class="code">Built-in runtime MCP control/assist tools.</div>' +
-          '<h3 class="detail-title">Tool Names</h3>' +
-          '<ul class="detail-list">' + systemTools.map((name) => '<li class="code">' + esc(name) + '</li>').join('') + '</ul>' +
+          '<div class="code">Built-in runtime + clarity MCP tools.</div>' +
+          '<h3 class="detail-title">Runtime Tool Names</h3>' +
+          '<ul class="detail-list">' + runtimeTools.map((name) => '<li class="code">' + esc(name) + '</li>').join('') + '</ul>' +
+          '<h3 class="detail-title">Clarity Tool Names</h3>' +
+          '<ul class="detail-list">' + clarityTools.map((name) => '<li class="code">' + esc(name) + '</li>').join('') + '</ul>' +
         '</div>';
     } else {
       try {
@@ -602,7 +628,8 @@ async function refresh() {
   } catch (error) {
     document.getElementById('summary').innerHTML = summaryCards({
       summary: { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
-      systemToolCount: 0
+      runtimeToolCount: 0,
+      clarityToolCount: 0
     });
     document.getElementById('rows').innerHTML = '<tr><td colspan="7" style="color:#a72525">UI render error: ' + String(error) + '</td></tr>';
     document.getElementById('inspector').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';

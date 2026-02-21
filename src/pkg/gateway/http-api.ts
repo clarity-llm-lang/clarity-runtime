@@ -14,7 +14,15 @@ import {
   validateRemoteAuthRef
 } from "../security/remote-auth.js";
 
-const SYSTEM_TOOLS = [
+const CLARITY_SYSTEM_TOOLS = [
+  "runtime__clarity_help",
+  "runtime__clarity_sources",
+  "runtime__clarity_project_structure",
+  "runtime__ensure_compiler",
+  "runtime__bootstrap_clarity_app"
+] as const;
+
+const RUNTIME_SYSTEM_TOOLS = [
   "runtime__status_summary",
   "runtime__list_services",
   "runtime__get_service",
@@ -31,16 +39,13 @@ const SYSTEM_TOOLS = [
   "runtime__list_auth_secrets",
   "runtime__set_auth_secret",
   "runtime__delete_auth_secret",
-  "runtime__clarity_help",
-  "runtime__clarity_sources",
-  "runtime__clarity_project_structure",
-  "runtime__ensure_compiler",
-  "runtime__bootstrap_clarity_app",
   "runtime__register_local",
   "runtime__register_remote",
   "runtime__register_via_url",
   "runtime__apply_manifest"
 ] as const;
+
+const SYSTEM_TOOLS = [...RUNTIME_SYSTEM_TOOLS, ...CLARITY_SYSTEM_TOOLS] as const;
 
 function json(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -211,7 +216,15 @@ export async function handleHttp(
         },
         systemTools: {
           count: SYSTEM_TOOLS.length,
-          items: SYSTEM_TOOLS
+          items: SYSTEM_TOOLS,
+          runtime: {
+            count: RUNTIME_SYSTEM_TOOLS.length,
+            items: RUNTIME_SYSTEM_TOOLS
+          },
+          clarity: {
+            count: CLARITY_SYSTEM_TOOLS.length,
+            items: CLARITY_SYSTEM_TOOLS
+          }
         },
         summary,
         services,
