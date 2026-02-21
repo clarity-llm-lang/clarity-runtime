@@ -1,0 +1,21 @@
+ci/cd:
+  - changed-files:
+      - any-glob-to-any-file: ".github/**"
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "README.md"
+          - "docs/**"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file: "src/tests/**"
+
+runtime-core:
+  - changed-files:
+      - any-glob-to-any-file: "src/pkg/**"
+
+status-ui:
+  - changed-files:
+      - any-glob-to-any-file: "src/web/**"

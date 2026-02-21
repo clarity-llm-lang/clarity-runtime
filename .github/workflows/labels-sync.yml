@@ -1,0 +1,60 @@
+name: Labels Sync
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/labels-sync.yml"
+
+permissions:
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure standard labels exist
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = [
+              { name: "type/bug", color: "d73a4a", description: "Bug or regression" },
+              { name: "type/feature", color: "0e8a16", description: "New feature" },
+              { name: "ci/cd", color: "1d76db", description: "Continuous integration and delivery" },
+              { name: "docs", color: "5319e7", description: "Documentation changes" },
+              { name: "tests", color: "f9d0c4", description: "Test coverage and quality" },
+              { name: "runtime-core", color: "0366d6", description: "Core runtime internals" },
+              { name: "status-ui", color: "c2e0c6", description: "Status page/UI changes" },
+              { name: "dependencies", color: "0366d6", description: "Dependency updates" }
+            ];
+
+            for (const label of labels) {
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label.name
+                });
+                await github.rest.issues.updateLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label.name,
+                  color: label.color,
+                  description: label.description
+                });
+              } catch (error) {
+                if (error.status === 404) {
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: label.name,
+                    color: label.color,
+                    description: label.description
+                  });
+                } else {
+                  throw error;
+                }
+              }
+            }

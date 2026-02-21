@@ -1,39 +1,36 @@
-name: Build
+name: PR CI
 
 on:
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - main
 
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
+  group: pr-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   branch-naming:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Validate branch naming convention
         shell: bash
         run: |
           BRANCH="${{ github.head_ref }}"
-          REGEX='^(result|hotfix|codex)/[a-z0-9]+(-[a-z0-9]+)*$'
+          REGEX='^(result|hotfix|codex)/[a-z0-9]+(-[a-z0-9]+)*$|^dependabot/.+$'
           if [[ ! "$BRANCH" =~ $REGEX ]]; then
             echo "Invalid branch name: $BRANCH"
             echo "Use outcome-based names:"
             echo "  result/<outcome-kebab-case>"
             echo "  hotfix/<outcome-kebab-case>"
             echo "  codex/<outcome-kebab-case>"
+            echo "Automated branches allowed: dependabot/*"
             exit 1
           fi
 
   build:
     needs: branch-naming
-    if: always() && (github.event_name != 'pull_request' || needs.branch-naming.result == 'success')
+    if: needs.branch-naming.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -52,34 +49,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Lint
+        run: npm run lint
+
+      - name: Format
+        run: npm run format
+
       - name: Test
         run: npm test
-
-      - name: Create snapshot package
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        id: snapshot
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p .snapshot
-          PACKAGE_FILE="$(npm pack)"
-          SHORT_SHA="${GITHUB_SHA::8}"
-          SNAPSHOT_FILE="${PACKAGE_FILE%.tgz}-snapshot.${GITHUB_RUN_NUMBER}+${SHORT_SHA}.tgz"
-          mv "$PACKAGE_FILE" ".snapshot/$SNAPSHOT_FILE"
-          cat > .snapshot/metadata.json <<EOF
-          {
-            "snapshotFile": "$SNAPSHOT_FILE",
-            "runNumber": "${GITHUB_RUN_NUMBER}",
-            "sha": "${GITHUB_SHA}",
-            "ref": "${GITHUB_REF}",
-            "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOF
-          echo "snapshot_file=.snapshot/$SNAPSHOT_FILE" >> "$GITHUB_OUTPUT"
-
-      - name: Upload snapshot artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with:
-          name: package-snapshot-${{ github.run_number }}-${{ github.sha }}
-          path: .snapshot/
