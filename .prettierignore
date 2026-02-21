@@ -1,0 +1,6 @@
+dist
+node_modules
+.clarity
+assets
+package-lock.json
+coverage

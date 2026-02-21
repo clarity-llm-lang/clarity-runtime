@@ -21,6 +21,7 @@ clarityc start server.clarity
 ## Why Clarity Runtime?
 
 MCP operations are usually fragmented:
+
 - every client needs separate MCP wiring
 - local and remote servers are managed differently
 - there is no shared status surface for health, logs, and interface visibility
@@ -127,6 +128,15 @@ clarityctl doctor
 
 `clarityctl doctor` now validates daemon connectivity, compiler availability, and local build workspace readiness.
 
+Quality commands:
+
+```bash
+npm run lint
+npm run format
+npm run test
+npm run test:coverage
+```
+
 Legacy compatibility commands (still supported):
 
 ```bash
@@ -139,6 +149,7 @@ clarityctl start-source --source <file.clarity> [--module <name>] [--wasm <file.
 ## Current Status
 
 Implemented in v1 scaffold:
+
 - service contracts and manifest schema (`clarity.runtime/v1`)
 - persistent registry (`.clarity/runtime/registry.json`)
 - daemon HTTP API and status page
@@ -154,6 +165,7 @@ Implemented in v1 scaffold:
 - bootstrap writers for Codex/Claude config files
 
 Not implemented yet:
+
 - direct native `clarityc start` command in the compiler repo (runtime side is ready via `clarityctl add`; compiler integration should make runtime an explicit requirement)
 - remote auth/policy isolation hardening and secret lifecycle operations
 
@@ -171,18 +183,18 @@ Not implemented yet:
 
 ## Progress Snapshot
 
-| Area | Status | Notes |
-|------|--------|-------|
-| Registry + lifecycle | Done | Persistent service records, start/stop/restart, health state |
-| Gateway MCP transport | Done | `/mcp` JSON-RPC with list/call routing |
-| Runtime as MCP control plane | Done | `runtime__*` tools for status, service ops, logs, audit, quarantine recovery |
-| Stdio gateway bridge | Done | `clarityctl gateway serve --stdio` forwards to daemon gateway |
-| Remote MCP proxying | Done (baseline) | Initialize/introspect/tool forwarding |
-| Compiler-driven onboarding | In progress | Runtime side done; native `clarityc start` implemented in `LLM-lang` branch and pending merge |
-| Local function execution | Done (baseline) | `<namespace>__fn__*` tools discovered from wasm exports and executed via compiler runtime |
-| In-process WASM host execution | Done | Local function tools execute directly via wasm instantiate/call in runtime |
-| Auth/policy hardening | In progress | Timeout/allowed-tools/payload-size/concurrency/host-allowlist baseline implemented; auth provider backend (`legacy env`, `env`, `file`, `header_env`) added; isolation/lifecycle pending |
-| MCP self-provisioning | Done (gated) | `runtime__register_local`, `runtime__register_remote`, `runtime__apply_manifest` behind `CLARITY_ENABLE_MCP_PROVISIONING=1` |
+| Area                           | Status          | Notes                                                                                                                                                                                    |
+| ------------------------------ | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Registry + lifecycle           | Done            | Persistent service records, start/stop/restart, health state                                                                                                                             |
+| Gateway MCP transport          | Done            | `/mcp` JSON-RPC with list/call routing                                                                                                                                                   |
+| Runtime as MCP control plane   | Done            | `runtime__*` tools for status, service ops, logs, audit, quarantine recovery                                                                                                             |
+| Stdio gateway bridge           | Done            | `clarityctl gateway serve --stdio` forwards to daemon gateway                                                                                                                            |
+| Remote MCP proxying            | Done (baseline) | Initialize/introspect/tool forwarding                                                                                                                                                    |
+| Compiler-driven onboarding     | In progress     | Runtime side done; native `clarityc start` implemented in `LLM-lang` branch and pending merge                                                                                            |
+| Local function execution       | Done (baseline) | `<namespace>__fn__*` tools discovered from wasm exports and executed via compiler runtime                                                                                                |
+| In-process WASM host execution | Done            | Local function tools execute directly via wasm instantiate/call in runtime                                                                                                               |
+| Auth/policy hardening          | In progress     | Timeout/allowed-tools/payload-size/concurrency/host-allowlist baseline implemented; auth provider backend (`legacy env`, `env`, `file`, `header_env`) added; isolation/lifecycle pending |
+| MCP self-provisioning          | Done (gated)    | `runtime__register_local`, `runtime__register_remote`, `runtime__apply_manifest` behind `CLARITY_ENABLE_MCP_PROVISIONING=1`                                                              |
 
 ---
 
@@ -220,6 +232,53 @@ Not implemented yet:
 - `GET /api/events`: SSE stream for live runtime events.
 - Status page now includes an audit timeline and `Unquarantine` action for quarantined services.
 
+## CI/CD And GitHub
+
+- PR CI: `.github/workflows/build.yml` (branch naming + build + lint + format + test).
+- Snapshot packaging on every merge/push to `main`: `.github/workflows/snapshot.yml` (includes coverage gate and uploads snapshot artifact).
+- Tagged release pipeline: `.github/workflows/release.yml` (build, test, coverage, package, checksums, GitHub Release assets).
+- Automated versioning/changelog PRs: `.github/workflows/release-please.yml` (`.release-please-*.json` config).
+- Security gates:
+  - `.github/workflows/dependency-review.yml`
+  - `.github/workflows/codeql.yml`
+  - `.github/workflows/secret-scan.yml`
+- Repo automation:
+  - Dependabot: `.github/dependabot.yml`
+  - CODEOWNERS: `.github/CODEOWNERS`
+  - PR/Issue templates: `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/*`
+  - Label sync + path labeling: `.github/workflows/labels-sync.yml`, `.github/workflows/labeler.yml`, `.github/labeler.yml`
+  - Optional project auto-add: `.github/workflows/project-automation.yml` (set `GH_PROJECT_URL` variable and `ADD_TO_PROJECT_PAT` secret)
+
+### Required GitHub Settings (Manual)
+
+- Protect `main`:
+  - Require pull requests before merge
+  - Require status checks to pass before merge
+  - Require branches to be up to date before merge
+  - Require linear history
+- Merge strategy:
+  - Enable squash merge
+  - Disable merge commits
+- Optional hardening:
+  - Restrict who can push to `main`
+  - Require review from Code Owners
+
+You can apply a baseline branch-protection policy with:
+
+```bash
+./scripts/github/apply-branch-protection.sh <owner> <repo>
+```
+
+### Commit/Release Convention
+
+- Use conventional commit prefixes so release automation can infer version bumps:
+  - `feat: ...`
+  - `fix: ...`
+  - `chore: ...`
+  - `docs: ...`
+  - `refactor: ...`
+- Use `BREAKING CHANGE:` in commit bodies for major bumps.
+
 ## Contributing
 
 This repo uses trunk-based development:
@@ -230,7 +289,8 @@ This repo uses trunk-based development:
    - `result/<outcome-kebab-case>`
    - `hotfix/<outcome-kebab-case>`
    - `codex/<outcome-kebab-case>`
+   - (automation exception) `dependabot/*`
 4. Open a PR to `main` with behavior/rationale notes.
-5. Ensure CI is green (`.github/workflows/build.yml`: branch-name check + build + test).
+5. Ensure CI is green (`.github/workflows/build.yml`: branch-name check + build + lint + format + test).
 
 For larger architecture changes, open an issue first to align on the control-plane contract.

@@ -1,0 +1,23 @@
+name: Project Automation
+
+on:
+  issues:
+    types: [opened, reopened]
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  add-to-project:
+    if: vars.GH_PROJECT_URL != '' && secrets.ADD_TO_PROJECT_PAT != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add issue or PR to GitHub Project
+        uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: ${{ vars.GH_PROJECT_URL }}
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
