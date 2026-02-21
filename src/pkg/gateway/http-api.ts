@@ -37,6 +37,8 @@ const RUNTIME_SYSTEM_TOOLS = [
   { name: "runtime__unquarantine_service", description: "Clear quarantine so a service can start again." },
   { name: "runtime__remove_service", description: "Deprovision service with optional artifact cleanup." },
   { name: "runtime__get_audit", description: "Read recent runtime audit events." },
+  { name: "runtime__get_agent_runs", description: "List recent agent runs with status/timing counters." },
+  { name: "runtime__get_agent_events", description: "Read recent agent orchestration timeline events." },
   { name: "runtime__validate_auth_ref", description: "Validate authRef and return redacted diagnostics." },
   { name: "runtime__auth_provider_health", description: "Report remote auth provider/file-root health." },
   { name: "runtime__list_auth_secrets", description: "List file-backed secret handles (no secret values)." },
@@ -122,6 +124,14 @@ function extractRecentCalls(events: Array<{ kind: string; at: string; message: s
       data: event.data
     }));
   return calls.slice(Math.max(0, calls.length - Math.max(1, limit)));
+}
+
+function parseLimit(value: string | null, fallback: number, min = 1, max = 2000): number {
+  const parsed = Number(value ?? `${fallback}`);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
 }
 
 export async function handleHttp(
@@ -221,6 +231,7 @@ export async function handleHttp(
 
     if (method === "GET" && url.pathname === "/api/status") {
       const services = (await manager.list()).map(summarize);
+      const agentRuns = manager.getAgentRuns(500);
       const listen = req.headers.host && req.headers.host.length > 0 ? req.headers.host : "localhost:4707";
       const summary = {
         total: services.length,
@@ -230,6 +241,14 @@ export async function handleHttp(
         quarantined: services.filter((s) => s.lifecycle === "QUARANTINED").length,
         local: services.filter((s) => s.originType === "local_wasm").length,
         remote: services.filter((s) => s.originType === "remote_mcp").length
+      };
+      const agentSummary = {
+        totalRuns: agentRuns.length,
+        running: agentRuns.filter((run) => run.status === "running").length,
+        waiting: agentRuns.filter((run) => run.status === "waiting").length,
+        completed: agentRuns.filter((run) => run.status === "completed").length,
+        failed: agentRuns.filter((run) => run.status === "failed").length,
+        cancelled: agentRuns.filter((run) => run.status === "cancelled").length
       };
 
       json(res, 200, {
@@ -256,6 +275,7 @@ export async function handleHttp(
           }
         },
         summary,
+        agents: agentSummary,
         services,
         lastUpdated: new Date().toISOString()
       });
@@ -268,10 +288,81 @@ export async function handleHttp(
     }
 
     if (method === "GET" && url.pathname === "/api/audit") {
-      const limit = Number(url.searchParams.get("limit") ?? "200");
+      const limit = parseLimit(url.searchParams.get("limit"), 200);
       json(res, 200, {
-        items: manager.getRecentEvents(Number.isFinite(limit) ? limit : 200)
+        items: manager.getRecentEvents(limit)
       });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/agents/events") {
+      const limit = parseLimit(url.searchParams.get("limit"), 200);
+      json(res, 200, { items: manager.getRecentAgentEvents(limit) });
+      return;
+    }
+
+    const agentRunEventsMatch = url.pathname.match(/^\/api\/agents\/runs\/([^/]+)\/events$/);
+    if (method === "GET" && agentRunEventsMatch) {
+      const runId = decodeURIComponent(agentRunEventsMatch[1]);
+      const limit = parseLimit(url.searchParams.get("limit"), 200);
+      json(res, 200, {
+        runId,
+        items: manager.getAgentRunEvents(runId, limit)
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/agents/runs") {
+      const limit = parseLimit(url.searchParams.get("limit"), 100);
+      json(res, 200, { items: manager.getAgentRuns(limit) });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/agents/events") {
+      const body = await readJsonBody(req) as {
+        kind?: unknown;
+        level?: unknown;
+        message?: unknown;
+        service_id?: unknown;
+        run_id?: unknown;
+        runId?: unknown;
+        step_id?: unknown;
+        stepId?: unknown;
+        agent?: unknown;
+        data?: unknown;
+      };
+      const kind = typeof body.kind === "string" ? body.kind.trim() : "";
+      if (!kind.startsWith("agent.")) {
+        json(res, 400, { error: "expected kind to start with 'agent.'" });
+        return;
+      }
+      const level = body.level === "warn" || body.level === "error" ? body.level : "info";
+      const payload = typeof body.data === "object" && body.data ? body.data as Record<string, unknown> : {};
+      const runId = typeof body.runId === "string"
+        ? body.runId
+        : (typeof body.run_id === "string" ? body.run_id : undefined);
+      const stepId = typeof body.stepId === "string"
+        ? body.stepId
+        : (typeof body.step_id === "string" ? body.step_id : undefined);
+      const agent = typeof body.agent === "string" ? body.agent : undefined;
+      const data = {
+        ...payload,
+        ...(runId ? { runId } : {}),
+        ...(stepId ? { stepId } : {}),
+        ...(agent ? { agent } : {})
+      };
+      const message = typeof body.message === "string" && body.message.trim().length > 0
+        ? body.message
+        : `${kind}${runId ? ` (${runId})` : ""}`;
+      const serviceId = typeof body.service_id === "string" ? body.service_id : undefined;
+      manager.recordRuntimeEvent({
+        kind,
+        level,
+        message,
+        serviceId,
+        data
+      });
+      json(res, 200, { ok: true });
       return;
     }
 
@@ -404,10 +495,10 @@ export async function handleHttp(
     const logsMatch = url.pathname.match(/^\/api\/services\/([^/]+)\/logs$/);
     if (method === "GET" && logsMatch) {
       const id = decodeURIComponent(logsMatch[1]);
-      const limit = Number(url.searchParams.get("limit") ?? "200");
+      const limit = parseLimit(url.searchParams.get("limit"), 200);
       json(res, 200, {
         serviceId: id,
-        lines: await manager.tailLogs(id, Number.isFinite(limit) ? limit : 200)
+        lines: await manager.tailLogs(id, limit)
       });
       return;
     }
@@ -415,10 +506,10 @@ export async function handleHttp(
     const serviceEventsMatch = url.pathname.match(/^\/api\/services\/([^/]+)\/events$/);
     if (method === "GET" && serviceEventsMatch) {
       const id = decodeURIComponent(serviceEventsMatch[1]);
-      const limit = Number(url.searchParams.get("limit") ?? "200");
+      const limit = parseLimit(url.searchParams.get("limit"), 200);
       json(res, 200, {
         serviceId: id,
-        items: manager.getServiceEvents(id, Number.isFinite(limit) ? limit : 200)
+        items: manager.getServiceEvents(id, limit)
       });
       return;
     }
@@ -432,12 +523,12 @@ export async function handleHttp(
         return;
       }
 
-      const logLimit = Number(url.searchParams.get("log_limit") ?? "50");
-      const eventLimit = Number(url.searchParams.get("event_limit") ?? "100");
-      const callLimit = Number(url.searchParams.get("call_limit") ?? "20");
-      const logs = await manager.tailLogs(id, Number.isFinite(logLimit) ? logLimit : 50);
-      const events = manager.getServiceEvents(id, Number.isFinite(eventLimit) ? eventLimit : 100);
-      const recentCalls = extractRecentCalls(events, Number.isFinite(callLimit) ? callLimit : 20);
+      const logLimit = parseLimit(url.searchParams.get("log_limit"), 50);
+      const eventLimit = parseLimit(url.searchParams.get("event_limit"), 100);
+      const callLimit = parseLimit(url.searchParams.get("call_limit"), 20);
+      const logs = await manager.tailLogs(id, logLimit);
+      const events = manager.getServiceEvents(id, eventLimit);
+      const recentCalls = extractRecentCalls(events, callLimit);
 
       json(res, 200, {
         serviceId: id,

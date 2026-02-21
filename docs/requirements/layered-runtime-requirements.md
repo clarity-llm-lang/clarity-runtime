@@ -47,3 +47,13 @@ Execution order for larger runtime initiatives. The goal is to deliver each laye
   - native compiler command that boots runtime flows
   - compatibility contract between compiler/runtime
   - integrated docs and acceptance tests
+
+## Layer 7: Agent / A2A Observability
+- Status: Done (baseline)
+- Scope:
+  - persist `agent.*` orchestration events in runtime telemetry
+  - expose agent run + timeline APIs (`/api/agents/*`)
+  - split control-plane UX into `MCP` and `Agents` tabs
+- Remaining:
+  - language runtime integration for automatic event emission from `std/a2a`/`std/mcp`
+  - policy knobs for per-kind retention and redaction
