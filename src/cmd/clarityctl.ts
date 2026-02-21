@@ -4,19 +4,28 @@ import { spawn } from "node:child_process";
 import { access, mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
+import { normalizeNamespace } from "../pkg/security/namespace.js";
 import type { MCPServiceManifest } from "../types/contracts.js";
 
 const program = new Command();
 
 const DEFAULT_DAEMON_URL = process.env.CLARITYD_URL ?? "http://localhost:4707";
 
-async function api<T>(baseUrl: string, pathname: string, init?: RequestInit): Promise<T> {
+function requestHeaders(authToken: string | undefined, headers?: HeadersInit): Headers {
+  const out = new Headers(headers);
+  if (!out.has("content-type")) {
+    out.set("content-type", "application/json");
+  }
+  if (authToken) {
+    out.set("x-clarity-token", authToken);
+  }
+  return out;
+}
+
+async function api<T>(baseUrl: string, pathname: string, authToken: string | undefined, init?: RequestInit): Promise<T> {
   const res = await fetch(`${baseUrl}${pathname}`, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers ?? {})
-    }
+    headers: requestHeaders(authToken, init?.headers)
   });
 
   const text = await res.text();
@@ -56,7 +65,7 @@ function localManifest(input: {
         windowSeconds: 60
       },
       policyRef: "default",
-      toolNamespace: input.module.toLowerCase()
+      toolNamespace: normalizeNamespace(input.module)
     }
   };
 }
@@ -98,12 +107,12 @@ function remoteManifest(input: {
         windowSeconds: 60
       },
       policyRef: "default",
-      toolNamespace: input.module.toLowerCase()
+      toolNamespace: normalizeNamespace(input.module)
     }
   };
 }
 
-async function runStdioGateway(baseUrl: string): Promise<void> {
+async function runStdioGateway(baseUrl: string, authToken: string | undefined): Promise<void> {
   const rl = readline.createInterface({
     input: process.stdin,
     crlfDelay: Infinity,
@@ -124,24 +133,41 @@ async function runStdioGateway(baseUrl: string): Promise<void> {
       continue;
     }
 
-    const response = await fetch(`${baseUrl}/mcp`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json"
-      },
-      body: JSON.stringify(message)
-    });
-
-    const raw = await response.text();
-    if (!raw.trim()) {
-      continue;
-    }
+    const maybeId =
+      message
+      && typeof message === "object"
+      && "id" in message
+      ? (message as { id?: string | number | null }).id
+      : undefined;
 
     try {
+      const response = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: requestHeaders(authToken),
+        body: JSON.stringify(message)
+      });
+
+      const raw = await response.text();
+      if (!raw.trim()) {
+        continue;
+      }
+
       const parsed = JSON.parse(raw);
       process.stdout.write(`${JSON.stringify(parsed)}\n`);
-    } catch {
-      continue;
+    } catch (error) {
+      if (maybeId === undefined) {
+        continue;
+      }
+      process.stdout.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: maybeId,
+          error: {
+            code: -32000,
+            message: error instanceof Error ? error.message : String(error)
+          }
+        })}\n`
+      );
     }
   }
 }
@@ -229,6 +255,7 @@ function resolveSourceAndModule(serviceInput: string, explicitModule?: string): 
 
 async function compileRegisterStartIntrospect(input: {
   daemonUrl: string;
+  authToken?: string;
   sourceFile: string;
   moduleName: string;
   wasmPath?: string;
@@ -251,16 +278,16 @@ async function compileRegisterStartIntrospect(input: {
     displayName: input.displayName
   });
 
-  const applyOut = await api<{ service: unknown }>(input.daemonUrl, "/api/services/apply", {
+  const applyOut = await api<{ service: unknown }>(input.daemonUrl, "/api/services/apply", input.authToken, {
     method: "POST",
     body: JSON.stringify({ manifest })
   });
 
   const serviceId = extractServiceId(applyOut);
-  await api<Record<string, unknown>>(input.daemonUrl, `/api/services/${encodeURIComponent(serviceId)}/start`, {
+  await api<Record<string, unknown>>(input.daemonUrl, `/api/services/${encodeURIComponent(serviceId)}/start`, input.authToken, {
     method: "POST"
   });
-  await api<Record<string, unknown>>(input.daemonUrl, `/api/services/${encodeURIComponent(serviceId)}/introspect`, {
+  await api<Record<string, unknown>>(input.daemonUrl, `/api/services/${encodeURIComponent(serviceId)}/introspect`, input.authToken, {
     method: "POST"
   });
 
@@ -296,21 +323,26 @@ function extractServiceId(payload: unknown): string {
 program
   .name("clarityctl")
   .description("Clarity runtime control CLI")
-  .option("--daemon-url <url>", "Clarity daemon base URL", DEFAULT_DAEMON_URL);
+  .option("--daemon-url <url>", "Clarity daemon base URL", DEFAULT_DAEMON_URL)
+  .option("--auth-token <token>", "Runtime auth token", process.env.CLARITYD_AUTH_TOKEN ?? process.env.CLARITY_API_TOKEN);
+
+function runtimeOpts(): { daemonUrl: string; authToken?: string } {
+  return program.opts<{ daemonUrl: string; authToken?: string }>();
+}
 
 program
   .command("list")
   .action(async () => {
-    const opts = program.opts<{ daemonUrl: string }>();
-    const out = await api<{ items: Array<Record<string, unknown>> }>(opts.daemonUrl, "/api/services");
+    const opts = runtimeOpts();
+    const out = await api<{ items: Array<Record<string, unknown>> }>(opts.daemonUrl, "/api/services", opts.authToken);
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });
 
 program
   .command("status")
   .action(async () => {
-    const opts = program.opts<{ daemonUrl: string }>();
-    const out = await api<Record<string, unknown>>(opts.daemonUrl, "/api/status");
+    const opts = runtimeOpts();
+    const out = await api<Record<string, unknown>>(opts.daemonUrl, "/api/status", opts.authToken);
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });
 
@@ -323,10 +355,11 @@ program
   .option("--name <display>", "Optional display name")
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (service, opts) => {
-    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const runtime = runtimeOpts();
     const { sourceFile, moduleName } = resolveSourceAndModule(String(service), opts.module);
     const out = await compileRegisterStartIntrospect({
-      daemonUrl: daemon,
+      daemonUrl: runtime.daemonUrl,
+      authToken: runtime.authToken,
       sourceFile,
       moduleName,
       wasmPath: opts.wasm,
@@ -344,7 +377,7 @@ program
   .option("--entry <name>", "MCP entry function", "mcp_main")
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (dir, opts) => {
-    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const runtime = runtimeOpts();
     const rootDir = path.resolve(dir ?? ".");
     const files = await collectClarityFiles(rootDir, Boolean(opts.recursive));
     if (files.length === 0) {
@@ -356,7 +389,8 @@ program
     for (const sourceFile of files) {
       const moduleName = path.basename(sourceFile, path.extname(sourceFile));
       const result = await compileRegisterStartIntrospect({
-        daemonUrl: daemon,
+        daemonUrl: runtime.daemonUrl,
+        authToken: runtime.authToken,
         sourceFile,
         moduleName,
         entry: opts.entry,
@@ -389,7 +423,7 @@ program
   .option("--entry <name>", "MCP entry function", "mcp_main")
   .option("--name <display>", "Optional display name")
   .action(async (opts) => {
-    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const runtime = runtimeOpts();
     process.stderr.write("warning: `add-local` is legacy; prefer `add <service>`.\n");
     const manifest = localManifest({
       sourceFile: path.resolve(opts.source),
@@ -399,7 +433,7 @@ program
       displayName: opts.name
     });
 
-    const out = await api<{ service: unknown }>(daemon, "/api/services/apply", {
+    const out = await api<{ service: unknown }>(runtime.daemonUrl, "/api/services/apply", runtime.authToken, {
       method: "POST",
       body: JSON.stringify({ manifest })
     });
@@ -416,12 +450,13 @@ program
   .option("--name <display>", "Optional display name")
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (opts) => {
-    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const runtime = runtimeOpts();
     process.stderr.write("warning: `start-source` is legacy; prefer `add <service>`.\n");
     const sourceFile = path.resolve(opts.source);
     const moduleName = opts.module ?? path.basename(sourceFile, path.extname(sourceFile));
     const out = await compileRegisterStartIntrospect({
-      daemonUrl: daemon,
+      daemonUrl: runtime.daemonUrl,
+      authToken: runtime.authToken,
       sourceFile,
       moduleName,
       wasmPath: opts.wasm,
@@ -443,7 +478,7 @@ program
   .option("--max-payload-bytes <bytes>", "Max response/request payload bytes for this remote service")
   .option("--max-concurrency <n>", "Max concurrent in-flight remote requests for this service")
   .action(async (opts) => {
-    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const runtime = runtimeOpts();
     const timeoutMs = opts.timeoutMs !== undefined ? Number(opts.timeoutMs) : undefined;
     const maxPayloadBytes = opts.maxPayloadBytes !== undefined ? Number(opts.maxPayloadBytes) : undefined;
     const maxConcurrency = opts.maxConcurrency !== undefined ? Number(opts.maxConcurrency) : undefined;
@@ -461,7 +496,7 @@ program
       maxConcurrency: Number.isFinite(maxConcurrency as number) && (maxConcurrency as number) > 0 ? maxConcurrency : undefined
     });
 
-    const out = await api<{ service: unknown }>(daemon, "/api/services/apply", {
+    const out = await api<{ service: unknown }>(runtime.daemonUrl, "/api/services/apply", runtime.authToken, {
       method: "POST",
       body: JSON.stringify({ manifest })
     });
@@ -472,10 +507,15 @@ for (const action of ["start", "stop", "restart", "introspect"] as const) {
   program
     .command(`${action} <serviceId>`)
     .action(async (serviceId) => {
-      const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
-      const out = await api<Record<string, unknown>>(daemon, `/api/services/${encodeURIComponent(serviceId)}/${action}`, {
-        method: "POST"
-      });
+      const runtime = runtimeOpts();
+      const out = await api<Record<string, unknown>>(
+        runtime.daemonUrl,
+        `/api/services/${encodeURIComponent(serviceId)}/${action}`,
+        runtime.authToken,
+        {
+          method: "POST"
+        }
+      );
       process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
     });
 }
@@ -486,7 +526,7 @@ program
   .option("--event-limit <n>", "Recent events", "100")
   .option("--call-limit <n>", "Recent tool calls", "20")
   .action(async (serviceId, opts) => {
-    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const runtime = runtimeOpts();
     const logLimit = Number(opts.logLimit);
     const eventLimit = Number(opts.eventLimit);
     const callLimit = Number(opts.callLimit);
@@ -495,7 +535,11 @@ program
       event_limit: String(Number.isFinite(eventLimit) ? eventLimit : 100),
       call_limit: String(Number.isFinite(callLimit) ? callLimit : 20)
     });
-    const out = await api<Record<string, unknown>>(daemon, `/api/services/${encodeURIComponent(serviceId)}/details?${qs.toString()}`);
+    const out = await api<Record<string, unknown>>(
+      runtime.daemonUrl,
+      `/api/services/${encodeURIComponent(serviceId)}/details?${qs.toString()}`,
+      runtime.authToken
+    );
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });
 
@@ -503,9 +547,13 @@ program
   .command("logs <serviceId>")
   .option("--limit <n>", "Number of lines", "200")
   .action(async (serviceId, opts) => {
-    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const runtime = runtimeOpts();
     const limit = Number(opts.limit);
-    const out = await api<{ lines: string[] }>(daemon, `/api/services/${encodeURIComponent(serviceId)}/logs?limit=${Number.isFinite(limit) ? limit : 200}`);
+    const out = await api<{ lines: string[] }>(
+      runtime.daemonUrl,
+      `/api/services/${encodeURIComponent(serviceId)}/logs?limit=${Number.isFinite(limit) ? limit : 200}`,
+      runtime.authToken
+    );
     process.stdout.write(`${out.lines.join("\n")}\n`);
   });
 
@@ -513,13 +561,13 @@ program
   .command("bootstrap")
   .option("--clients <items>", "Comma separated clients", "codex,claude")
   .action(async (opts) => {
-    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const runtime = runtimeOpts();
     const clients = String(opts.clients)
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
 
-    const out = await api<Record<string, unknown>>(daemon, "/api/bootstrap", {
+    const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/bootstrap", runtime.authToken, {
       method: "POST",
       body: JSON.stringify({ clients })
     });
@@ -530,13 +578,13 @@ program
   .command("doctor")
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (opts) => {
-    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
+    const runtime = runtimeOpts();
     const checks: Array<{ name: string; status: "pass" | "fail"; detail?: string }> = [];
     let statusOut: Record<string, unknown> | undefined;
 
     try {
-      statusOut = await api<Record<string, unknown>>(daemon, "/api/status");
-      checks.push({ name: "daemon", status: "pass", detail: `reachable at ${daemon}` });
+      statusOut = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/status", runtime.authToken);
+      checks.push({ name: "daemon", status: "pass", detail: `reachable at ${runtime.daemonUrl}` });
     } catch (error) {
       checks.push({
         name: "daemon",
@@ -581,8 +629,8 @@ gateway
       throw new Error("Only --stdio mode is currently supported");
     }
 
-    const daemon = program.opts<{ daemonUrl: string }>().daemonUrl;
-    await runStdioGateway(daemon);
+    const runtime = runtimeOpts();
+    await runStdioGateway(runtime.daemonUrl, runtime.authToken);
   });
 
 program.parseAsync(process.argv).catch((err) => {

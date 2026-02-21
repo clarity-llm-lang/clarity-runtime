@@ -75,6 +75,10 @@ npm run build
 # 2) Start the runtime
 npx clarityd
 
+# Optional: require auth token for all API/MCP calls
+# export CLARITYD_AUTH_TOKEN=your-token
+# npx clarityd --auth-token your-token
+
 # 3) Add a local service from source (mcp1 -> ./mcp1.clarity)
 npx clarityctl add mcp1
 
@@ -98,6 +102,8 @@ For local development (without build artifacts), you can still use:
 npm run dev:daemon
 npm run dev:ctl -- list
 ```
+
+When auth is enabled, pass `--auth-token <token>` to `clarityctl` (or set `CLARITYD_AUTH_TOKEN`/`CLARITY_API_TOKEN` in the environment).
 
 ---
 
@@ -139,7 +145,7 @@ Implemented in v1 scaffold:
 - add/list/start/stop/restart/introspect flows
 - gateway `/mcp` JSON-RPC endpoint (`initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`)
 - built-in runtime control MCP tools (`runtime__status_summary`, `runtime__list_services`, `runtime__get_service`, `runtime__get_logs`, `runtime__start_service`, `runtime__stop_service`, `runtime__restart_service`, `runtime__refresh_interface`, `runtime__unquarantine_service`, `runtime__get_audit`)
-- built-in Clarity-assist MCP tools (`runtime__clarity_help`, `runtime__clarity_sources`, `runtime__clarity_project_structure`) for language/task guidance, source discovery, and canonical app scaffolding layout
+- built-in Clarity-assist MCP tools (`runtime__clarity_help`, `runtime__clarity_sources`, `runtime__clarity_project_structure`, `runtime__ensure_compiler`) for default-language guidance, source discovery, canonical app scaffolding layout, and compiler readiness/install checks
 - gated MCP self-provisioning tools (`runtime__register_local`, `runtime__register_remote`, `runtime__register_via_url`, `runtime__apply_manifest`) protected by `CLARITY_ENABLE_MCP_PROVISIONING=1`
 - stdio bridge mode via `clarityctl gateway serve --stdio`
 - compiler-assisted onboarding via `clarityctl add <service>` (compile + register + start + introspect)
@@ -197,6 +203,14 @@ Not implemented yet:
 - `CLARITY_REMOTE_MAX_PAYLOAD_BYTES=1048576`: default max request/response payload bytes when manifest value is not set.
 - `CLARITY_REMOTE_MAX_CONCURRENCY=8`: default max in-flight remote requests per service when manifest value is not set.
 - `CLARITY_ENABLE_MCP_PROVISIONING=1`: enable runtime MCP self-provisioning tools (`runtime__register_*`, `runtime__apply_manifest`).
+- `CLARITY_ENABLE_COMPILER_INSTALL=1`: allow `runtime__ensure_compiler` to execute install commands.
+- `CLARITY_COMPILER_INSTALL_ALLOWLIST=brew,apt-get`: optional installer command allowlist for `runtime__ensure_compiler`.
+
+## Security Defaults
+
+- If `CLARITYD_AUTH_TOKEN` is set, all `/api/*` and `/mcp` requests require that token via `Authorization: Bearer <token>` or `x-clarity-token`.
+- If no token is set, runtime APIs are limited to loopback callers only.
+- Status UI accepts `?token=<token>` for local browser sessions when token auth is enabled.
 
 ## Audit And Events
 

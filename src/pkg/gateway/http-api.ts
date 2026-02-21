@@ -3,6 +3,9 @@ import type { ServiceManager } from "../supervisor/service-manager.js";
 import { renderStatusPage } from "../../web/status-page.js";
 import { isJsonRpcRequest, failure, type JsonRpcRequest } from "./mcp-jsonrpc.js";
 import { McpRouter } from "./mcp-router.js";
+import { HttpBodyError, readJsonBody } from "../http/body.js";
+import { validateManifest } from "../rpc/manifest.js";
+import { authorizeRequest, type AuthConfig } from "../security/auth.js";
 
 const SYSTEM_TOOLS = [
   "runtime__status_summary",
@@ -18,6 +21,7 @@ const SYSTEM_TOOLS = [
   "runtime__clarity_help",
   "runtime__clarity_sources",
   "runtime__clarity_project_structure",
+  "runtime__ensure_compiler",
   "runtime__register_local",
   "runtime__register_remote",
   "runtime__register_via_url",
@@ -34,16 +38,6 @@ function text(res: ServerResponse, status: number, body: string, type = "text/pl
   res.statusCode = status;
   res.setHeader("content-type", type);
   res.end(body);
-}
-
-async function readJson(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
-  if (!raw) return {};
-  return JSON.parse(raw);
 }
 
 function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) {
@@ -94,7 +88,12 @@ function extractRecentCalls(events: Array<{ kind: string; at: string; message: s
   return calls.slice(Math.max(0, calls.length - Math.max(1, limit)));
 }
 
-export async function handleHttp(manager: ServiceManager, req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleHttp(
+  manager: ServiceManager,
+  req: IncomingMessage,
+  res: ServerResponse,
+  authConfig: AuthConfig
+): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const method = req.method ?? "GET";
   const mcpRouter = new McpRouter(manager);
@@ -103,6 +102,17 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
     if (method === "GET" && (url.pathname === "/" || url.pathname === "/status")) {
       text(res, 200, renderStatusPage(), "text/html; charset=utf-8");
       return;
+    }
+
+    if (url.pathname.startsWith("/api/") || url.pathname === "/mcp") {
+      const auth = authorizeRequest(req, url, authConfig);
+      if (!auth.ok) {
+        if (auth.status === 401) {
+          res.setHeader("www-authenticate", "Bearer");
+        }
+        json(res, auth.status, { error: auth.error ?? "unauthorized" });
+        return;
+      }
     }
 
     if (method === "GET" && url.pathname === "/api/events") {
@@ -144,7 +154,7 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
     }
 
     if (url.pathname === "/mcp" && method === "POST") {
-      const message = await readJson(req);
+      const message = await readJsonBody(req);
       if (!isJsonRpcRequest(message)) {
         json(res, 400, failure(null, -32600, "invalid JSON-RPC request"));
         return;
@@ -326,18 +336,22 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
     }
 
     if (method === "POST" && url.pathname === "/api/services/apply") {
-      const body = await readJson(req);
+      const body = await readJsonBody(req);
       if (!body || typeof body !== "object" || !("manifest" in body)) {
         json(res, 400, { error: "expected { manifest }" });
         return;
       }
-      const manifest = (body as { manifest: unknown }).manifest;
-      json(res, 200, { service: await manager.applyManifest(manifest as never) });
+      const manifest = validateManifest((body as { manifest: unknown }).manifest);
+      json(res, 200, { service: await manager.applyManifest(manifest) });
       return;
     }
 
     text(res, 404, "Not found\n");
   } catch (error) {
+    if (error instanceof HttpBodyError) {
+      json(res, error.status, { error: error.message });
+      return;
+    }
     json(res, 500, {
       error: error instanceof Error ? error.message : String(error)
     });

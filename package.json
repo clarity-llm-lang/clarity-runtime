@@ -9,7 +9,8 @@
     "dev:daemon": "tsx src/cmd/clarityd.ts",
     "dev:ctl": "tsx src/cmd/clarityctl.ts",
     "start": "node dist/cmd/clarityd.js",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test \"dist/tests/**/*.test.js\""
   },
   "bin": {
     "clarityd": "dist/cmd/clarityd.js",

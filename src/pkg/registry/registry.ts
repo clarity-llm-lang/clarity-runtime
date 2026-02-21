@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { MCPServiceManifest, RegistryFile, ServiceRecord } from "../../types/contracts.js";
 
@@ -155,6 +155,8 @@ export class ServiceRegistry {
 
   private async write(file: RegistryFile): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, `${JSON.stringify(file, null, 2)}\n`, "utf8");
+    const tempPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, "utf8");
+    await rename(tempPath, this.filePath);
   }
 }

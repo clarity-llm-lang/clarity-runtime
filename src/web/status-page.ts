@@ -310,16 +310,25 @@ const expanded = {};
 const detailCache = {};
 let latestSystemTools = [];
 let selectedServiceId = null;
+const queryParams = new URLSearchParams(window.location.search);
+const authToken = queryParams.get('token') || window.localStorage.getItem('clarity_auth_token');
+if (authToken) {
+  window.localStorage.setItem('clarity_auth_token', authToken);
+}
 
-async function call(path, method = 'GET') {
-  const res = await fetch(path, { method, headers: { 'content-type': 'application/json' } });
+async function call(path, method = 'GET', body = undefined) {
+  const headers = { 'content-type': 'application/json' };
+  if (authToken) {
+    headers['x-clarity-token'] = authToken;
+  }
+  const res = await fetch(path, { method, headers, body });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 function badge(state) {
   const cls = state === 'RUNNING' ? 'run' : state === 'CRASHED' || state === 'QUARANTINED' ? 'crash' : 'stop';
-  return '<span class="badge ' + cls + '">' + state + '</span>';
+  return '<span class="badge ' + cls + '">' + esc(state) + '</span>';
 }
 
 function summaryCards(data) {
@@ -342,11 +351,7 @@ async function action(id, op) {
 }
 
 async function bootstrapClients() {
-  await fetch('/api/bootstrap', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ clients: ['codex', 'claude'] })
-  });
+  await call('/api/bootstrap', 'POST', JSON.stringify({ clients: ['codex', 'claude'] }));
   await refresh();
 }
 
@@ -500,26 +505,33 @@ async function refresh() {
           ', payload=' + (remote.maxPayloadBytes != null ? remote.maxPayloadBytes : 'default') +
           ', conc=' + (remote.maxConcurrency != null ? remote.maxConcurrency : 'default')
         : '';
+      const displayName = esc(svc.displayName || svc.serviceId);
+      const serviceId = esc(svc.serviceId);
+      const originType = esc(svc.originType);
+      const restartLabel = esc(restart);
+      const remotePolicyLabel = esc(remotePolicy);
+      const healthLabel = esc(svc.health);
       const key = 'svc__' + svc.serviceId;
+      const keyAttr = esc(key);
       const detailRow = expanded[key]
         ? '<tr class="detail-row"><td colspan="7">' + renderServiceDetails(svc.serviceId, detailCache[key]) + '</td></tr>'
         : '';
       return '<tr>' +
-        '<td><strong>' + (svc.displayName || svc.serviceId) + '</strong><div class="id code">' + svc.serviceId + '</div></td>' +
-        '<td><span class="code">' + svc.originType + '</span></td>' +
-        '<td><div class="code">' + restart + '</div>' + (remotePolicy ? '<div class="id code">' + remotePolicy + '</div>' : '') + '</td>' +
+        '<td><strong>' + displayName + '</strong><div class="id code">' + serviceId + '</div></td>' +
+        '<td><span class="code">' + originType + '</span></td>' +
+        '<td><div class="code">' + restartLabel + '</div>' + (remotePolicy ? '<div class="id code">' + remotePolicyLabel + '</div>' : '') + '</td>' +
         '<td>' + badge(svc.lifecycle) + '</td>' +
-        '<td><span class="code">' + svc.health + '</span></td>' +
+        '<td><span class="code">' + healthLabel + '</span></td>' +
         '<td>' + toolCount + ' tools, ' + resCount + ' resources, ' + promptCount + ' prompts</td>' +
         '<td>' +
-          '<button class="btn ghost" data-key="' + key + '" data-kind="service" data-service="' + svc.serviceId + '" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
-          '<button class="btn ghost" data-service="' + svc.serviceId + '" onclick="openService(this.dataset.service)">Open</button>' +
-          '<button class="btn" data-service="' + svc.serviceId + '" data-op="start" onclick="action(this.dataset.service,this.dataset.op)">Start</button>' +
-          '<button class="btn" data-service="' + svc.serviceId + '" data-op="stop" onclick="action(this.dataset.service,this.dataset.op)">Stop</button>' +
-          '<button class="btn" data-service="' + svc.serviceId + '" data-op="restart" onclick="action(this.dataset.service,this.dataset.op)">Restart</button>' +
-          '<button class="btn secondary" data-service="' + svc.serviceId + '" data-op="introspect" onclick="action(this.dataset.service,this.dataset.op)">Refresh Interface</button>' +
+          '<button class="btn ghost" data-key="' + keyAttr + '" data-kind="service" data-service="' + serviceId + '" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
+          '<button class="btn ghost" data-service="' + serviceId + '" onclick="openService(this.dataset.service)">Open</button>' +
+          '<button class="btn" data-service="' + serviceId + '" data-op="start" onclick="action(this.dataset.service,this.dataset.op)">Start</button>' +
+          '<button class="btn" data-service="' + serviceId + '" data-op="stop" onclick="action(this.dataset.service,this.dataset.op)">Stop</button>' +
+          '<button class="btn" data-service="' + serviceId + '" data-op="restart" onclick="action(this.dataset.service,this.dataset.op)">Restart</button>' +
+          '<button class="btn secondary" data-service="' + serviceId + '" data-op="introspect" onclick="action(this.dataset.service,this.dataset.op)">Refresh Interface</button>' +
           (svc.lifecycle === 'QUARANTINED'
-            ? '<button class="btn secondary" data-service="' + svc.serviceId + '" data-op="unquarantine" onclick="action(this.dataset.service,this.dataset.op)">Unquarantine</button>'
+            ? '<button class="btn secondary" data-service="' + serviceId + '" data-op="unquarantine" onclick="action(this.dataset.service,this.dataset.op)">Unquarantine</button>'
             : '') +
         '</td>' +
       '</tr>' + detailRow;
@@ -569,10 +581,10 @@ async function refresh() {
 
     const auditItems = Array.isArray(audit && audit.items) ? audit.items : [];
     const auditRows = auditItems.slice().reverse().map((evt) => {
-      const sid = evt.serviceId ? ' [' + evt.serviceId + ']' : '';
+      const sid = evt.serviceId ? ' [' + esc(evt.serviceId) + ']' : '';
       return '<li class="audit-item">' +
-        '<div class="audit-meta">' + evt.at + ' · ' + evt.kind + sid + '</div>' +
-        '<div class="audit-msg">' + evt.message + '</div>' +
+        '<div class="audit-meta">' + esc(evt.at) + ' · ' + esc(evt.kind) + sid + '</div>' +
+        '<div class="audit-msg">' + esc(evt.message) + '</div>' +
       '</li>';
     }).join('');
     const auditFallback = statusResult.status === 'rejected'

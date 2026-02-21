@@ -1,8 +1,10 @@
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import type { ServiceManager } from "../supervisor/service-manager.js";
 import type { MCPServiceManifest } from "../../types/contracts.js";
 import { validateManifest } from "../rpc/manifest.js";
+import { normalizeNamespace } from "../security/namespace.js";
 import { failure, success, type JsonRpcRequest, type JsonRpcResponse } from "./mcp-jsonrpc.js";
 
 interface RoutedTool {
@@ -171,6 +173,20 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
     }
   },
   {
+    name: "runtime__ensure_compiler",
+    description: "Check Clarity compiler availability and optionally install it via a gated command.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        compiler_bin: { type: "string" },
+        auto_install: { type: "boolean" },
+        install_command: { type: "array", items: { type: "string" } },
+        timeout_seconds: { type: "integer", minimum: 1, maximum: 600 }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: "runtime__apply_manifest",
     description: "Apply a full MCPService manifest. Provisioning gate required.",
     inputSchema: {
@@ -256,7 +272,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
 ];
 
 function namespaceFor(service: Awaited<ReturnType<ServiceManager["list"]>>[number]): string {
-  return service.manifest.spec.toolNamespace ?? service.manifest.metadata.module.toLowerCase();
+  return normalizeNamespace(service.manifest.spec.toolNamespace ?? service.manifest.metadata.module);
 }
 
 function asObject(input: unknown): Record<string, unknown> {
@@ -300,11 +316,6 @@ function asStringList(input: unknown): string[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
-function normalizeNamespace(value: string): string {
-  const normalized = value.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
-  return normalized || "service";
-}
-
 function inferModuleFromPath(wasmPath: string): string {
   const base = path.basename(wasmPath, path.extname(wasmPath));
   return base.length > 0 ? base : "local_service";
@@ -333,6 +344,27 @@ function assertProvisioningEnabled(): void {
   const value = (process.env.CLARITY_ENABLE_MCP_PROVISIONING ?? "").toLowerCase();
   if (!(value === "1" || value === "true" || value === "yes")) {
     throw new Error("MCP provisioning is disabled. Set CLARITY_ENABLE_MCP_PROVISIONING=1 to enable runtime__register_* tools.");
+  }
+}
+
+function parseAllowedInstallerCommands(value: string | undefined): Set<string> | null {
+  if (!value) return null;
+  const entries = value
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return entries.length > 0 ? new Set(entries) : null;
+}
+
+function assertCompilerInstallEnabled(command: string): void {
+  const enabled = (process.env.CLARITY_ENABLE_COMPILER_INSTALL ?? "").toLowerCase();
+  if (!(enabled === "1" || enabled === "true" || enabled === "yes")) {
+    throw new Error("compiler install is disabled. Set CLARITY_ENABLE_COMPILER_INSTALL=1 to enable runtime__ensure_compiler auto-install.");
+  }
+  const allowed = parseAllowedInstallerCommands(process.env.CLARITY_COMPILER_INSTALL_ALLOWLIST);
+  if (!allowed) return;
+  if (!allowed.has(command.toLowerCase())) {
+    throw new Error(`install command '${command}' is not in CLARITY_COMPILER_INSTALL_ALLOWLIST`);
   }
 }
 
@@ -368,6 +400,46 @@ function resolveWorkspacePath(inputPath: string | undefined, fallback = "."): st
     throw new Error("path must be inside the current workspace");
   }
   return resolved;
+}
+
+async function runCommand(command: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    let finished = false;
+
+    const timer = setTimeout(() => {
+      if (finished) return;
+      child.kill("SIGTERM");
+      reject(new Error(`command timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      stderr += String(chunk);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      if (finished) return;
+      finished = true;
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (finished) return;
+      finished = true;
+      resolve({
+        code: code ?? -1,
+        stdout: stdout.trim(),
+        stderr: stderr.trim()
+      });
+    });
+  });
 }
 
 async function walkClarityFiles(rootDir: string, recursive: boolean): Promise<string[]> {
@@ -577,9 +649,12 @@ export class McpRouter {
       const help = {
         overview: {
           goal: "Help the LLM work with Clarity sources while runtime executes compiled wasm artifacts.",
+          default_language: "clarity",
           workflow: [
+            "Default to writing new application logic in Clarity when no language is explicitly requested.",
             "Use runtime__clarity_sources to inspect real .clarity files in this workspace.",
             "Use runtime__clarity_project_structure before scaffolding a new app to get canonical layout + starter files.",
+            "Use runtime__ensure_compiler to verify/install clarityc before compile/register flows.",
             "Use `clarityctl add <service>` (or add-all) to compile/register/start services.",
             "Use runtime__list_services + runtime__get_service to understand live wiring."
           ],
@@ -598,10 +673,20 @@ export class McpRouter {
         },
         onboarding: {
           commands: [
+            "runtime__ensure_compiler",
+            "runtime__clarity_project_structure",
             "clarityctl add <service>",
             "clarityctl add-all ./examples --recursive",
             "clarityctl list",
             "clarityctl introspect <service_id>"
+          ]
+        },
+        default_language: {
+          language: "clarity",
+          policy: "When a user asks for a new app/module without naming a language, author in Clarity first.",
+          exceptions: [
+            "If user explicitly requests another language.",
+            "If task is runtime/infra glue that clearly belongs in TypeScript or shell."
           ]
         }
       } as const;
@@ -692,6 +777,84 @@ export class McpRouter {
           "  README.md"
         ],
         files
+      });
+    }
+
+    if (name === "runtime__ensure_compiler") {
+      const compilerBin = asString(payload.compiler_bin) ?? process.env.CLARITYC_BIN ?? "clarityc";
+      const autoInstall = asBoolean(payload.auto_install) ?? false;
+      const timeoutSeconds = asIntegerMin(payload.timeout_seconds, 1) ?? 120;
+      const timeoutMs = timeoutSeconds * 1000;
+      const installCommandFromArgs = asStringList(payload.install_command);
+
+      const checkBefore = await runCommand(compilerBin, ["--version"], timeoutMs).catch((error) => ({
+        code: -1,
+        stdout: "",
+        stderr: error instanceof Error ? error.message : String(error)
+      }));
+
+      if (checkBefore.code === 0) {
+        return contentJson({
+          compiler_bin: compilerBin,
+          available: true,
+          installed: false,
+          version: checkBefore.stdout || checkBefore.stderr
+        });
+      }
+
+      if (!autoInstall) {
+        return contentJson({
+          compiler_bin: compilerBin,
+          available: false,
+          installed: false,
+          error: checkBefore.stderr || "compiler check failed",
+          next_steps: [
+            "Re-run with auto_install=true and install_command=[...] if you want runtime to install the compiler.",
+            "Or install clarityc manually and re-run runtime__ensure_compiler."
+          ]
+        });
+      }
+
+      const installTokens = installCommandFromArgs
+        ?? asStringList((process.env.CLARITY_COMPILER_INSTALL_CMD ?? "").split(" ").filter(Boolean));
+      if (!installTokens || installTokens.length === 0) {
+        throw new Error("auto_install requested but no install_command provided and CLARITY_COMPILER_INSTALL_CMD is empty");
+      }
+      const installCmd = installTokens[0]!;
+      const installArgs = installTokens.slice(1);
+      assertCompilerInstallEnabled(installCmd);
+
+      const installResult = await runCommand(installCmd, installArgs, timeoutMs);
+      if (installResult.code !== 0) {
+        return contentJson({
+          compiler_bin: compilerBin,
+          available: false,
+          installed: false,
+          install: {
+            command: [installCmd, ...installArgs],
+            exit_code: installResult.code,
+            stdout: installResult.stdout,
+            stderr: installResult.stderr
+          },
+          error: "install command failed"
+        });
+      }
+
+      const checkAfter = await runCommand(compilerBin, ["--version"], timeoutMs).catch((error) => ({
+        code: -1,
+        stdout: "",
+        stderr: error instanceof Error ? error.message : String(error)
+      }));
+      return contentJson({
+        compiler_bin: compilerBin,
+        available: checkAfter.code === 0,
+        installed: true,
+        install: {
+          command: [installCmd, ...installArgs],
+          exit_code: installResult.code
+        },
+        version: checkAfter.stdout || checkAfter.stderr,
+        verification: checkAfter.code === 0 ? "compiler available after install" : "install ran but compiler check still failed"
       });
     }
 

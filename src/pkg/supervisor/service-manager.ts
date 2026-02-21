@@ -1,4 +1,5 @@
 import { access, readFile } from "node:fs/promises";
+import { Worker } from "node:worker_threads";
 import type {
   InterfaceSnapshot,
   MCPServiceManifest,
@@ -7,6 +8,7 @@ import type {
 } from "../../types/contracts.js";
 import { deriveInterfaceRevision, deriveServiceId } from "../registry/ids.js";
 import { ServiceRegistry } from "../registry/registry.js";
+import { normalizeNamespace } from "../security/namespace.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -82,6 +84,22 @@ export interface AuditEvent {
   data?: unknown;
 }
 
+interface WorkerValue {
+  kind: "undefined" | "string" | "number" | "boolean" | "bigint";
+  value?: string | number | boolean;
+}
+
+type WorkerResponse =
+  | {
+      ok: true;
+      value: WorkerValue;
+    }
+  | {
+      ok: false;
+      errorType: "TypeError" | "RuntimeError" | "MissingFunction";
+      message: string;
+    };
+
 export class ServiceManager {
   private readonly registry: ServiceRegistry;
   private readonly starts = new Map<string, number>();
@@ -101,6 +119,7 @@ export class ServiceManager {
   }
 
   async applyManifest(manifest: MCPServiceManifest): Promise<ServiceRecord> {
+    manifest.spec.toolNamespace = normalizeNamespace(manifest.spec.toolNamespace ?? manifest.metadata.module);
     manifest.metadata.serviceId =
       manifest.metadata.serviceId
       ?? deriveServiceId({
@@ -127,11 +146,13 @@ export class ServiceManager {
   }
 
   async list(): Promise<ServiceRecord[]> {
-    return this.registry.list();
+    const records = await this.registry.list();
+    return records.map((record) => this.withLiveRuntime(record));
   }
 
   async get(serviceId: string): Promise<ServiceRecord | undefined> {
-    return this.registry.get(serviceId);
+    const record = await this.registry.get(serviceId);
+    return record ? this.withLiveRuntime(record) : undefined;
   }
 
   async unquarantine(serviceId: string): Promise<ServiceRecord> {
@@ -168,9 +189,6 @@ export class ServiceManager {
       throw new Error(`service is quarantined: ${serviceId} (use unquarantine first)`);
     }
 
-    const startedAt = Date.now();
-    this.starts.set(serviceId, startedAt);
-
     let health: ServiceRecord["runtime"]["health"] = "HEALTHY";
     let lastError: string | undefined;
 
@@ -193,16 +211,17 @@ export class ServiceManager {
       }
     }
 
-    const quarantined = await this.shouldQuarantine(existing, !!lastError);
+    const startFailed = !!lastError;
+    const quarantined = await this.shouldQuarantine(existing, startFailed);
     const updated = await this.registry.update(serviceId, (current) => {
-      const nextLifecycle = quarantined ? "QUARANTINED" : "RUNNING";
+      const nextLifecycle = quarantined ? "QUARANTINED" : (startFailed ? "STOPPED" : "RUNNING");
       return {
         ...current,
         runtime: {
           ...current.runtime,
           lifecycle: nextLifecycle,
           health,
-          pid: quarantined ? undefined : ++this.pidCounter,
+          pid: nextLifecycle === "RUNNING" ? ++this.pidCounter : undefined,
           uptimeSeconds: 0,
           lastHeartbeatAt: nowIso(),
           lastError
@@ -210,7 +229,12 @@ export class ServiceManager {
       };
     });
 
-    this.appendLog(serviceId, quarantined ? "Service quarantined after repeated failures" : "Service started");
+    this.appendLog(
+      serviceId,
+      quarantined
+        ? "Service quarantined after repeated failures"
+        : (startFailed ? "Service start failed" : "Service started")
+    );
     if (lastError) {
       this.appendLog(serviceId, `Start warning: ${lastError}`);
       this.emitEvent({
@@ -230,7 +254,17 @@ export class ServiceManager {
         message: `Service quarantined: ${serviceId}`,
         data: { reason: lastError ?? "start failure threshold exceeded" }
       });
+    } else if (startFailed) {
+      this.starts.delete(serviceId);
+      this.emitEvent({
+        kind: "service.start_failed",
+        serviceId,
+        level: "error",
+        message: `Service start failed: ${serviceId}`,
+        data: { reason: lastError }
+      });
     } else {
+      this.starts.set(serviceId, Date.now());
       this.emitEvent({
         kind: "service.started",
         serviceId,
@@ -313,12 +347,10 @@ export class ServiceManager {
     if (service.manifest.spec.origin.type === "remote_mcp") {
       this.enforceRemoteHostPolicy(service.manifest.spec.origin);
       await this.ensureRemoteInitialized(serviceId, service.manifest.spec.origin);
-      const endpoint = service.manifest.spec.origin.endpoint;
-
       const [toolsResult, resourcesResult, promptsResult] = await Promise.all([
-        this.remoteRequest(serviceId, endpoint, "tools/list", {}),
-        this.remoteRequest(serviceId, endpoint, "resources/list", {}).catch(() => ({ resources: [] })),
-        this.remoteRequest(serviceId, endpoint, "prompts/list", {}).catch(() => ({ prompts: [] }))
+        this.remoteRequest(serviceId, service.manifest.spec.origin, "tools/list", {}),
+        this.remoteRequest(serviceId, service.manifest.spec.origin, "resources/list", {}).catch(() => ({ resources: [] })),
+        this.remoteRequest(serviceId, service.manifest.spec.origin, "prompts/list", {}).catch(() => ({ prompts: [] }))
       ]);
 
       snapshot = {
@@ -527,24 +559,43 @@ export class ServiceManager {
 
   async tickUptimes(): Promise<void> {
     const all = await this.registry.list();
-    await Promise.all(
+    const running = new Set(
       all
         .filter((s) => s.runtime.lifecycle === "RUNNING")
-        .map((s) => {
-          const id = s.manifest.metadata.serviceId!;
-          const started = this.starts.get(id);
-          const uptimeSeconds = started ? Math.floor((Date.now() - started) / 1000) : 0;
-
-          return this.registry.update(id, (current) => ({
-            ...current,
-            runtime: {
-              ...current.runtime,
-              uptimeSeconds,
-              lastHeartbeatAt: nowIso()
-            }
-          }));
-        })
+        .map((s) => s.manifest.metadata.serviceId!)
     );
+
+    for (const tracked of [...this.starts.keys()]) {
+      if (!running.has(tracked)) {
+        this.starts.delete(tracked);
+      }
+    }
+  }
+
+  private withLiveRuntime(record: ServiceRecord): ServiceRecord {
+    const serviceId = record.manifest.metadata.serviceId!;
+    if (record.runtime.lifecycle !== "RUNNING") {
+      return record;
+    }
+
+    const started = this.starts.get(serviceId);
+    if (!started) {
+      return {
+        ...record,
+        runtime: {
+          ...record.runtime,
+          uptimeSeconds: 0
+        }
+      };
+    }
+
+    return {
+      ...record,
+      runtime: {
+        ...record.runtime,
+        uptimeSeconds: Math.max(0, Math.floor((Date.now() - started) / 1000))
+      }
+    };
   }
 
   private async ensureRemoteInitialized(serviceId: string, origin: RemoteMcpOrigin): Promise<void> {
@@ -752,50 +803,90 @@ export class ServiceManager {
     }
 
     const wasmPath = service.manifest.spec.origin.wasmPath;
-    const module = await this.loadLocalModule(wasmPath);
-
-    const inertModule = new Proxy(
-      {},
-      {
-        get: () => () => 0
-      }
-    );
-    const imports = new Proxy(
-      {},
-      {
-        get: () => inertModule
-      }
-    ) as WebAssembly.Imports;
-
-    const instance = await WebAssembly.instantiate(module, imports);
-    const fn = instance.exports[functionName];
-    if (typeof fn !== "function") {
-      throw new Error(`exported function not found: ${functionName}`);
-    }
-
+    const timeoutMs = parsePositiveInteger(process.env.CLARITY_LOCAL_FN_TIMEOUT_MS) ?? 2_000;
     const args = this.resolveWasmArgs(argsList);
-    let result: unknown;
     let lastTypeError: Error | null = null;
 
     for (const candidate of args) {
-      try {
-        result = (fn as Function)(...candidate);
-        lastTypeError = null;
-        break;
-      } catch (error) {
-        if (error instanceof TypeError) {
-          lastTypeError = error;
-          continue;
-        }
-        throw error;
+      const workerResult = await this.runLocalFunctionInWorker(wasmPath, functionName, candidate, timeoutMs);
+      if (workerResult.ok) {
+        return this.formatWorkerResult(workerResult.value);
       }
+
+      if (workerResult.errorType === "TypeError") {
+        lastTypeError = new Error(workerResult.message);
+        continue;
+      }
+
+      if (workerResult.errorType === "MissingFunction") {
+        throw new Error(`exported function not found: ${functionName}`);
+      }
+
+      throw new Error(workerResult.message);
     }
 
     if (lastTypeError) {
       throw new Error(`failed to coerce function arguments for '${functionName}': ${lastTypeError.message}`);
     }
 
-    return this.formatWasmResult(result);
+    throw new Error(`local function call failed for '${functionName}'`);
+  }
+
+  private async runLocalFunctionInWorker(
+    wasmPath: string,
+    functionName: string,
+    args: Array<number | bigint>,
+    timeoutMs: number
+  ): Promise<WorkerResponse> {
+    const workerUrl = new URL("./local-wasm-worker.js", import.meta.url);
+
+    return new Promise<WorkerResponse>((resolve, reject) => {
+      const worker = new Worker(workerUrl, {
+        workerData: {
+          wasmPath,
+          functionName,
+          args
+        }
+      });
+
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        worker.terminate().catch(() => {});
+        resolve({
+          ok: false,
+          errorType: "RuntimeError",
+          message: `local function execution timed out after ${timeoutMs}ms`
+        });
+      }, timeoutMs);
+
+      const finish = (handler: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        handler();
+      };
+
+      worker.once("message", (message: WorkerResponse) => {
+        finish(() => {
+          resolve(message);
+        });
+      });
+
+      worker.once("error", (error) => {
+        finish(() => {
+          reject(error);
+        });
+      });
+
+      worker.once("exit", (code) => {
+        if (settled) return;
+        finish(() => {
+          reject(new Error(`worker exited before reply (code=${code})`));
+        });
+      });
+    });
   }
 
   private async loadLocalModule(wasmPath: string): Promise<WebAssembly.Module> {
@@ -865,21 +956,20 @@ export class ServiceManager {
     return combinations;
   }
 
-  private formatWasmResult(value: unknown): string {
-    if (value === undefined) {
+  private formatWorkerResult(value: WorkerValue): string {
+    if (value.kind === "undefined") {
       return "(no output)";
     }
-    if (typeof value === "bigint") {
-      return value.toString();
+    if (value.kind === "bigint") {
+      return String(value.value ?? "0");
     }
-    if (typeof value === "number" || typeof value === "boolean") {
-      return String(value);
+    if (value.kind === "number" || value.kind === "boolean") {
+      return String(value.value);
     }
-    if (typeof value === "string") {
-      return value;
+    if (value.kind === "string") {
+      return String(value.value ?? "");
     }
-
-    return JSON.stringify(value);
+    return "(unsupported output)";
   }
 
   private appendLog(serviceId: string, line: string): void {
