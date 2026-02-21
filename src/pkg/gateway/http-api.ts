@@ -79,6 +79,7 @@ function bytes(res: ServerResponse, status: number, body: Buffer, type: string):
 }
 
 function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) {
+  const inferredType = inferServiceType(record);
   const origin = record.manifest.spec.origin;
   const remotePolicy = origin.type === "remote_mcp"
     ? {
@@ -94,6 +95,7 @@ function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) 
     displayName: record.manifest.metadata.displayName,
     sourceFile: record.manifest.metadata.sourceFile,
     module: record.manifest.metadata.module,
+    serviceType: inferredType,
     originType: record.manifest.spec.origin.type,
     lifecycle: record.runtime.lifecycle,
     health: record.runtime.health,
@@ -113,6 +115,18 @@ function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) 
         }
       : null
   };
+}
+
+function inferServiceType(record: Awaited<ReturnType<ServiceManager["list"]>>[number]): "mcp" | "agent" {
+  const explicit = record.manifest.metadata.serviceType;
+  if (explicit === "mcp" || explicit === "agent") {
+    return explicit;
+  }
+  const sample = `${record.manifest.metadata.displayName ?? ""} ${record.manifest.metadata.module ?? ""} ${record.manifest.metadata.sourceFile ?? ""}`.toLowerCase();
+  if (/(^|[^a-z])agent([^a-z]|$)/.test(sample)) {
+    return "agent";
+  }
+  return "mcp";
 }
 
 function extractRecentCalls(events: Array<{ kind: string; at: string; message: string; data?: unknown }>, limit: number): Array<{ at: string; message: string; data?: unknown }> {
@@ -235,12 +249,16 @@ export async function handleHttp(
       const listen = req.headers.host && req.headers.host.length > 0 ? req.headers.host : "localhost:4707";
       const summary = {
         total: services.length,
+        mcpServices: services.filter((s) => s.serviceType === "mcp").length,
+        agentServices: services.filter((s) => s.serviceType === "agent").length,
         running: services.filter((s) => s.lifecycle === "RUNNING").length,
+        runningMcp: services.filter((s) => s.lifecycle === "RUNNING" && s.serviceType === "mcp").length,
+        runningAgent: services.filter((s) => s.lifecycle === "RUNNING" && s.serviceType === "agent").length,
         degraded: services.filter((s) => s.health === "DEGRADED").length,
         stopped: services.filter((s) => s.lifecycle === "STOPPED" || s.lifecycle === "REGISTERED").length,
         quarantined: services.filter((s) => s.lifecycle === "QUARANTINED").length,
-        local: services.filter((s) => s.originType === "local_wasm").length,
-        remote: services.filter((s) => s.originType === "remote_mcp").length
+        local: services.filter((s) => s.originType === "local_wasm" && s.serviceType === "mcp").length,
+        remote: services.filter((s) => s.originType === "remote_mcp" && s.serviceType === "mcp").length
       };
       const agentSummary = {
         totalRuns: agentRuns.length,

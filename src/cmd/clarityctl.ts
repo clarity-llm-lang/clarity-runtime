@@ -42,6 +42,7 @@ function localManifest(input: {
   wasmPath: string;
   entry: string;
   displayName?: string;
+  serviceType?: "mcp" | "agent";
 }): MCPServiceManifest {
   return {
     apiVersion: "clarity.runtime/v1",
@@ -49,6 +50,7 @@ function localManifest(input: {
     metadata: {
       sourceFile: input.sourceFile,
       module: input.module,
+      ...(input.serviceType ? { serviceType: input.serviceType } : {}),
       displayName: input.displayName
     },
     spec: {
@@ -74,6 +76,7 @@ function remoteManifest(input: {
   endpoint: string;
   module: string;
   displayName?: string;
+  serviceType?: "mcp" | "agent";
   timeoutMs?: number;
   allowedTools?: string[];
   authRef?: string;
@@ -86,6 +89,7 @@ function remoteManifest(input: {
     metadata: {
       sourceFile: input.endpoint,
       module: input.module,
+      ...(input.serviceType ? { serviceType: input.serviceType } : {}),
       displayName: input.displayName
     },
     spec: {
@@ -253,6 +257,17 @@ function resolveSourceAndModule(serviceInput: string, explicitModule?: string): 
   return { sourceFile, moduleName };
 }
 
+function parseServiceType(value: unknown): "mcp" | "agent" | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "mcp" || normalized === "agent") {
+    return normalized;
+  }
+  throw new Error("invalid --service-type: expected 'mcp' or 'agent'");
+}
+
 async function compileRegisterStartIntrospect(input: {
   daemonUrl: string;
   authToken?: string;
@@ -261,6 +276,7 @@ async function compileRegisterStartIntrospect(input: {
   wasmPath?: string;
   entry: string;
   displayName?: string;
+  serviceType?: "mcp" | "agent";
   compilerBin: string;
 }): Promise<{ serviceId: string; sourceFile: string; wasmPath: string; module: string }> {
   const wasmPath = input.wasmPath
@@ -275,6 +291,7 @@ async function compileRegisterStartIntrospect(input: {
     module: input.moduleName,
     wasmPath,
     entry: input.entry,
+    serviceType: input.serviceType,
     displayName: input.displayName
   });
 
@@ -353,6 +370,7 @@ program
   .option("--wasm <file>", "Compiled wasm output path")
   .option("--entry <name>", "MCP entry function", "mcp_main")
   .option("--name <display>", "Optional display name")
+  .option("--service-type <type>", "Service type: mcp | agent", "mcp")
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (service, opts) => {
     const runtime = runtimeOpts();
@@ -365,6 +383,7 @@ program
       wasmPath: opts.wasm,
       entry: opts.entry,
       displayName: opts.name,
+      serviceType: parseServiceType(opts.serviceType),
       compilerBin: opts.compilerBin
     });
     process.stdout.write(`${JSON.stringify({ ok: true, ...out }, null, 2)}\n`);
@@ -375,6 +394,7 @@ program
   .description("Compile, register, and start all .clarity files in a directory")
   .option("--recursive", "Recurse into subdirectories")
   .option("--entry <name>", "MCP entry function", "mcp_main")
+  .option("--service-type <type>", "Service type for all added services: mcp | agent", "mcp")
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (dir, opts) => {
     const runtime = runtimeOpts();
@@ -394,6 +414,7 @@ program
         sourceFile,
         moduleName,
         entry: opts.entry,
+        serviceType: parseServiceType(opts.serviceType),
         compilerBin: opts.compilerBin
       });
       services.push(result);
@@ -422,6 +443,7 @@ program
   .requiredOption("--wasm <file>", "Compiled wasm path")
   .option("--entry <name>", "MCP entry function", "mcp_main")
   .option("--name <display>", "Optional display name")
+  .option("--service-type <type>", "Service type: mcp | agent", "mcp")
   .action(async (opts) => {
     const runtime = runtimeOpts();
     process.stderr.write("warning: `add-local` is legacy; prefer `add <service>`.\n");
@@ -430,6 +452,7 @@ program
       module: opts.module,
       wasmPath: path.resolve(opts.wasm),
       entry: opts.entry,
+      serviceType: parseServiceType(opts.serviceType),
       displayName: opts.name
     });
 
@@ -448,6 +471,7 @@ program
   .option("--wasm <file>", "Compiled wasm output path")
   .option("--entry <name>", "MCP entry function", "mcp_main")
   .option("--name <display>", "Optional display name")
+  .option("--service-type <type>", "Service type: mcp | agent", "mcp")
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (opts) => {
     const runtime = runtimeOpts();
@@ -462,6 +486,7 @@ program
       wasmPath: opts.wasm,
       entry: opts.entry,
       displayName: opts.name,
+      serviceType: parseServiceType(opts.serviceType),
       compilerBin: opts.compilerBin
     });
     process.stdout.write(`${JSON.stringify({ ok: true, ...out }, null, 2)}\n`);
@@ -472,6 +497,7 @@ program
   .requiredOption("--endpoint <url>", "Remote MCP URL")
   .requiredOption("--module <name>", "Logical module name")
   .option("--name <display>", "Optional display name")
+  .option("--service-type <type>", "Service type: mcp | agent", "mcp")
   .option("--auth-ref <name>", "Auth secret reference name (resolved from env)")
   .option("--timeout-ms <ms>", "Remote request timeout in milliseconds")
   .option("--allow-tools <items>", "Comma-separated remote tool allowlist (optional)")
@@ -489,6 +515,7 @@ program
       endpoint: opts.endpoint,
       module: opts.module,
       displayName: opts.name,
+      serviceType: parseServiceType(opts.serviceType),
       authRef: opts.authRef,
       timeoutMs: Number.isFinite(timeoutMs as number) && (timeoutMs as number) > 0 ? timeoutMs : undefined,
       allowedTools,

@@ -1,4 +1,5 @@
 export type ServiceOriginType = "local_wasm" | "remote_mcp";
+export type ServiceType = "mcp" | "agent";
 
 export type LifecycleState =
   | "REGISTERED"
@@ -25,6 +26,7 @@ export interface ManifestMetadata {
   module: string;
   version?: string;
   artifactSha256?: string;
+  serviceType?: ServiceType;
   createdAt?: string;
   updatedAt?: string;
 }

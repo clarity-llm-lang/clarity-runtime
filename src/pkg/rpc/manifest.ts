@@ -65,6 +65,13 @@ export function validateManifest(input: unknown): MCPServiceManifest {
   if (metadata.displayName !== undefined && !asNonEmptyString(metadata.displayName)) {
     throw new Error("invalid manifest: metadata.displayName must be a non-empty string when provided");
   }
+  if (
+    metadata.serviceType !== undefined
+    && metadata.serviceType !== "mcp"
+    && metadata.serviceType !== "agent"
+  ) {
+    throw new Error("invalid manifest: metadata.serviceType must be 'mcp' or 'agent' when provided");
+  }
 
   const spec = asObject(root.spec);
   if (!spec) {
