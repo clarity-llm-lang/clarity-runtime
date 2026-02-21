@@ -807,7 +807,7 @@ function renderAgentRunDetails(runId, events) {
     '<h3 class="detail-title">Run</h3>' +
     '<div class="code">' + esc(runId) + '</div>' +
     '<h3 class="detail-title">Flow</h3>' +
-    '<pre class="code" style="margin:0; white-space:pre-wrap;">' + esc(lines.join('\n') || 'No flow edges captured yet.') + '</pre>' +
+    '<pre class="code" style="margin:0; white-space:pre-wrap;">' + esc(lines.join('\\n') || 'No flow edges captured yet.') + '</pre>' +
     '<h3 class="detail-title">Events</h3>' +
     (rows ? '<ul class="detail-list">' + rows + '</ul>' : '<div class="code">No events for this run.</div>') +
   '</div>';
