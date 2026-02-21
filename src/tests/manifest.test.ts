@@ -8,7 +8,8 @@ test("validateManifest accepts valid local_wasm manifest", () => {
     kind: "MCPService",
     metadata: {
       sourceFile: "/tmp/sample.clarity",
-      module: "Sample"
+      module: "Sample",
+      serviceType: "mcp"
     },
     spec: {
       origin: {
@@ -39,7 +40,8 @@ test("validateManifest rejects remote endpoint traversal/invalid URL", () => {
         kind: "MCPService",
         metadata: {
           sourceFile: "bad",
-          module: "Bad"
+          module: "Bad",
+          serviceType: "mcp"
         },
         spec: {
           origin: {
@@ -58,5 +60,65 @@ test("validateManifest rejects remote endpoint traversal/invalid URL", () => {
         }
       }),
     /valid http\(s\) URL/
+  );
+});
+
+test("validateManifest accepts explicit metadata.serviceType=agent", () => {
+  const manifest = validateManifest({
+    apiVersion: "clarity.runtime/v1",
+    kind: "MCPService",
+    metadata: {
+      sourceFile: "/tmp/agent.clarity",
+      module: "AgentSample",
+      serviceType: "agent"
+    },
+    spec: {
+      origin: {
+        type: "local_wasm",
+        wasmPath: "/tmp/agent.wasm",
+        entry: "mcp_main"
+      },
+      enabled: true,
+      autostart: true,
+      restartPolicy: {
+        mode: "on-failure",
+        maxRestarts: 5,
+        windowSeconds: 60
+      },
+      policyRef: "default"
+    }
+  });
+
+  assert.equal(manifest.metadata.serviceType, "agent");
+});
+
+test("validateManifest rejects invalid metadata.serviceType", () => {
+  assert.throws(
+    () =>
+      validateManifest({
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile: "/tmp/invalid.clarity",
+          module: "Invalid",
+          serviceType: "tool"
+        },
+        spec: {
+          origin: {
+            type: "local_wasm",
+            wasmPath: "/tmp/invalid.wasm",
+            entry: "mcp_main"
+          },
+          enabled: true,
+          autostart: true,
+          restartPolicy: {
+            mode: "on-failure",
+            maxRestarts: 5,
+            windowSeconds: 60
+          },
+          policyRef: "default"
+        }
+      }),
+    /metadata\.serviceType/
   );
 });

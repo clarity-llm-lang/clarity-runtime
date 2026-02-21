@@ -331,6 +331,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
         source_file: { type: "string" },
         module: { type: "string" },
         display_name: { type: "string" },
+        service_type: { enum: ["mcp", "agent"] },
         entry: { type: "string" },
         tool_namespace: { type: "string" },
         autostart: { type: "boolean" },
@@ -351,6 +352,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
         endpoint: { type: "string" },
         module: { type: "string" },
         display_name: { type: "string" },
+        service_type: { enum: ["mcp", "agent"] },
         auth_ref: { type: "string" },
         timeout_ms: { type: "integer", minimum: 1 },
         max_payload_bytes: { type: "integer", minimum: 1024 },
@@ -375,6 +377,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
         url: { type: "string" },
         module: { type: "string" },
         display_name: { type: "string" },
+        service_type: { enum: ["mcp", "agent"] },
         auth_ref: { type: "string" },
         timeout_ms: { type: "integer", minimum: 1 },
         max_payload_bytes: { type: "integer", minimum: 1024 },
@@ -434,6 +437,13 @@ function asStringList(input: unknown): string[] | undefined {
   }
   const out = input.filter((v): v is string => typeof v === "string" && v.trim().length > 0).map((v) => v.trim());
   return out.length > 0 ? out : undefined;
+}
+
+function asServiceType(input: unknown): "mcp" | "agent" | undefined {
+  if (input === "mcp" || input === "agent") {
+    return input;
+  }
+  return undefined;
 }
 
 function inferModuleFromPath(wasmPath: string): string {
@@ -613,12 +623,18 @@ function projectBlueprint(projectName: string, moduleName: string, includeTempla
 
   if (includeTemplates) {
     files[0].template = [
-      `module ${moduleName} {`,
-      "  // Deterministic pseudo-random roll from seed in [1, 10].",
-      "  export fn roll(seed: int) -> int {",
-      "    let next = (seed * 1103515245 + 12345) % 2147483647;",
-      "    return (next % 10) + 1;",
-      "  }",
+      `module ${moduleName}`,
+      "",
+      "// Deterministic pseudo-random roll from seed in [1, 10].",
+      "function roll(seed: Int64) -> Int64 {",
+      "  let next = (seed * 1103515245 + 12345) % 2147483647;",
+      "  (next % 10) + 1",
+      "}",
+      "",
+      "// Runtime manifest defaults to entry=mcp_main.",
+      "// Keep this lightweight entry so generated projects are immediately runnable.",
+      "function mcp_main() -> Int64 {",
+      "  0",
       "}"
     ].join("\n");
     files[1].template = [
@@ -629,7 +645,7 @@ function projectBlueprint(projectName: string, moduleName: string, includeTempla
       "## Example",
       "",
       "Use the exported tool/function:",
-      "- `roll(seed: int) -> int`"
+      "- `roll(seed: Int64) -> Int64`"
     ].join("\n");
     files[2].template = [
       `name = "${projectName}"`,
@@ -652,11 +668,13 @@ function projectBlueprint(projectName: string, moduleName: string, includeTempla
 }
 
 function summarizeService(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) {
+  const inferred = record.manifest.metadata.serviceType === "agent" ? "agent" : "mcp";
   return {
     service_id: record.manifest.metadata.serviceId,
     display_name: record.manifest.metadata.displayName,
     source_file: record.manifest.metadata.sourceFile,
     module: record.manifest.metadata.module,
+    service_type: inferred,
     origin_type: record.manifest.spec.origin.type,
     lifecycle: record.runtime.lifecycle,
     health: record.runtime.health,
@@ -785,14 +803,19 @@ export class McpRouter {
 
     if (name === "runtime__status_summary") {
       const services = await this.manager.list();
+      const typed = services.map((s) => summarizeService(s));
       return contentJson({
         total: services.length,
+        mcp_services: typed.filter((s) => s.service_type === "mcp").length,
+        agent_services: typed.filter((s) => s.service_type === "agent").length,
         running: services.filter((s) => s.runtime.lifecycle === "RUNNING").length,
+        running_mcp: typed.filter((s) => s.lifecycle === "RUNNING" && s.service_type === "mcp").length,
+        running_agent: typed.filter((s) => s.lifecycle === "RUNNING" && s.service_type === "agent").length,
         degraded: services.filter((s) => s.runtime.health === "DEGRADED").length,
         stopped: services.filter((s) => s.runtime.lifecycle === "STOPPED" || s.runtime.lifecycle === "REGISTERED").length,
         quarantined: services.filter((s) => s.runtime.lifecycle === "QUARANTINED").length,
-        local: services.filter((s) => s.manifest.spec.origin.type === "local_wasm").length,
-        remote: services.filter((s) => s.manifest.spec.origin.type === "remote_mcp").length
+        local: typed.filter((s) => s.origin_type === "local_wasm" && s.service_type === "mcp").length,
+        remote: typed.filter((s) => s.origin_type === "remote_mcp" && s.service_type === "mcp").length
       });
     }
 
@@ -1228,6 +1251,7 @@ export class McpRouter {
             metadata: {
               sourceFile: sourcePath,
               module: moduleName,
+              serviceType: "mcp",
               displayName: projectName
             },
             spec: {
@@ -1306,7 +1330,8 @@ export class McpRouter {
 
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(
-          `bootstrap failed: ${message} (rollback files=${rollbackFilesOk ? "ok" : "partial"}, service=${rollbackService}, compile=${compileSucceeded ? "done" : "not_done"})`
+          `bootstrap failed: ${message} (rollback files=${rollbackFilesOk ? "ok" : "partial"}, service=${rollbackService}, compile=${compileSucceeded ? "done" : "not_done"})`,
+          { cause: error }
         );
       }
     }
@@ -1382,6 +1407,7 @@ export class McpRouter {
       if (!wasmPath) throw new Error("runtime__register_local requires wasm_path");
 
       const module = asString(payload.module) ?? inferModuleFromPath(wasmPath);
+      const serviceType = asServiceType(payload.service_type) ?? "mcp";
       const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
       const sourceFile = asString(payload.source_file) ?? wasmPath;
       const manifest: MCPServiceManifest = {
@@ -1390,6 +1416,7 @@ export class McpRouter {
         metadata: {
           sourceFile,
           module,
+          serviceType,
           ...(asString(payload.display_name) ? { displayName: asString(payload.display_name) } : {})
         },
         spec: {
@@ -1441,6 +1468,7 @@ export class McpRouter {
       assertRemoteHostAllowed(endpoint);
 
       const module = asString(payload.module) ?? inferModuleFromEndpoint(endpoint);
+      const serviceType = asServiceType(payload.service_type) ?? "mcp";
       const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
       const timeoutMs = asIntegerMin(payload.timeout_ms, 1);
       const maxPayloadBytes = asIntegerMin(payload.max_payload_bytes, 1024);
@@ -1451,6 +1479,7 @@ export class McpRouter {
         metadata: {
           sourceFile: endpoint,
           module,
+          serviceType,
           ...(asString(payload.display_name) ? { displayName: asString(payload.display_name) } : {})
         },
         spec: {
@@ -1507,6 +1536,7 @@ export class McpRouter {
       assertRemoteHostAllowed(endpoint);
 
       const module = asString(payload.module) ?? inferModuleFromEndpoint(endpoint);
+      const serviceType = asServiceType(payload.service_type) ?? "mcp";
       const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
       const timeoutMs = asIntegerMin(payload.timeout_ms, 1);
       const maxPayloadBytes = asIntegerMin(payload.max_payload_bytes, 1024);
@@ -1517,6 +1547,7 @@ export class McpRouter {
         metadata: {
           sourceFile: endpoint,
           module,
+          serviceType,
           ...(asString(payload.display_name) ? { displayName: asString(payload.display_name) } : {})
         },
         spec: {

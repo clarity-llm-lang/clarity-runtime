@@ -329,10 +329,12 @@ export function renderStatusPage(): string {
     <div class="tabs">
       <button id="tab-mcp" class="tab active" onclick="setTab('mcp')">MCP</button>
       <button id="tab-agents" class="tab" onclick="setTab('agents')">Agents</button>
+      <button id="tab-client-config" class="tab" onclick="setTab('client-config')">Client Config</button>
     </div>
 
     <div id="mcp-panel">
       <div class="grid" id="summary"></div>
+      <div id="mcp-bootstrap-warning"></div>
 
       <div class="table-wrap">
         <table>
@@ -351,6 +353,13 @@ export function renderStatusPage(): string {
         </table>
       </div>
 
+      <div class="card audit">
+        <h2 class="audit-title">Audit Timeline</h2>
+        <ul id="audit" class="audit-list"></ul>
+      </div>
+    </div>
+
+    <div id="client-config-panel" style="display:none">
       <div class="card bootstrap">
         <div class="section-head">
           <h2 class="audit-title" style="margin:0">Client Bootstrap Config</h2>
@@ -376,15 +385,26 @@ export function renderStatusPage(): string {
           </div>
         </div>
       </div>
-
-      <div class="card audit">
-        <h2 class="audit-title">Audit Timeline</h2>
-        <ul id="audit" class="audit-list"></ul>
-      </div>
     </div>
 
     <div id="agents-panel" style="display:none">
       <div class="grid" id="agent-summary"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Agent Service</th>
+              <th>Origin</th>
+              <th>Policy</th>
+              <th>State</th>
+              <th>Health</th>
+              <th>Interface</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="agent-service-rows"></tbody>
+        </table>
+      </div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -462,8 +482,10 @@ function badge(state) {
 function summaryCards(data) {
   const s = data.summary;
   const systemServices = typeof data.systemServiceCount === 'number' ? data.systemServiceCount : 0;
-  const totalServices = (typeof s.total === 'number' ? s.total : 0) + systemServices;
-  const runningWithSystem = (typeof s.running === 'number' ? s.running : 0) + systemServices;
+  const mcpServices = typeof s.mcpServices === 'number' ? s.mcpServices : (typeof s.total === 'number' ? s.total : 0);
+  const runningMcp = typeof s.runningMcp === 'number' ? s.runningMcp : (typeof s.running === 'number' ? s.running : 0);
+  const totalServices = mcpServices + systemServices;
+  const runningWithSystem = runningMcp + systemServices;
   return [
     ['Services', totalServices],
     ['System Services', systemServices],
@@ -488,17 +510,20 @@ function agentSummaryCards(summary) {
 }
 
 function setTab(tab) {
-  activeTab = tab === 'agents' ? 'agents' : 'mcp';
+  activeTab = tab === 'agents' || tab === 'client-config' ? tab : 'mcp';
   const mcpPanel = document.getElementById('mcp-panel');
   const agentsPanel = document.getElementById('agents-panel');
+  const clientConfigPanel = document.getElementById('client-config-panel');
   const mcpTab = document.getElementById('tab-mcp');
   const agentsTab = document.getElementById('tab-agents');
-  if (!mcpPanel || !agentsPanel || !mcpTab || !agentsTab) return;
-  const mcpActive = activeTab === 'mcp';
-  mcpPanel.style.display = mcpActive ? '' : 'none';
-  agentsPanel.style.display = mcpActive ? 'none' : '';
-  mcpTab.classList.toggle('active', mcpActive);
-  agentsTab.classList.toggle('active', !mcpActive);
+  const clientConfigTab = document.getElementById('tab-client-config');
+  if (!mcpPanel || !agentsPanel || !clientConfigPanel || !mcpTab || !agentsTab || !clientConfigTab) return;
+  mcpPanel.style.display = activeTab === 'mcp' ? '' : 'none';
+  agentsPanel.style.display = activeTab === 'agents' ? '' : 'none';
+  clientConfigPanel.style.display = activeTab === 'client-config' ? '' : 'none';
+  mcpTab.classList.toggle('active', activeTab === 'mcp');
+  agentsTab.classList.toggle('active', activeTab === 'agents');
+  clientConfigTab.classList.toggle('active', activeTab === 'client-config');
 }
 
 function setBootstrapCollapsed(collapsed) {
@@ -619,6 +644,39 @@ function buildBootstrapConsistencyNote(codexCfg, claudeCfg) {
   return '<div class="bootstrap-note">Codex and Claude are not configured yet.</div>';
 }
 
+function buildMcpBootstrapWarning(clients, statusUnavailable) {
+  if (statusUnavailable) {
+    return '<div class="bootstrap-note warn"><strong>Client config status unavailable:</strong> unable to check Codex/Claude MCP configuration.</div>';
+  }
+  const list = Array.isArray(clients) ? clients : [];
+  const codexCfg = list.find((row) => row && row.client === 'codex');
+  const claudeCfg = list.find((row) => row && row.client === 'claude');
+  const codex = normalizeBootstrapCfg(codexCfg);
+  const claude = normalizeBootstrapCfg(claudeCfg);
+  const codexInstalled = !!(codexCfg && codexCfg.present);
+  const claudeInstalled = !!(claudeCfg && claudeCfg.present);
+  if (!codexInstalled && !claudeInstalled) {
+    return '';
+  }
+
+  const details = [];
+  if (codexInstalled && !codex.configured) details.push('Codex missing clarity_gateway config');
+  if (claudeInstalled && !claude.configured) details.push('Claude missing clarity_gateway config');
+  if (codex.configured && claude.configured) {
+    if (codex.transport && claude.transport && codex.transport !== claude.transport) {
+      details.push('transport mismatch between Codex and Claude');
+    }
+    if (codex.transport === 'http' && claude.transport === 'http' && codex.endpoint && claude.endpoint && codex.endpoint !== claude.endpoint) {
+      details.push('HTTP endpoint mismatch between Codex and Claude');
+    }
+  }
+
+  if (details.length === 0) {
+    return '';
+  }
+  return '<div class="bootstrap-note warn"><strong>Client MCP configuration warning:</strong> ' + esc(details.join('; ')) + '.</div>';
+}
+
 function esc(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -635,6 +693,10 @@ function formatLocalTime(value) {
     return esc(String(value));
   }
   return esc(date.toLocaleString());
+}
+
+function classifyServiceType(svc) {
+  return svc && svc.serviceType === 'agent' ? 'agent' : 'mcp';
 }
 
 function renderSystemDetails(runtimeTools, clarityTools) {
@@ -772,7 +834,7 @@ async function refresh() {
     const data = statusResult.status === 'fulfilled'
       ? statusResult.value
       : {
-        summary: { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
+        summary: { total: 0, mcpServices: 0, agentServices: 0, running: 0, runningMcp: 0, runningAgent: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
         agents: { totalRuns: 0, running: 0, waiting: 0, completed: 0, failed: 0, cancelled: 0 },
         services: [],
         systemTools: {
@@ -790,18 +852,22 @@ async function refresh() {
     const agentEventsBody = agentEventsResult.status === 'fulfilled'
       ? agentEventsResult.value
       : { items: [] };
-    const summarySafe = (data && data.summary) ? data.summary : { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 };
+    const summarySafe = (data && data.summary) ? data.summary : { total: 0, mcpServices: 0, agentServices: 0, running: 0, runningMcp: 0, runningAgent: 0, degraded: 0, stopped: 0, local: 0, remote: 0 };
     const agentSummarySafe = (data && data.agents) ? data.agents : { totalRuns: 0, running: 0, waiting: 0, completed: 0, failed: 0, cancelled: 0 };
     const services = Array.isArray(data && data.services) ? data.services : [];
+    const mcpServices = services.filter((svc) => classifyServiceType(svc) === 'mcp');
+    const agentServices = services.filter((svc) => classifyServiceType(svc) === 'agent');
     const agentRuns = Array.isArray(agentRunsBody && agentRunsBody.items) ? agentRunsBody.items : [];
     const agentEvents = Array.isArray(agentEventsBody && agentEventsBody.items) ? agentEventsBody.items : [];
     const runtimeTools = normalizeToolItems(data && data.systemTools && data.systemTools.runtime && data.systemTools.runtime.items);
     const clarityTools = normalizeToolItems(data && data.systemTools && data.systemTools.clarity && data.systemTools.clarity.items);
     let bootstrap = { clients: [] };
+    let bootstrapStatusUnavailable = false;
     try {
       bootstrap = await call('/api/bootstrap/status');
     } catch {
       bootstrap = { clients: [] };
+      bootstrapStatusUnavailable = true;
     }
     latestRuntimeTools = runtimeTools;
     latestClarityTools = clarityTools;
@@ -841,7 +907,7 @@ async function refresh() {
       ? '<tr class="detail-row"><td colspan="7">' + renderToolCatalog('Clarity System', 'Built-in clarity-assist tools with descriptions.', clarityTools) + '</td></tr>'
       : '';
 
-    const serviceRows = services.map((svc) => {
+    const serviceRows = mcpServices.map((svc) => {
       const iface = svc.interface || {};
       const policy = svc.policy || {};
       const remote = policy.remote || null;
@@ -887,7 +953,54 @@ async function refresh() {
       '</tr>' + detailRow;
     }).join('');
     const rows = runtimeSystemRow + runtimeSystemDetailRow + claritySystemRow + claritySystemDetailRow + serviceRows;
-    document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:var(--panel-muted)">No services registered</td></tr>';
+    document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:var(--panel-muted)">No MCP services registered</td></tr>';
+
+    const agentServiceRows = agentServices.map((svc) => {
+      const iface = svc.interface || {};
+      const policy = svc.policy || {};
+      const remote = policy.remote || null;
+      const toolCount = typeof iface.tools === 'number' ? iface.tools : 0;
+      const resCount = typeof iface.resources === 'number' ? iface.resources : 0;
+      const promptCount = typeof iface.prompts === 'number' ? iface.prompts : 0;
+      const restart = policy.restart
+        ? policy.restart.mode + '/' + policy.restart.maxRestarts + 'x/' + policy.restart.windowSeconds + 's'
+        : 'n/a';
+      const remotePolicy = remote
+        ? 'to=' + (remote.timeoutMs != null ? remote.timeoutMs : 'default') + 'ms, tools=' + ((remote.allowedTools || []).length > 0 ? remote.allowedTools.join(',') : '*') +
+          ', payload=' + (remote.maxPayloadBytes != null ? remote.maxPayloadBytes : 'default') +
+          ', conc=' + (remote.maxConcurrency != null ? remote.maxConcurrency : 'default')
+        : '';
+      const displayName = esc(svc.displayName || svc.serviceId);
+      const serviceId = esc(svc.serviceId);
+      const originType = esc(svc.originType);
+      const restartLabel = esc(restart);
+      const remotePolicyLabel = esc(remotePolicy);
+      const healthLabel = esc(svc.health);
+      const key = 'svc__' + svc.serviceId;
+      const keyAttr = esc(key);
+      const detailRow = expanded[key]
+        ? '<tr class="detail-row"><td colspan="7">' + renderServiceDetails(svc.serviceId, detailCache[key]) + '</td></tr>'
+        : '';
+      return '<tr>' +
+        '<td><strong>' + displayName + '</strong><div class="id code">' + serviceId + '</div></td>' +
+        '<td><span class="code">' + originType + '</span></td>' +
+        '<td><div class="code">' + restartLabel + '</div>' + (remotePolicy ? '<div class="id code">' + remotePolicyLabel + '</div>' : '') + '</td>' +
+        '<td>' + badge(svc.lifecycle) + '</td>' +
+        '<td><span class="code">' + healthLabel + '</span></td>' +
+        '<td>' + toolCount + ' tools, ' + resCount + ' resources, ' + promptCount + ' prompts</td>' +
+        '<td>' +
+          '<button class="btn ghost" data-key="' + keyAttr + '" data-kind="service" data-service="' + serviceId + '" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
+          '<button class="btn" data-service="' + serviceId + '" data-op="start" onclick="action(this.dataset.service,this.dataset.op)">Start</button>' +
+          '<button class="btn" data-service="' + serviceId + '" data-op="stop" onclick="action(this.dataset.service,this.dataset.op)">Stop</button>' +
+          '<button class="btn" data-service="' + serviceId + '" data-op="restart" onclick="action(this.dataset.service,this.dataset.op)">Restart</button>' +
+          '<button class="btn secondary" data-service="' + serviceId + '" data-op="introspect" onclick="action(this.dataset.service,this.dataset.op)">Refresh Interface</button>' +
+          (svc.lifecycle === 'QUARANTINED'
+            ? '<button class="btn secondary" data-service="' + serviceId + '" data-op="unquarantine" onclick="action(this.dataset.service,this.dataset.op)">Unquarantine</button>'
+            : '') +
+        '</td>' +
+      '</tr>' + detailRow;
+    }).join('');
+    document.getElementById('agent-service-rows').innerHTML = agentServiceRows || '<tr><td colspan="7" style="color:var(--panel-muted)">No agent services registered</td></tr>';
 
     const agentRows = agentRuns.map((run) => {
       const runId = esc(run.runId || 'unknown');
@@ -930,6 +1043,8 @@ async function refresh() {
     }).join('');
     const codexCfg = bootstrapClients.find((row) => row && row.client === 'codex');
     const claudeCfg = bootstrapClients.find((row) => row && row.client === 'claude');
+    const mcpBootstrapWarning = buildMcpBootstrapWarning(bootstrapClients, bootstrapStatusUnavailable);
+    document.getElementById('mcp-bootstrap-warning').innerHTML = mcpBootstrapWarning;
     const selectedTransport = chooseBootstrapTransport(bootstrapClients);
     const activeCfg = codexCfg || bootstrapClients.find((row) => row && row.client === 'claude');
     if (bootstrapTransportEl && (!bootstrapFormDirty || !bootstrapFormInitialized)) {
@@ -971,10 +1086,12 @@ async function refresh() {
     document.getElementById('agent-audit').innerHTML = agentAuditRows || '<li class="audit-item"><div class="audit-msg" style="color:var(--panel-muted)">' + agentAuditFallback + '</div></li>';
   } catch (error) {
     document.getElementById('summary').innerHTML = summaryCards({
-      summary: { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
+      summary: { total: 0, mcpServices: 0, agentServices: 0, running: 0, runningMcp: 0, runningAgent: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
       systemServiceCount: 2
     });
     document.getElementById('rows').innerHTML = '<tr><td colspan="7" style="color:#a72525">UI render error: ' + String(error) + '</td></tr>';
+    document.getElementById('agent-service-rows').innerHTML = '<tr><td colspan="7" style="color:#a72525">UI render error: ' + String(error) + '</td></tr>';
+    document.getElementById('mcp-bootstrap-warning').innerHTML = '<div class="bootstrap-note warn"><strong>Client config status unavailable:</strong> UI render error.</div>';
     document.getElementById('bootstrap-config').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';
     document.getElementById('audit').innerHTML = '<li class="audit-item"><div class="audit-msg" style="color:#a72525">UI render error</div></li>';
     document.getElementById('agent-summary').innerHTML = agentSummaryCards({ totalRuns: 0, running: 0, waiting: 0, completed: 0, failed: 0, cancelled: 0 });
