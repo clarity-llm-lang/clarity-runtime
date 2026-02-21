@@ -54,3 +54,32 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Create snapshot package
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .snapshot
+          PACKAGE_FILE="$(npm pack)"
+          SHORT_SHA="${GITHUB_SHA::8}"
+          SNAPSHOT_FILE="${PACKAGE_FILE%.tgz}-snapshot.${GITHUB_RUN_NUMBER}+${SHORT_SHA}.tgz"
+          mv "$PACKAGE_FILE" ".snapshot/$SNAPSHOT_FILE"
+          cat > .snapshot/metadata.json <<EOF
+          {
+            "snapshotFile": "$SNAPSHOT_FILE",
+            "runNumber": "${GITHUB_RUN_NUMBER}",
+            "sha": "${GITHUB_SHA}",
+            "ref": "${GITHUB_REF}",
+            "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          echo "snapshot_file=.snapshot/$SNAPSHOT_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload snapshot artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-snapshot-${{ github.run_number }}-${{ github.sha }}
+          path: .snapshot/
