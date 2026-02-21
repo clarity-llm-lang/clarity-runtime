@@ -258,6 +258,34 @@ export function renderStatusPage(): string {
       display: grid;
       gap: 4px;
     }
+    .flow-diagram {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: var(--panel-2);
+    }
+    .flow-node {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid rgba(53, 76, 116, 0.24);
+      border-radius: 999px;
+      padding: 3px 9px;
+      background: rgba(255, 255, 255, 0.72);
+      color: var(--panel-text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .flow-arrow {
+      color: var(--panel-muted);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 0 2px;
+    }
     .bootstrap {
       margin-top: 14px;
       margin-bottom: 14px;
@@ -734,6 +762,7 @@ function renderServiceDetails(serviceId, data) {
   }
 
   const summary = data.summary || {};
+  const agent = summary && summary.agent && typeof summary.agent === 'object' ? summary.agent : null;
   const iface = data.interface || {};
   const tools = Array.isArray(iface.tools)
     ? iface.tools
@@ -758,12 +787,37 @@ function renderServiceDetails(serviceId, data) {
   const callItems = calls.length > 0
     ? '<ul class="detail-list">' + calls.map((row) => '<li class="code">' + formatLocalTime(row.at) + ' ' + esc(row.message) + '</li>').join('') + '</ul>'
     : '<div class="code">No recent tool calls.</div>';
+  const listOrNone = (value, fallback) => {
+    const items = Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim().length > 0) : [];
+    if (items.length === 0) {
+      return '<div class="code">' + esc(fallback) + '</div>';
+    }
+    return '<ul class="detail-list">' + items.map((item) => '<li class="code">' + esc(item) + '</li>').join('') + '</ul>';
+  };
+  const agentMeta = agent
+    ? '<h3 class="detail-title">Agent Metadata</h3>' +
+      '<div class="code">agentId=' + esc(agent.agentId || 'unknown') + ', name=' + esc(agent.name || 'unknown') + '</div>' +
+      '<div class="code">role=' + esc(agent.role || 'unknown') + ', objective=' + esc(agent.objective || 'unknown') + '</div>' +
+      '<h3 class="detail-title">Inputs</h3>' +
+      listOrNone(agent.inputs, 'No inputs declared.') +
+      '<h3 class="detail-title">Outputs</h3>' +
+      listOrNone(agent.outputs, 'No outputs declared.') +
+      '<h3 class="detail-title">Dependencies</h3>' +
+      listOrNone(agent.dependsOn, 'No dependencies declared.') +
+      '<h3 class="detail-title">Handoff Targets</h3>' +
+      listOrNone(agent.handoffTargets, 'No handoff targets declared.') +
+      '<h3 class="detail-title">Allowed MCP Tools</h3>' +
+      listOrNone(agent.allowedMcpTools, 'No MCP tool allowlist declared.') +
+      '<h3 class="detail-title">Allowed LLM Providers</h3>' +
+      listOrNone(agent.allowedLlmProviders, 'No LLM provider allowlist declared.')
+    : '';
 
   return '<div class="detail-box">' +
     '<h3 class="detail-title">Service</h3>' +
     '<div class="code">' + esc(summary.displayName || summary.serviceId || serviceId) + '</div>' +
     '<div class="id code">' + esc(summary.serviceId || serviceId) + '</div>' +
     '<div class="id code">state=' + esc(summary.lifecycle || 'unknown') + ', health=' + esc(summary.health || 'unknown') + '</div>' +
+    agentMeta +
     '<h3 class="detail-title">Interface Tools</h3>' +
     toolItems +
     '<h3 class="detail-title">Recent Tool Calls</h3>' +
@@ -775,30 +829,49 @@ function renderServiceDetails(serviceId, data) {
 
 function renderAgentRunDetails(runId, events) {
   const lines = [];
+  const flowNodes = ['run:' + runId];
+  let lastNode = flowNodes[0];
+  const pushNode = (candidate) => {
+    if (!candidate || candidate === lastNode) return;
+    flowNodes.push(candidate);
+    lastNode = candidate;
+  };
   for (const evt of (events || [])) {
     const data = evt && evt.data && typeof evt.data === 'object' ? evt.data : {};
     if (evt.kind === 'agent.step_started') {
       const stepId = typeof data.stepId === 'string' ? data.stepId : '';
       lines.push('START ' + (stepId || 'step'));
+      pushNode('step:' + (stepId || 'step'));
     } else if (evt.kind === 'agent.tool_called') {
       const tool = typeof data.tool === 'string' ? data.tool : '';
       lines.push(' -> MCP ' + (tool || 'tool'));
+      pushNode('mcp:' + (tool || 'tool'));
     } else if (evt.kind === 'agent.llm_called') {
       const provider = typeof data.provider === 'string' ? data.provider : 'llm';
       const model = typeof data.model === 'string' ? data.model : '';
       lines.push(' -> LLM ' + provider + (model ? (':' + model) : ''));
+      pushNode('llm:' + provider + (model ? (':' + model) : ''));
     } else if (evt.kind === 'agent.handoff') {
       const target = typeof data.to === 'string' ? data.to : (typeof data.target === 'string' ? data.target : 'agent');
       lines.push(' -> A2A ' + target);
+      pushNode('a2a:' + target);
     } else if (evt.kind === 'agent.step_completed') {
       const stepId = typeof data.stepId === 'string' ? data.stepId : '';
       lines.push('END ' + (stepId || 'step'));
+      pushNode('done:' + (stepId || 'step'));
     } else if (evt.kind === 'agent.run_completed') {
       lines.push('RUN COMPLETED');
+      pushNode('completed');
     } else if (evt.kind === 'agent.run_failed') {
       lines.push('RUN FAILED');
+      pushNode('failed');
     }
   }
+  const flowStrip = flowNodes.length > 0
+    ? '<div class="flow-diagram">' + flowNodes.map((node, index) => (
+      (index > 0 ? '<span class="flow-arrow">→</span>' : '') + '<span class="flow-node">' + esc(node) + '</span>'
+    )).join('') + '</div>'
+    : '<div class="code">No flow edges captured yet.</div>';
   const rows = (events || []).map((evt) => {
     const sid = evt.serviceId ? ' [' + esc(evt.serviceId) + ']' : '';
     return '<li class="code">' + formatLocalTime(evt.at) + ' · ' + esc(evt.kind) + sid + ' · ' + esc(evt.message) + '</li>';
@@ -807,6 +880,8 @@ function renderAgentRunDetails(runId, events) {
     '<h3 class="detail-title">Run</h3>' +
     '<div class="code">' + esc(runId) + '</div>' +
     '<h3 class="detail-title">Flow</h3>' +
+    flowStrip +
+    '<h3 class="detail-title">Flow Trace</h3>' +
     '<pre class="code" style="margin:0; white-space:pre-wrap;">' + esc(lines.join('\\n') || 'No flow edges captured yet.') + '</pre>' +
     '<h3 class="detail-title">Events</h3>' +
     (rows ? '<ul class="detail-list">' + rows + '</ul>' : '<div class="code">No events for this run.</div>') +
