@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.3.0...v0.4.0) (2026-02-21)
+
+
+### Features
+
+* split runtime vs clarity tools and harden bootstrap ([9607d48](https://github.com/clarity-llm-lang/clarity-runtime/commit/9607d4813e981e7225df6839637396dda06af282))
+
 ## [0.3.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.2.0...v0.3.0) (2026-02-21)
 
 
