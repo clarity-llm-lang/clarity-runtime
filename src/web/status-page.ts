@@ -935,6 +935,64 @@ function renderTriggerInterfaces(runs) {
   return '<div class="agent-meta-grid">' + blocks.join('') + '</div>';
 }
 
+function collectObservedCapabilities(runs) {
+  const out = { usesMcp: false, usesLlm: false, usesA2A: false, triggers: new Set() };
+  for (const run of (Array.isArray(runs) ? runs : [])) {
+    const trigger = normalizeTrigger(run && run.trigger);
+    if (trigger !== 'unknown') out.triggers.add(trigger);
+    if (Number(run && run.toolCallCount || 0) > 0) out.usesMcp = true;
+    if (Number(run && run.llmCallCount || 0) > 0) out.usesLlm = true;
+    if (Number(run && run.handoffCount || 0) > 0 || trigger === 'a2a') out.usesA2A = true;
+  }
+  return out;
+}
+
+function renderAgentStandardFlow(agent, runs) {
+  const inputs = Array.isArray(agent && agent.inputs) ? agent.inputs : [];
+  const outputs = Array.isArray(agent && agent.outputs) ? agent.outputs : [];
+  const deps = Array.isArray(agent && agent.dependsOn) ? agent.dependsOn : [];
+  const handoffs = Array.isArray(agent && agent.handoffTargets) ? agent.handoffTargets : [];
+  const observed = collectObservedCapabilities(runs);
+  const triggerNodes = observed.triggers.size > 0
+    ? Array.from(observed.triggers)
+    : ['timer', 'event', 'call', 'api', 'a2a'];
+
+  const nodes = [];
+  nodes.push('trigger: ' + triggerNodes.join('|'));
+  if (inputs.length > 0) {
+    nodes.push('ingest: ' + inputs.join(', '));
+  } else {
+    nodes.push('ingest input');
+  }
+  if (agent && agent.objective) {
+    nodes.push('objective: ' + agent.objective);
+  }
+  if (observed.usesMcp || (Array.isArray(agent && agent.allowedMcpTools) && agent.allowedMcpTools.length > 0)) {
+    nodes.push('use MCP tools');
+  }
+  if (observed.usesLlm || (Array.isArray(agent && agent.allowedLlmProviders) && agent.allowedLlmProviders.length > 0)) {
+    nodes.push('call LLM');
+  }
+  if (deps.length > 0) {
+    nodes.push('depends on: ' + deps.join(', '));
+  }
+  if (observed.usesA2A || handoffs.length > 0) {
+    nodes.push('A2A handoff: ' + (handoffs.length > 0 ? handoffs.join(', ') : 'other agent'));
+  }
+  if (outputs.length > 0) {
+    nodes.push('emit: ' + outputs.join(', '));
+  } else {
+    nodes.push('emit result');
+  }
+  nodes.push('run completed|failed');
+
+  return '<div class="flow-diagram">' +
+    nodes.map((node, index) => (
+      (index > 0 ? '<span class="flow-arrow">→</span>' : '') + '<span class="flow-node">' + esc(node) + '</span>'
+    )).join('') +
+  '</div>';
+}
+
 function renderServiceDetails(serviceId, data, agentRunsForService) {
   if (!data) {
     return '<div class="detail-box"><div class="code">Loading details...</div></div>';
@@ -987,14 +1045,7 @@ function renderServiceDetails(serviceId, data, agentRunsForService) {
       '<span class="trigger">a2a</span>' +
     '</div>' +
     '<h3 class="detail-title">Standard Flow</h3>' +
-    '<div class="flow-diagram">' +
-      '<span class="flow-node">trigger</span><span class="flow-arrow">→</span>' +
-      '<span class="flow-node">run_created</span><span class="flow-arrow">→</span>' +
-      '<span class="flow-node">step</span><span class="flow-arrow">→</span>' +
-      '<span class="flow-node">mcp/llm</span><span class="flow-arrow">→</span>' +
-      '<span class="flow-node">handoff(optional)</span><span class="flow-arrow">→</span>' +
-      '<span class="flow-node">completed|failed</span>' +
-    '</div>' +
+    renderAgentStandardFlow(agent, agentRunsForService) +
   '</div>';
   const agentMeta = agent
     ? defaultTriggerFlow +
