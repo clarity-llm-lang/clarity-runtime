@@ -1,6 +1,6 @@
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import type { ServiceManager } from "../supervisor/service-manager.js";
 import type { MCPServiceManifest } from "../../types/contracts.js";
 import { validateManifest } from "../rpc/manifest.js";
@@ -563,6 +563,11 @@ function assertProjectName(value: string): void {
   }
 }
 
+function normalizeBootstrapContent(value: string | undefined): string {
+  const raw = value ?? "";
+  return raw.endsWith("\n") ? raw : `${raw}\n`;
+}
+
 function projectBlueprint(projectName: string, moduleName: string, includeTemplates: boolean): Array<{ path: string; purpose: string; template?: string }> {
   const files: Array<{ path: string; purpose: string; template?: string }> = [
     {
@@ -1083,20 +1088,6 @@ export class McpRouter {
       const introspect = asBoolean(payload.introspect) ?? true;
 
       const files = projectBlueprint(projectName, moduleName, true);
-      const filesWritten: string[] = [];
-
-      for (const file of files) {
-        const relPath = file.path.slice(projectName.length + 1);
-        const absPath = resolveWorkspacePath(path.join(projectDir, relPath));
-        await mkdir(path.dirname(absPath), { recursive: true });
-        const existing = await readFile(absPath, "utf8").catch(() => null);
-        if (existing !== null && !overwrite) {
-          throw new Error(`file exists: ${path.relative(process.cwd(), absPath)} (set overwrite=true to replace)`);
-        }
-        await writeFile(absPath, `${file.template ?? ""}\n`, "utf8");
-        filesWritten.push(path.relative(process.cwd(), absPath) || absPath);
-      }
-
       const checkBefore = await runCommand(compilerBin, ["--version"], timeoutMs).catch((error) => ({
         code: -1,
         stdout: "",
@@ -1133,72 +1124,151 @@ export class McpRouter {
 
       const sourcePath = resolveWorkspacePath(path.join(projectDir, "src", "main.clarity"));
       const wasmPath = resolveWorkspacePath(path.join(projectDir, ".clarity", "build", `${moduleName}.wasm`));
-      await mkdir(path.dirname(wasmPath), { recursive: true });
-      const compileResult = await runCommand(compilerBin, ["compile", sourcePath, "-o", wasmPath], timeoutMs);
-      if (compileResult.code !== 0) {
-        throw new Error(`compile failed: ${compileResult.stderr || `exit code ${compileResult.code}`}`);
-      }
+      const filePlans = await Promise.all(files.map(async (file) => {
+        const relPath = file.path.slice(projectName.length + 1);
+        const absPath = resolveWorkspacePath(path.join(projectDir, relPath));
+        const existing = await readFile(absPath, "utf8").catch(() => null);
+        const next = normalizeBootstrapContent(file.template);
 
-      let service: ReturnType<typeof summarizeService> | null = null;
-      if (registerService) {
-        const manifest: MCPServiceManifest = {
-          apiVersion: "clarity.runtime/v1",
-          kind: "MCPService",
-          metadata: {
-            sourceFile: sourcePath,
-            module: moduleName,
-            displayName: projectName
-          },
-          spec: {
-            origin: {
-              type: "local_wasm",
-              wasmPath,
-              entry: "mcp_main"
-            },
-            enabled: true,
-            autostart: true,
-            restartPolicy: {
-              mode: "on-failure",
-              maxRestarts: 5,
-              windowSeconds: 60
-            },
-            policyRef: "default",
-            toolNamespace: normalizeNamespace(moduleName)
+        if (existing === null) {
+          return { absPath, relPath, next, action: "create" as const };
+        }
+        if (existing === next) {
+          return { absPath, relPath, next, action: "skip" as const };
+        }
+        if (!overwrite) {
+          throw new Error(`file exists with different content: ${path.relative(process.cwd(), absPath)} (set overwrite=true to replace)`);
+        }
+        return { absPath, relPath, next, action: "overwrite" as const, previous: existing };
+      }));
+
+      const filesWritten: string[] = [];
+      const filesSkipped: string[] = [];
+      const rollbackStack: Array<() => Promise<void>> = [];
+      let createdServiceId: string | null = null;
+      let compileSucceeded = false;
+
+      try {
+        for (const plan of filePlans) {
+          if (plan.action === "skip") {
+            filesSkipped.push(path.relative(process.cwd(), plan.absPath) || plan.absPath);
+            continue;
           }
-        };
+          await mkdir(path.dirname(plan.absPath), { recursive: true });
+          await writeFile(plan.absPath, plan.next, "utf8");
+          filesWritten.push(path.relative(process.cwd(), plan.absPath) || plan.absPath);
 
-        const applied = await this.manager.applyManifest(manifest);
-        const serviceId = applied.manifest.metadata.serviceId!;
-        if (startNow) {
-          await this.manager.start(serviceId);
+          if (plan.action === "create") {
+            rollbackStack.push(async () => {
+              await rm(plan.absPath, { force: true });
+            });
+          } else {
+            const previous = plan.previous;
+            rollbackStack.push(async () => {
+              await writeFile(plan.absPath, previous, "utf8");
+            });
+          }
         }
-        if (introspect) {
-          await this.manager.refreshInterface(serviceId);
+
+        await mkdir(path.dirname(wasmPath), { recursive: true });
+        rollbackStack.push(async () => {
+          await rm(wasmPath, { force: true });
+        });
+        const compileResult = await runCommand(compilerBin, ["compile", sourcePath, "-o", wasmPath], timeoutMs);
+        if (compileResult.code !== 0) {
+          throw new Error(`compile failed: ${compileResult.stderr || `exit code ${compileResult.code}`}`);
         }
-        const latest = await this.manager.get(serviceId);
-        if (!latest) {
-          throw new Error(`service not found after bootstrap: ${serviceId}`);
+        compileSucceeded = true;
+
+        let service: ReturnType<typeof summarizeService> | null = null;
+        if (registerService) {
+          const manifest: MCPServiceManifest = {
+            apiVersion: "clarity.runtime/v1",
+            kind: "MCPService",
+            metadata: {
+              sourceFile: sourcePath,
+              module: moduleName,
+              displayName: projectName
+            },
+            spec: {
+              origin: {
+                type: "local_wasm",
+                wasmPath,
+                entry: "mcp_main"
+              },
+              enabled: true,
+              autostart: true,
+              restartPolicy: {
+                mode: "on-failure",
+                maxRestarts: 5,
+                windowSeconds: 60
+              },
+              policyRef: "default",
+              toolNamespace: normalizeNamespace(moduleName)
+            }
+          };
+
+          const applied = await this.manager.applyManifest(manifest);
+          const serviceId = applied.manifest.metadata.serviceId!;
+          createdServiceId = serviceId;
+          if (startNow) {
+            await this.manager.start(serviceId);
+          }
+          if (introspect) {
+            await this.manager.refreshInterface(serviceId);
+          }
+          const latest = await this.manager.get(serviceId);
+          if (!latest) {
+            throw new Error(`service not found after bootstrap: ${serviceId}`);
+          }
+          service = summarizeService(latest);
         }
-        service = summarizeService(latest);
+
+        return contentJson({
+          project_name: projectName,
+          project_dir: path.relative(process.cwd(), projectDir) || ".",
+          module_name: moduleName,
+          files_written: filesWritten,
+          files_unchanged: filesSkipped,
+          idempotent: filesWritten.length === 0,
+          compiler: {
+            compiler_bin: compilerBin,
+            version: checkAfter.stdout || checkAfter.stderr,
+            ...(installSummary ? { install: installSummary } : {})
+          },
+          compile: {
+            source: path.relative(process.cwd(), sourcePath),
+            wasm: path.relative(process.cwd(), wasmPath)
+          },
+          registered: registerService,
+          service
+        });
+      } catch (error) {
+        let rollbackService = "none";
+        if (createdServiceId) {
+          try {
+            await this.manager.stop(createdServiceId).catch(() => undefined);
+            await this.manager.remove(createdServiceId, { cleanupArtifacts: true });
+            rollbackService = "removed";
+          } catch {
+            rollbackService = "failed";
+          }
+        }
+
+        let rollbackFilesOk = true;
+        for (let i = rollbackStack.length - 1; i >= 0; i -= 1) {
+          try {
+            await rollbackStack[i]!();
+          } catch {
+            rollbackFilesOk = false;
+          }
+        }
+
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `bootstrap failed: ${message} (rollback files=${rollbackFilesOk ? "ok" : "partial"}, service=${rollbackService}, compile=${compileSucceeded ? "done" : "not_done"})`
+        );
       }
-
-      return contentJson({
-        project_name: projectName,
-        project_dir: path.relative(process.cwd(), projectDir) || ".",
-        module_name: moduleName,
-        files_written: filesWritten,
-        compiler: {
-          compiler_bin: compilerBin,
-          version: checkAfter.stdout || checkAfter.stderr,
-          ...(installSummary ? { install: installSummary } : {})
-        },
-        compile: {
-          source: path.relative(process.cwd(), sourcePath),
-          wasm: path.relative(process.cwd(), wasmPath)
-        },
-        registered: registerService,
-        service
-      });
     }
 
     if (name === "runtime__clarity_sources") {
