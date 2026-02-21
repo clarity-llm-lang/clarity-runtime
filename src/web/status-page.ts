@@ -211,10 +211,6 @@ export function renderStatusPage(): string {
       display: grid;
       gap: 4px;
     }
-    .inspector {
-      margin-top: 14px;
-      margin-bottom: 14px;
-    }
     .bootstrap {
       margin-top: 14px;
       margin-bottom: 14px;
@@ -295,14 +291,6 @@ export function renderStatusPage(): string {
       </table>
     </div>
 
-    <div class="card inspector">
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
-        <h2 class="audit-title" style="margin:0;">Service Inspector</h2>
-        <button id="inspector-close" class="btn ghost" style="display:none;" onclick="closeInspector()">Close Inspector</button>
-      </div>
-      <div id="inspector" class="code" style="display:grid; gap:8px; color:var(--panel-muted)">Select a service row and click Open.</div>
-    </div>
-
     <div class="card bootstrap">
       <h2 class="audit-title">Client Bootstrap Config</h2>
       <div id="bootstrap-config" class="code" style="display:grid; gap:8px; color:var(--panel-muted)">Loading bootstrap config...</div>
@@ -321,7 +309,6 @@ const expanded = {};
 const detailCache = {};
 let latestRuntimeTools = [];
 let latestClarityTools = [];
-let selectedServiceId = null;
 const queryParams = new URLSearchParams(window.location.search);
 const authToken = queryParams.get('token') || window.localStorage.getItem('clarity_auth_token');
 if (authToken) {
@@ -424,12 +411,24 @@ function renderServiceDetails(serviceId, data) {
     return '<div class="detail-box"><div class="code" style="color:#a72525">' + esc(data.error) + '</div></div>';
   }
 
+  const summary = data.summary || {};
   const iface = data.interface || {};
-  const tools = Array.isArray(iface.tools) ? iface.tools.map((t) => t && t.name ? t.name : '').filter(Boolean) : [];
+  const tools = Array.isArray(iface.tools)
+    ? iface.tools
+      .map((tool) => ({
+        name: tool && tool.name ? String(tool.name) : '',
+        description: tool && tool.description ? String(tool.description) : ''
+      }))
+      .filter((tool) => tool.name.length > 0)
+    : [];
   const logs = Array.isArray(data.logs) ? data.logs : [];
   const calls = Array.isArray(data.recentCalls) ? data.recentCalls : [];
   const toolItems = tools.length > 0
-    ? '<ul class="detail-list">' + tools.map((name) => '<li class="code">' + esc(name) + '</li>').join('') + '</ul>'
+    ? '<ul class="detail-list">' + tools.map((tool) => (
+      '<li class="code"><strong>' + esc(tool.name) + '</strong>' +
+      (tool.description ? '<div class="id">' + esc(tool.description) + '</div>' : '') +
+      '</li>'
+    )).join('') + '</ul>'
     : '<div class="code">No interface tools yet. Try Refresh Interface.</div>';
   const logItems = logs.length > 0
     ? '<ul class="detail-list">' + logs.map((line) => '<li class="code">' + esc(line) + '</li>').join('') + '</ul>'
@@ -439,6 +438,10 @@ function renderServiceDetails(serviceId, data) {
     : '<div class="code">No recent tool calls.</div>';
 
   return '<div class="detail-box">' +
+    '<h3 class="detail-title">Service</h3>' +
+    '<div class="code">' + esc(summary.displayName || summary.serviceId || serviceId) + '</div>' +
+    '<div class="id code">' + esc(summary.serviceId || serviceId) + '</div>' +
+    '<div class="id code">state=' + esc(summary.lifecycle || 'unknown') + ', health=' + esc(summary.health || 'unknown') + '</div>' +
     '<h3 class="detail-title">Interface Tools</h3>' +
     toolItems +
     '<h3 class="detail-title">Recent Tool Calls</h3>' +
@@ -448,39 +451,11 @@ function renderServiceDetails(serviceId, data) {
   '</div>';
 }
 
-function getSelectedFromQuery() {
-  const params = new URLSearchParams(window.location.search);
-  return params.get('service');
-}
-
-function setSelectedInQuery(serviceId) {
-  const params = new URLSearchParams(window.location.search);
-  if (serviceId) {
-    params.set('service', serviceId);
-  } else {
-    params.delete('service');
-  }
-  const next = window.location.pathname + '?' + params.toString();
-  window.history.replaceState({}, '', next);
-}
-
-async function openService(serviceId) {
-  selectedServiceId = serviceId;
-  setSelectedInQuery(serviceId);
-  await refresh();
-}
-
-async function closeInspector() {
-  selectedServiceId = null;
-  setSelectedInQuery(null);
-  await refresh();
-}
-
 async function toggleDetails(key, kind, serviceId) {
   expanded[key] = !expanded[key];
   if (expanded[key] && kind === 'service' && !detailCache[key]) {
     try {
-      detailCache[key] = await call('/api/services/' + encodeURIComponent(serviceId) + '/details?log_limit=20&event_limit=60&call_limit=20');
+      detailCache[key] = await call('/api/services/' + encodeURIComponent(serviceId) + '/details?log_limit=60&event_limit=120&call_limit=30');
     } catch (error) {
       detailCache[key] = {
         error: error instanceof Error ? error.message : String(error)
@@ -528,9 +503,6 @@ async function refresh() {
     }
     latestRuntimeTools = runtimeTools;
     latestClarityTools = clarityTools;
-    if (selectedServiceId === null) {
-      selectedServiceId = getSelectedFromQuery();
-    }
     document.getElementById('summary').innerHTML = summaryCards({
       summary: summarySafe,
       systemServiceCount: 2
@@ -545,11 +517,10 @@ async function refresh() {
       '<td>' + runtimeTools.length + ' runtime tools</td>' +
       '<td>' +
         '<button class="btn ghost" data-key="system__runtime" data-kind="system" data-service="" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
-        '<button class="btn ghost" data-service="system__runtime" onclick="openService(this.dataset.service)">Open Inspector</button>' +
       '</td>' +
     '</tr>';
     const runtimeSystemDetailRow = expanded.system__runtime
-      ? '<tr class="detail-row"><td colspan="7">' + renderSystemDetails(runtimeTools, []) + '</td></tr>'
+      ? '<tr class="detail-row"><td colspan="7">' + renderToolCatalog('Runtime System', 'Built-in runtime control tools with descriptions.', runtimeTools) + '</td></tr>'
       : '';
 
     const claritySystemRow = '<tr>' +
@@ -561,11 +532,10 @@ async function refresh() {
       '<td>' + clarityTools.length + ' clarity tools</td>' +
       '<td>' +
         '<button class="btn ghost" data-key="system__clarity" data-kind="system" data-service="" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
-        '<button class="btn ghost" data-service="system__clarity" onclick="openService(this.dataset.service)">Open Inspector</button>' +
       '</td>' +
     '</tr>';
     const claritySystemDetailRow = expanded.system__clarity
-      ? '<tr class="detail-row"><td colspan="7">' + renderSystemDetails([], clarityTools) + '</td></tr>'
+      ? '<tr class="detail-row"><td colspan="7">' + renderToolCatalog('Clarity System', 'Built-in clarity-assist tools with descriptions.', clarityTools) + '</td></tr>'
       : '';
 
     const serviceRows = services.map((svc) => {
@@ -603,7 +573,6 @@ async function refresh() {
         '<td>' + toolCount + ' tools, ' + resCount + ' resources, ' + promptCount + ' prompts</td>' +
         '<td>' +
           '<button class="btn ghost" data-key="' + keyAttr + '" data-kind="service" data-service="' + serviceId + '" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
-          '<button class="btn ghost" data-service="' + serviceId + '" onclick="openService(this.dataset.service)">Open Inspector</button>' +
           '<button class="btn" data-service="' + serviceId + '" data-op="start" onclick="action(this.dataset.service,this.dataset.op)">Start</button>' +
           '<button class="btn" data-service="' + serviceId + '" data-op="stop" onclick="action(this.dataset.service,this.dataset.op)">Stop</button>' +
           '<button class="btn" data-service="' + serviceId + '" data-op="restart" onclick="action(this.dataset.service,this.dataset.op)">Restart</button>' +
@@ -616,41 +585,6 @@ async function refresh() {
     }).join('');
     const rows = runtimeSystemRow + runtimeSystemDetailRow + claritySystemRow + claritySystemDetailRow + serviceRows;
     document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:var(--panel-muted)">No services registered</td></tr>';
-
-    if (!selectedServiceId) {
-      document.getElementById('inspector-close').style.display = 'none';
-      document.getElementById('inspector').innerHTML = 'Select a service row and click Open.';
-    } else if (selectedServiceId === 'system__runtime') {
-      document.getElementById('inspector-close').style.display = '';
-      document.getElementById('inspector').innerHTML = renderToolCatalog(
-        'Runtime System',
-        'Full runtime control tool catalog with descriptions.',
-        runtimeTools
-      );
-    } else if (selectedServiceId === 'system__clarity') {
-      document.getElementById('inspector-close').style.display = '';
-      document.getElementById('inspector').innerHTML = renderToolCatalog(
-        'Clarity System',
-        'Full clarity-assist tool catalog with descriptions.',
-        clarityTools
-      );
-    } else {
-      document.getElementById('inspector-close').style.display = '';
-      try {
-        const inspectorData = await call('/api/services/' + encodeURIComponent(selectedServiceId) + '/details?log_limit=60&event_limit=120&call_limit=30');
-        detailCache['svc__' + selectedServiceId] = inspectorData;
-        document.getElementById('inspector').innerHTML =
-          '<div class="detail-box">' +
-            '<h3 class="detail-title">Service</h3>' +
-            '<div class="code">' + esc((inspectorData.summary && inspectorData.summary.displayName) || selectedServiceId) + '</div>' +
-            '<div class="id code">' + esc(selectedServiceId) + '</div>' +
-          '</div>' +
-          renderServiceDetails(selectedServiceId, inspectorData);
-      } catch (error) {
-        document.getElementById('inspector').innerHTML =
-          '<div class="detail-box"><div class="code" style="color:#a72525">' + esc(error instanceof Error ? error.message : String(error)) + '</div></div>';
-      }
-    }
 
     const bootstrapClients = Array.isArray(bootstrap && bootstrap.clients) ? bootstrap.clients : [];
     const bootstrapRows = bootstrapClients.map((row) => {
@@ -683,8 +617,6 @@ async function refresh() {
       systemServiceCount: 2
     });
     document.getElementById('rows').innerHTML = '<tr><td colspan="7" style="color:#a72525">UI render error: ' + String(error) + '</td></tr>';
-    document.getElementById('inspector-close').style.display = 'none';
-    document.getElementById('inspector').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';
     document.getElementById('bootstrap-config').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';
     document.getElementById('audit').innerHTML = '<li class="audit-item"><div class="audit-msg" style="color:#a72525">UI render error</div></li>';
   }
