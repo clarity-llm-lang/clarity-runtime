@@ -1009,15 +1009,15 @@ function renderServiceDetails(serviceId, data, agentRunsForService) {
     }
     return '<ul class="detail-list">' + items.map((item) => '<li class="code">' + esc(item) + '</li>').join('') + '</ul>';
   };
+  const declaredTriggers = Array.isArray(agent && agent.triggers)
+    ? agent.triggers.filter((item) => typeof item === 'string' && item.trim().length > 0)
+    : [];
+  const declaredTriggerChips = declaredTriggers.length > 0
+    ? declaredTriggers.map((trigger) => '<span class="trigger">' + esc(String(trigger).toUpperCase()) + '</span>').join('')
+    : '<div class="code">No triggers declared.</div>';
   const defaultTriggerFlow = '<div class="detail-box">' +
     '<h3 class="detail-title">How This Agent Can Be Triggered</h3>' +
-    '<div>' +
-      '<span class="trigger">timer</span>' +
-      '<span class="trigger">event</span>' +
-      '<span class="trigger">call</span>' +
-      '<span class="trigger">api</span>' +
-      '<span class="trigger">a2a</span>' +
-    '</div>' +
+    '<div>' + declaredTriggerChips + '</div>' +
     '<h3 class="detail-title">Standard Flow</h3>' +
     renderAgentStandardFlow(agent, agentRunsForService) +
   '</div>';

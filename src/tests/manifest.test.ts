@@ -75,7 +75,8 @@ test("validateManifest accepts explicit metadata.serviceType=agent", () => {
         agentId: "agent-sample",
         name: "Agent Sample",
         role: "coordinator",
-        objective: "Coordinate downstream tools"
+        objective: "Coordinate downstream tools",
+        triggers: ["api"]
       }
     },
     spec: {
@@ -127,6 +128,43 @@ test("validateManifest rejects metadata.serviceType=agent without metadata.agent
         }
       }),
     /metadata\.agent/
+  );
+});
+
+test("validateManifest rejects metadata.serviceType=agent without metadata.agent.triggers", () => {
+  assert.throws(
+    () =>
+      validateManifest({
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile: "/tmp/agent.clarity",
+          module: "AgentSample",
+          serviceType: "agent",
+          agent: {
+            agentId: "agent-sample",
+            name: "Agent Sample",
+            role: "coordinator",
+            objective: "Coordinate downstream tools"
+          }
+        },
+        spec: {
+          origin: {
+            type: "local_wasm",
+            wasmPath: "/tmp/agent.wasm",
+            entry: "mcp_main"
+          },
+          enabled: true,
+          autostart: true,
+          restartPolicy: {
+            mode: "on-failure",
+            maxRestarts: 5,
+            windowSeconds: 60
+          },
+          policyRef: "default"
+        }
+      }),
+    /metadata\.agent\.triggers/
   );
 });
 

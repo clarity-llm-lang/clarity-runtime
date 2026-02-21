@@ -192,6 +192,38 @@ function validateAgentRunCreatedPayload(payload: Record<string, unknown>): strin
   return null;
 }
 
+async function validateDeclaredServiceTrigger(
+  manager: ServiceManager,
+  serviceId: string | undefined,
+  payload: Record<string, unknown>
+): Promise<string | null> {
+  const sid = nonEmptyString(serviceId);
+  if (!sid) {
+    return null;
+  }
+  const service = await manager.get(sid);
+  if (!service) {
+    return `service not found: ${sid}`;
+  }
+  const serviceType = service.manifest.metadata.serviceType === "agent" ? "agent" : "mcp";
+  if (serviceType !== "agent") {
+    return `service is not an agent: ${sid}`;
+  }
+  const declared = service.manifest.metadata.agent?.triggers ?? [];
+  if (!Array.isArray(declared) || declared.length === 0) {
+    return `agent service has no declared triggers: ${sid}`;
+  }
+  const triggerRaw = nonEmptyString(getField(payload, "trigger") ?? getField(payload, "triggerType") ?? getField(payload, "source"));
+  if (!triggerRaw) {
+    return `trigger is required for agent.run_created when service_id is set (${sid})`;
+  }
+  const trigger = triggerRaw.toLowerCase();
+  if (!declared.includes(trigger as "timer" | "event" | "call" | "api" | "a2a")) {
+    return `trigger '${trigger}' is not declared by agent ${sid}; declared: ${declared.join(", ")}`;
+  }
+  return null;
+}
+
 export async function handleHttp(
   manager: ServiceManager,
   req: IncomingMessage,
@@ -423,7 +455,20 @@ export async function handleHttp(
       const message = typeof body.message === "string" && body.message.trim().length > 0
         ? body.message
         : `${kind}${runId ? ` (${runId})` : ""}`;
-      const serviceId = typeof body.service_id === "string" ? body.service_id : undefined;
+      const serviceId = typeof body.service_id === "string"
+        ? body.service_id
+        : (typeof (data as { serviceId?: unknown }).serviceId === "string"
+          ? String((data as { serviceId: unknown }).serviceId)
+          : (typeof (data as { service_id?: unknown }).service_id === "string"
+            ? String((data as { service_id: unknown }).service_id)
+            : undefined));
+      if (kind === "agent.run_created") {
+        const triggerDeclarationError = await validateDeclaredServiceTrigger(manager, serviceId, data);
+        if (triggerDeclarationError) {
+          json(res, 400, { error: triggerDeclarationError });
+          return;
+        }
+      }
       manager.recordRuntimeEvent({
         kind,
         level,

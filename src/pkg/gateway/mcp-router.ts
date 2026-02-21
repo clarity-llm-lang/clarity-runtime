@@ -454,6 +454,7 @@ function asAgentDescriptor(input: unknown): {
   name: string;
   role: string;
   objective: string;
+  triggers: Array<"timer" | "event" | "call" | "api" | "a2a">;
   inputs?: string[];
   outputs?: string[];
   allowedMcpTools?: string[];
@@ -470,7 +471,10 @@ function asAgentDescriptor(input: unknown): {
   const name = asString(obj.name);
   const role = asString(obj.role);
   const objective = asString(obj.objective);
-  if (!agentId || !name || !role || !objective) {
+  const triggerValues = asStringList(obj.triggers ?? obj.agent_triggers)?.map((v) => v.toLowerCase()) ?? [];
+  const allowedTriggers = new Set(["timer", "event", "call", "api", "a2a"]);
+  const triggers = triggerValues.filter((v): v is "timer" | "event" | "call" | "api" | "a2a" => allowedTriggers.has(v));
+  if (!agentId || !name || !role || !objective || triggers.length === 0) {
     return undefined;
   }
   return {
@@ -478,6 +482,7 @@ function asAgentDescriptor(input: unknown): {
     name,
     role,
     objective,
+    triggers,
     ...(asStringList(obj.inputs) ? { inputs: asStringList(obj.inputs)! } : {}),
     ...(asStringList(obj.outputs) ? { outputs: asStringList(obj.outputs)! } : {}),
     ...(asStringList(obj.allowed_mcp_tools ?? obj.allowedMcpTools) ? { allowedMcpTools: asStringList(obj.allowed_mcp_tools ?? obj.allowedMcpTools)! } : {}),
@@ -1419,6 +1424,7 @@ export class McpRouter {
     if (name === "runtime__apply_manifest") {
       assertProvisioningEnabled();
       const manifest = validateManifest(payload.manifest);
+      validateManifest(manifest);
       const service = await this.manager.applyManifest(manifest);
       const serviceId = service.manifest.metadata.serviceId!;
       const startNow = asBoolean(payload.start_now) ?? true;
@@ -1484,6 +1490,7 @@ export class McpRouter {
         }
       };
 
+      validateManifest(manifest);
       const service = await this.manager.applyManifest(manifest);
       const serviceId = service.manifest.metadata.serviceId!;
       const startNow = asBoolean(payload.start_now) ?? true;
@@ -1557,6 +1564,7 @@ export class McpRouter {
         }
       };
 
+      validateManifest(manifest);
       const service = await this.manager.applyManifest(manifest);
       const serviceId = service.manifest.metadata.serviceId!;
       const startNow = asBoolean(payload.start_now) ?? true;
