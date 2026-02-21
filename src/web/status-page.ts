@@ -367,6 +367,10 @@ export function renderStatusPage(): string {
             </select>
             <label class="code" for="bootstrap-endpoint">HTTP Endpoint</label>
             <input id="bootstrap-endpoint" oninput="onBootstrapEndpointInput()" class="code" style="padding:8px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2); color:var(--panel-text);" />
+            <label class="code" for="bootstrap-update-agents" style="display:flex; gap:8px; align-items:center;">
+              <input id="bootstrap-update-agents" type="checkbox" />
+              Also update workspace AGENTS.md defaults (opt-in)
+            </label>
             <button class="btn secondary" onclick="bootstrapClients()">Configure Codex + Claude</button>
             <button class="btn" onclick="removeBootstrapClients()">Remove Codex + Claude MCP</button>
           </div>
@@ -522,16 +526,19 @@ async function bootstrapClients() {
   try {
     const transportEl = document.getElementById('bootstrap-transport');
     const endpointEl = document.getElementById('bootstrap-endpoint');
+    const updateAgentsEl = document.getElementById('bootstrap-update-agents');
     const transport = transportEl && transportEl.value === 'stdio' ? 'stdio' : 'http';
     const endpoint = endpointEl && typeof endpointEl.value === 'string'
       ? endpointEl.value.trim()
       : '';
+    const updateAgentsMd = !!(updateAgentsEl && updateAgentsEl.checked);
     const result = await call('/api/bootstrap', 'POST', JSON.stringify({
       clients: ['codex', 'claude'],
       transport,
+      ...(updateAgentsMd ? { update_agents_md: true } : {}),
       ...(transport === 'http' && endpoint ? { endpoint } : {})
     }));
-    bootstrapActionMessage = '<div class="bootstrap-note">Saved: transport=' + esc(result.transport || transport) + (result.endpoint ? ', endpoint=' + esc(result.endpoint) : '') + '.</div>';
+    bootstrapActionMessage = '<div class="bootstrap-note">Saved: transport=' + esc(result.transport || transport) + (result.endpoint ? ', endpoint=' + esc(result.endpoint) : '') + (result.agents_md && result.agents_md.path ? ', AGENTS.md=' + esc(result.agents_md.path) : '') + '.</div>';
     bootstrapFormDirty = false;
     bootstrapFormInitialized = true;
     await refresh();
