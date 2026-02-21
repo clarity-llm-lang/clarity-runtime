@@ -328,7 +328,14 @@ export function renderStatusPage(): string {
       <div class="card bootstrap">
         <h2 class="audit-title">Client Bootstrap Config</h2>
         <div id="bootstrap-config" class="code" style="display:grid; gap:8px; color:var(--panel-muted)">Loading bootstrap config...</div>
-        <div style="margin-top:8px;">
+        <div style="margin-top:8px; display:grid; gap:8px;">
+          <label class="code" for="bootstrap-transport">Transport</label>
+          <select id="bootstrap-transport" class="btn secondary" onchange="onBootstrapTransportChange()">
+            <option value="http" selected>http</option>
+            <option value="stdio">stdio</option>
+          </select>
+          <label class="code" for="bootstrap-endpoint">HTTP Endpoint</label>
+          <input id="bootstrap-endpoint" class="code" style="padding:8px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2); color:var(--panel-text);" />
           <button class="btn secondary" onclick="bootstrapClients()">Configure Codex + Claude</button>
         </div>
       </div>
@@ -459,8 +466,26 @@ async function action(id, op) {
 }
 
 async function bootstrapClients() {
-  await call('/api/bootstrap', 'POST', JSON.stringify({ clients: ['codex', 'claude'] }));
+  const transportEl = document.getElementById('bootstrap-transport');
+  const endpointEl = document.getElementById('bootstrap-endpoint');
+  const transport = transportEl && transportEl.value === 'stdio' ? 'stdio' : 'http';
+  const endpoint = endpointEl && typeof endpointEl.value === 'string'
+    ? endpointEl.value.trim()
+    : '';
+  await call('/api/bootstrap', 'POST', JSON.stringify({
+    clients: ['codex', 'claude'],
+    transport,
+    ...(transport === 'http' && endpoint ? { endpoint } : {})
+  }));
   await refresh();
+}
+
+function onBootstrapTransportChange() {
+  const transportEl = document.getElementById('bootstrap-transport');
+  const endpointEl = document.getElementById('bootstrap-endpoint');
+  if (!transportEl || !endpointEl) return;
+  const isHttp = transportEl.value !== 'stdio';
+  endpointEl.disabled = !isHttp;
 }
 
 function esc(value) {
@@ -744,16 +769,34 @@ async function refresh() {
     document.getElementById('agent-rows').innerHTML = agentRows || '<tr><td colspan="6" style="color:var(--panel-muted)">No agent runs yet</td></tr>';
 
     const bootstrapClients = Array.isArray(bootstrap && bootstrap.clients) ? bootstrap.clients : [];
+    const bootstrapTransportEl = document.getElementById('bootstrap-transport');
+    const bootstrapEndpointEl = document.getElementById('bootstrap-endpoint');
+    if (bootstrapEndpointEl && !bootstrapEndpointEl.value) {
+      bootstrapEndpointEl.value = window.location.origin + '/mcp';
+    }
     const bootstrapRows = bootstrapClients.map((row) => {
       const configured = row && row.configured ? 'configured' : 'missing';
+      const transport = row && row.transport ? row.transport : (row && row.endpoint ? 'http' : 'stdio');
+      const endpoint = row && row.endpoint ? row.endpoint : '';
       const cmd = row && row.command ? row.command : 'n/a';
       const args = row && Array.isArray(row.args) && row.args.length > 0 ? row.args.join(' ') : '';
       return '<div class="detail-box">' +
         '<div><strong>' + esc(row.client || 'unknown') + '</strong> <span class="id code">(' + configured + ')</span></div>' +
         '<div class="code">' + esc(row.path || '') + '</div>' +
+        '<div class="code">transport: ' + esc(transport) + '</div>' +
+        (endpoint ? '<div class="code">url: ' + esc(endpoint) + '</div>' : '') +
         '<div class="code">command: ' + esc(cmd + (args ? ' ' + args : '')) + '</div>' +
       '</div>';
     }).join('');
+    const codexCfg = bootstrapClients.find((row) => row && row.client === 'codex');
+    if (bootstrapTransportEl) {
+      const selectedTransport = codexCfg && codexCfg.transport === 'stdio' ? 'stdio' : 'http';
+      bootstrapTransportEl.value = selectedTransport;
+    }
+    if (bootstrapEndpointEl && codexCfg && codexCfg.endpoint) {
+      bootstrapEndpointEl.value = codexCfg.endpoint;
+    }
+    onBootstrapTransportChange();
     document.getElementById('bootstrap-config').innerHTML = bootstrapRows || '<div class="code">Bootstrap status unavailable.</div>';
 
     const auditItems = Array.isArray(audit && audit.items) ? audit.items : [];

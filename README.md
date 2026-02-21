@@ -88,12 +88,12 @@ npx clarityctl add-all ./examples --recursive
 
 # 4) Inspect + wire clients once
 npx clarityctl list
-npx clarityctl bootstrap --clients codex,claude
+npx clarityctl bootstrap --clients codex,claude --transport http --endpoint http://localhost:4707/mcp
 ```
 
 Open the control layer: [http://localhost:4707/status](http://localhost:4707/status)
 
-Bootstrap is not automatic by default. Run `clarityctl bootstrap --clients codex,claude` once, or use the status page "Client Bootstrap Config" section to configure and verify paths.
+Bootstrap is not automatic by default. Run `clarityctl bootstrap --clients codex,claude --transport http --endpoint http://localhost:4707/mcp` once (or keep `stdio` if you prefer process-managed bridge mode), or use the status page "Client Bootstrap Config" section to configure and verify paths.
 
 `clarityctl add <name>` compiles `<name>.clarity` to `.clarity/build/<name>.wasm`, then registers and starts it.
 
@@ -128,7 +128,7 @@ clarityctl auth validate <auth_ref>
 clarityctl auth list-secrets
 clarityctl auth set-secret <auth_ref> <secret>
 clarityctl auth delete-secret <auth_ref>
-clarityctl bootstrap --clients codex,claude
+clarityctl bootstrap --clients codex,claude [--transport stdio|http] [--endpoint <url>]
 clarityctl doctor
 ```
 

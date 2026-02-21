@@ -2,7 +2,36 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-async function upsertTomlMcp(filePath: string, serverName: string, command: string, args: string[]): Promise<void> {
+export type BootstrapTransport = "stdio" | "http";
+
+export interface BootstrapOptions {
+  transport: BootstrapTransport;
+  command?: string;
+  args?: string[];
+  endpoint?: string;
+}
+
+function parseTomlStringArray(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((v) => v.trim().replace(/^"|"$/g, ""))
+    .filter(Boolean);
+}
+
+function buildTomlMcpBlock(serverName: string, options: BootstrapOptions): string {
+  const lines = [`[mcp_servers.${serverName}]`];
+  if (options.transport === "http") {
+    lines.push(`url = "${options.endpoint}"`);
+  } else {
+    const args = options.args ?? [];
+    lines.push(`command = "${options.command}"`);
+    lines.push(`args = [${args.map((a) => `"${a}"`).join(", ")}]`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+async function upsertTomlMcp(filePath: string, serverName: string, options: BootstrapOptions): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   let content: string;
   try {
@@ -11,7 +40,7 @@ async function upsertTomlMcp(filePath: string, serverName: string, command: stri
     content = "";
   }
 
-  const block = `[mcp_servers.${serverName}]\ncommand = \"${command}\"\nargs = [${args.map((a) => `\"${a}\"`).join(", ")}]\n`;
+  const block = buildTomlMcpBlock(serverName, options);
   const keyPattern = new RegExp(`\\[mcp_servers\\.${serverName.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\][\\s\\S]*?(?=\\n\\[|$)`, "m");
 
   if (keyPattern.test(content)) {
@@ -26,13 +55,13 @@ async function upsertTomlMcp(filePath: string, serverName: string, command: stri
   await writeFile(filePath, content.trimStart() + "\n", "utf8");
 }
 
-export async function bootstrapCodex(command: string, args: string[]): Promise<{ updated: boolean; path: string }> {
+export async function bootstrapCodex(options: BootstrapOptions): Promise<{ updated: boolean; path: string }> {
   const configPath = path.join(os.homedir(), ".codex", "config.toml");
-  await upsertTomlMcp(configPath, "clarity_gateway", command, args);
+  await upsertTomlMcp(configPath, "clarity_gateway", options);
   return { updated: true, path: configPath };
 }
 
-export async function bootstrapClaude(command: string, args: string[]): Promise<{ updated: boolean; path: string }> {
+export async function bootstrapClaude(options: BootstrapOptions): Promise<{ updated: boolean; path: string }> {
   const configPath = path.join(os.homedir(), ".claude.json");
   await mkdir(path.dirname(configPath), { recursive: true });
 
@@ -44,10 +73,16 @@ export async function bootstrapClaude(command: string, args: string[]): Promise<
   }
 
   const mcpServers = (data.mcpServers as Record<string, unknown> | undefined) ?? {};
-  mcpServers.clarity_gateway = {
-    command,
-    args
-  };
+  mcpServers.clarity_gateway =
+    options.transport === "http"
+      ? {
+          transport: "http",
+          url: options.endpoint
+        }
+      : {
+          command: options.command,
+          args: options.args ?? []
+        };
   data.mcpServers = mcpServers;
 
   await writeFile(configPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
@@ -58,6 +93,8 @@ export interface BootstrapClientStatus {
   client: "codex" | "claude";
   path: string;
   configured: boolean;
+  transport?: BootstrapTransport;
+  endpoint?: string;
   command?: string;
   args?: string[];
 }
@@ -68,15 +105,16 @@ export async function codexBootstrapStatus(): Promise<BootstrapClientStatus> {
     const content = await readFile(configPath, "utf8");
     const blockPattern = /\[mcp_servers\.clarity_gateway\][\s\S]*?(?=\n\[|$)/m;
     const block = content.match(blockPattern)?.[0] ?? "";
+    const endpoint = block.match(/^\s*url\s*=\s*"([^"]+)"/m)?.[1];
     const command = block.match(/^\s*command\s*=\s*"([^"]+)"/m)?.[1];
     const argsRaw = block.match(/^\s*args\s*=\s*\[([^\]]*)\]/m)?.[1];
-    const args = argsRaw
-      ? argsRaw.split(",").map((v) => v.trim().replace(/^"|"$/g, "")).filter(Boolean)
-      : [];
+    const args = parseTomlStringArray(argsRaw);
     return {
       client: "codex",
       path: configPath,
       configured: block.length > 0,
+      ...(endpoint ? { transport: "http" as const, endpoint } : {}),
+      ...(!endpoint ? { transport: "stdio" as const } : {}),
       ...(command ? { command } : {}),
       ...(args.length > 0 ? { args } : {})
     };
@@ -95,12 +133,21 @@ export async function claudeBootstrapStatus(): Promise<BootstrapClientStatus> {
     const data = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
     const mcpServers = (data.mcpServers as Record<string, unknown> | undefined) ?? {};
     const entry = mcpServers.clarity_gateway as Record<string, unknown> | undefined;
+    const endpoint = typeof entry?.url === "string" ? entry.url : undefined;
+    const transport =
+      endpoint || entry?.transport === "http"
+        ? ("http" as const)
+        : entry
+          ? ("stdio" as const)
+          : undefined;
     const command = typeof entry?.command === "string" ? entry.command : undefined;
     const args = Array.isArray(entry?.args) ? entry.args.filter((v): v is string => typeof v === "string") : [];
     return {
       client: "claude",
       path: configPath,
       configured: !!entry,
+      ...(transport ? { transport } : {}),
+      ...(endpoint ? { endpoint } : {}),
       ...(command ? { command } : {}),
       ...(args.length > 0 ? { args } : {})
     };
