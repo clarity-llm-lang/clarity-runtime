@@ -17,6 +17,7 @@ const SYSTEM_TOOLS = [
   "runtime__get_audit",
   "runtime__clarity_help",
   "runtime__clarity_sources",
+  "runtime__clarity_project_structure",
   "runtime__register_local",
   "runtime__register_remote",
   "runtime__register_via_url",

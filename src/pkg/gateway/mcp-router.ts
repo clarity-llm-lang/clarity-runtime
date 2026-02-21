@@ -158,6 +158,19 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
     }
   },
   {
+    name: "runtime__clarity_project_structure",
+    description: "Return a recommended Clarity application file structure with starter templates.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_name: { type: "string" },
+        module_name: { type: "string" },
+        include_templates: { type: "boolean" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: "runtime__apply_manifest",
     description: "Apply a full MCPService manifest. Provisioning gate required.",
     inputSchema: {
@@ -566,6 +579,7 @@ export class McpRouter {
           goal: "Help the LLM work with Clarity sources while runtime executes compiled wasm artifacts.",
           workflow: [
             "Use runtime__clarity_sources to inspect real .clarity files in this workspace.",
+            "Use runtime__clarity_project_structure before scaffolding a new app to get canonical layout + starter files.",
             "Use `clarityctl add <service>` (or add-all) to compile/register/start services.",
             "Use runtime__list_services + runtime__get_service to understand live wiring."
           ],
@@ -596,6 +610,88 @@ export class McpRouter {
         topic,
         ...(("overview" in help && (help as Record<string, unknown>)[topic]) ? { details: (help as Record<string, unknown>)[topic] } : { details: help.overview }),
         all_topics: Object.keys(help)
+      });
+    }
+
+    if (name === "runtime__clarity_project_structure") {
+      const projectName = asString(payload.project_name) ?? "my-clarity-app";
+      const moduleName = asString(payload.module_name) ?? "App";
+      const includeTemplates = asBoolean(payload.include_templates) ?? true;
+
+      const files: Array<{ path: string; purpose: string; template?: string }> = [
+        {
+          path: `${projectName}/src/main.clarity`,
+          purpose: "Primary Clarity module exported by the application."
+        },
+        {
+          path: `${projectName}/README.md`,
+          purpose: "Project usage, runbook, and MCP tool examples."
+        },
+        {
+          path: `${projectName}/clarity.toml`,
+          purpose: "Project metadata and build/runtime configuration."
+        },
+        {
+          path: `${projectName}/tests/smoke.md`,
+          purpose: "Simple manual/agent smoke tests for expected tool behavior."
+        }
+      ];
+
+      if (includeTemplates) {
+        files[0].template = [
+          `module ${moduleName} {`,
+          "  // Deterministic pseudo-random roll from seed in [1, 10].",
+          "  export fn roll(seed: int) -> int {",
+          "    let next = (seed * 1103515245 + 12345) % 2147483647;",
+          "    return (next % 10) + 1;",
+          "  }",
+          "}"
+        ].join("\n");
+        files[1].template = [
+          `# ${projectName}`,
+          "",
+          "Minimal Clarity MCP application.",
+          "",
+          "## Example",
+          "",
+          "Use the exported tool/function:",
+          "- `roll(seed: int) -> int`"
+        ].join("\n");
+        files[2].template = [
+          `name = "${projectName}"`,
+          `module = "${moduleName}"`,
+          "",
+          "[build]",
+          'entry = "mcp_main"',
+          'out_dir = ".clarity/build"'
+        ].join("\n");
+        files[3].template = [
+          "# Smoke test",
+          "",
+          "1. Build and register the service.",
+          "2. Call `roll(42)` and verify result is within 1..10.",
+          "3. Call `roll(42)` again and verify deterministic output."
+        ].join("\n");
+      }
+
+      return contentJson({
+        project_name: projectName,
+        module_name: moduleName,
+        guidance: [
+          "Keep source under src/ and expose a small stable public function/tool surface.",
+          "Document expected inputs/outputs in README before expanding tool count.",
+          "Add at least one deterministic smoke test scenario."
+        ],
+        tree: [
+          `${projectName}/`,
+          "  src/",
+          "    main.clarity",
+          "  tests/",
+          "    smoke.md",
+          "  clarity.toml",
+          "  README.md"
+        ],
+        files
       });
     }
 

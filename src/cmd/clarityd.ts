@@ -13,6 +13,7 @@ const program = new Command();
 program
   .name("clarityd")
   .option("-p, --port <port>", "HTTP control plane port", "4707")
+  .option("--host <host>", "HTTP control plane host", "127.0.0.1")
   .action(async (opts) => {
     const registry = new ServiceRegistry();
     await registry.init();
@@ -88,9 +89,10 @@ program
     });
 
     const port = Number(opts.port);
-    server.listen(port, "localhost", () => {
-      process.stdout.write(`clarityd listening on http://localhost:${port}\n`);
-      process.stdout.write(`status page: http://localhost:${port}/status\n`);
+    const host = String(opts.host);
+    server.listen(port, host, () => {
+      process.stdout.write(`clarityd listening on http://${host}:${port}\n`);
+      process.stdout.write(`status page: http://${host}:${port}/status\n`);
     });
   });
 
