@@ -222,9 +222,15 @@ Not implemented yet:
 
 ## Contributing
 
-1. Fork this repository.
-2. Create a branch from `main`.
-3. Make changes with tests/docs where relevant.
-4. Open a PR describing behavior changes and rationale.
+This repo uses trunk-based development:
+
+1. Keep `main` releasable at all times.
+2. Branch from `main`, keep branches short-lived, and merge back quickly.
+3. Name every branch by the expected outcome (not implementation details):
+   - `result/<outcome-kebab-case>`
+   - `hotfix/<outcome-kebab-case>`
+   - `codex/<outcome-kebab-case>`
+4. Open a PR to `main` with behavior/rationale notes.
+5. Ensure CI is green (`.github/workflows/build.yml`: branch-name check + build + test).
 
 For larger architecture changes, open an issue first to align on the control-plane contract.

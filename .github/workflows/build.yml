@@ -1,0 +1,56 @@
+name: Build
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  branch-naming:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate branch naming convention
+        shell: bash
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          REGEX='^(result|hotfix|codex)/[a-z0-9]+(-[a-z0-9]+)*$'
+          if [[ ! "$BRANCH" =~ $REGEX ]]; then
+            echo "Invalid branch name: $BRANCH"
+            echo "Use outcome-based names:"
+            echo "  result/<outcome-kebab-case>"
+            echo "  hotfix/<outcome-kebab-case>"
+            echo "  codex/<outcome-kebab-case>"
+            exit 1
+          fi
+
+  build:
+    needs: branch-naming
+    if: always() && (github.event_name != 'pull_request' || needs.branch-naming.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
