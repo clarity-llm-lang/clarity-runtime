@@ -114,7 +114,11 @@ export interface AgentRunSummary {
   stepCount: number;
   handoffCount: number;
   toolCallCount: number;
+  llmCallCount: number;
   eventCount: number;
+  currentStepId?: string;
+  lastEventKind?: string;
+  lastEventMessage?: string;
 }
 
 interface WorkerValue {
@@ -674,12 +678,18 @@ export class ServiceManager {
         stepCount: 0,
         handoffCount: 0,
         toolCallCount: 0,
+        llmCallCount: 0,
         eventCount: 0,
+        currentStepId: undefined,
+        lastEventKind: undefined,
+        lastEventMessage: undefined,
         seenStepIds: new Set<string>()
       };
       current.agent = agent;
       current.updatedAt = event.at;
       current.eventCount += 1;
+      current.lastEventKind = event.kind;
+      current.lastEventMessage = event.message;
 
       if (event.kind === "agent.run_created") {
         current.status = "queued";
@@ -694,6 +704,7 @@ export class ServiceManager {
         }
       } else if (event.kind === "agent.step_started") {
         const stepId = String(payload.stepId ?? payload.step_id ?? "").trim();
+        current.currentStepId = stepId || current.currentStepId;
         if (stepId.length > 0) {
           if (!current.seenStepIds.has(stepId)) {
             current.stepCount += 1;
@@ -702,21 +713,31 @@ export class ServiceManager {
         } else {
           current.stepCount += 1;
         }
+      } else if (event.kind === "agent.step_completed") {
+        const stepId = String(payload.stepId ?? payload.step_id ?? "").trim();
+        if (stepId && current.currentStepId === stepId) {
+          current.currentStepId = undefined;
+        }
       } else if (event.kind === "agent.handoff") {
         current.handoffCount += 1;
       } else if (event.kind === "agent.tool_called") {
         current.toolCallCount += 1;
+      } else if (event.kind === "agent.llm_called") {
+        current.llmCallCount += 1;
       } else if (event.kind === "agent.run_completed") {
         current.status = "completed";
         current.completedAt = event.at;
+        current.currentStepId = undefined;
       } else if (event.kind === "agent.run_failed") {
         current.status = "failed";
         current.completedAt = event.at;
+        current.currentStepId = undefined;
         const failure = String(payload.error ?? payload.reason ?? "").trim();
         current.failureReason = failure || event.message;
       } else if (event.kind === "agent.run_cancelled") {
         current.status = "cancelled";
         current.completedAt = event.at;
+        current.currentStepId = undefined;
       }
 
       runs.set(runId, current);
@@ -737,7 +758,11 @@ export class ServiceManager {
         stepCount: run.stepCount,
         handoffCount: run.handoffCount,
         toolCallCount: run.toolCallCount,
-        eventCount: run.eventCount
+        llmCallCount: run.llmCallCount,
+        eventCount: run.eventCount,
+        currentStepId: run.currentStepId,
+        lastEventKind: run.lastEventKind,
+        lastEventMessage: run.lastEventMessage
       }));
   }
 

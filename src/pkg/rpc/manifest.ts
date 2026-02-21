@@ -28,6 +28,26 @@ function asStringArray(value: unknown): string[] | null {
   return out.length === value.length ? out : null;
 }
 
+function validateAgentDescriptor(value: unknown): void {
+  const obj = asObject(value);
+  if (!obj) {
+    throw new Error("invalid manifest: metadata.agent must be an object");
+  }
+  for (const key of ["agentId", "name", "role", "objective"] as const) {
+    if (!asNonEmptyString(obj[key])) {
+      throw new Error(`invalid manifest: metadata.agent.${key} must be a non-empty string`);
+    }
+  }
+  for (const key of ["inputs", "outputs", "allowedMcpTools", "allowedLlmProviders", "handoffTargets", "dependsOn"] as const) {
+    if (obj[key] !== undefined && !asStringArray(obj[key])) {
+      throw new Error(`invalid manifest: metadata.agent.${key} must be an array of strings when provided`);
+    }
+  }
+  if (obj.version !== undefined && !asNonEmptyString(obj.version)) {
+    throw new Error("invalid manifest: metadata.agent.version must be a non-empty string when provided");
+  }
+}
+
 export function isManifest(input: unknown): input is MCPServiceManifest {
   try {
     validateManifest(input);
@@ -70,6 +90,11 @@ export function validateManifest(input: unknown): MCPServiceManifest {
     && metadata.serviceType !== "agent"
   ) {
     throw new Error("invalid manifest: metadata.serviceType must be 'mcp' or 'agent'");
+  }
+  if (metadata.serviceType === "agent") {
+    validateAgentDescriptor(metadata.agent);
+  } else if (metadata.agent !== undefined) {
+    validateAgentDescriptor(metadata.agent);
   }
 
   const spec = asObject(root.spec);

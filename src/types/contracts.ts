@@ -18,6 +18,20 @@ export type HealthState =
   | "UNAUTHORIZED"
   | "UNREACHABLE";
 
+export interface AgentDescriptor {
+  agentId: string;
+  name: string;
+  role: string;
+  objective: string;
+  inputs?: string[];
+  outputs?: string[];
+  allowedMcpTools?: string[];
+  allowedLlmProviders?: string[];
+  handoffTargets?: string[];
+  dependsOn?: string[];
+  version?: string;
+}
+
 export interface ManifestMetadata {
   serviceId?: string;
   displayName?: string;
@@ -27,6 +41,7 @@ export interface ManifestMetadata {
   version?: string;
   artifactSha256?: string;
   serviceType?: ServiceType;
+  agent?: AgentDescriptor;
   createdAt?: string;
   updatedAt?: string;
 }

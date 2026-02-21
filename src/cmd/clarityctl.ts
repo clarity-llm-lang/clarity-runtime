@@ -5,7 +5,7 @@ import { access, mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 import { normalizeNamespace } from "../pkg/security/namespace.js";
-import type { MCPServiceManifest } from "../types/contracts.js";
+import type { AgentDescriptor, MCPServiceManifest } from "../types/contracts.js";
 
 const program = new Command();
 
@@ -43,6 +43,7 @@ function localManifest(input: {
   entry: string;
   displayName?: string;
   serviceType?: "mcp" | "agent";
+  agent?: AgentDescriptor;
 }): MCPServiceManifest {
   const serviceType = input.serviceType ?? "mcp";
   return {
@@ -52,6 +53,7 @@ function localManifest(input: {
       sourceFile: input.sourceFile,
       module: input.module,
       serviceType,
+      ...(input.agent ? { agent: input.agent } : {}),
       displayName: input.displayName
     },
     spec: {
@@ -78,6 +80,7 @@ function remoteManifest(input: {
   module: string;
   displayName?: string;
   serviceType?: "mcp" | "agent";
+  agent?: AgentDescriptor;
   timeoutMs?: number;
   allowedTools?: string[];
   authRef?: string;
@@ -92,6 +95,7 @@ function remoteManifest(input: {
       sourceFile: input.endpoint,
       module: input.module,
       serviceType,
+      ...(input.agent ? { agent: input.agent } : {}),
       displayName: input.displayName
     },
     spec: {
@@ -270,6 +274,56 @@ function parseServiceType(value: unknown): "mcp" | "agent" | undefined {
   throw new Error("invalid --service-type: expected 'mcp' or 'agent'");
 }
 
+function parseCsvList(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const out = String(value)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return out.length > 0 ? out : undefined;
+}
+
+function buildAgentDescriptorFromOpts(
+  serviceType: "mcp" | "agent" | undefined,
+  opts: Record<string, unknown>,
+  moduleName: string,
+  displayName?: string
+): AgentDescriptor | undefined {
+  if (serviceType !== "agent") {
+    return undefined;
+  }
+  const agentId = typeof opts.agentId === "string" && opts.agentId.trim().length > 0
+    ? opts.agentId.trim()
+    : normalizeNamespace(moduleName);
+  const name = typeof opts.agentName === "string" && opts.agentName.trim().length > 0
+    ? opts.agentName.trim()
+    : (displayName && displayName.trim().length > 0 ? displayName.trim() : moduleName);
+  const role = typeof opts.agentRole === "string" && opts.agentRole.trim().length > 0
+    ? opts.agentRole.trim()
+    : "";
+  const objective = typeof opts.agentObjective === "string" && opts.agentObjective.trim().length > 0
+    ? opts.agentObjective.trim()
+    : "";
+  if (!role || !objective) {
+    throw new Error("agent services require --agent-role and --agent-objective");
+  }
+  return {
+    agentId,
+    name,
+    role,
+    objective,
+    ...(parseCsvList(opts.agentInputs) ? { inputs: parseCsvList(opts.agentInputs) } : {}),
+    ...(parseCsvList(opts.agentOutputs) ? { outputs: parseCsvList(opts.agentOutputs) } : {}),
+    ...(parseCsvList(opts.agentMcpTools) ? { allowedMcpTools: parseCsvList(opts.agentMcpTools) } : {}),
+    ...(parseCsvList(opts.agentLlmProviders) ? { allowedLlmProviders: parseCsvList(opts.agentLlmProviders) } : {}),
+    ...(parseCsvList(opts.agentHandoffTargets) ? { handoffTargets: parseCsvList(opts.agentHandoffTargets) } : {}),
+    ...(parseCsvList(opts.agentDependsOn) ? { dependsOn: parseCsvList(opts.agentDependsOn) } : {}),
+    ...(typeof opts.agentVersion === "string" && opts.agentVersion.trim().length > 0 ? { version: opts.agentVersion.trim() } : {})
+  };
+}
+
 async function compileRegisterStartIntrospect(input: {
   daemonUrl: string;
   authToken?: string;
@@ -279,6 +333,7 @@ async function compileRegisterStartIntrospect(input: {
   entry: string;
   displayName?: string;
   serviceType?: "mcp" | "agent";
+  agent?: AgentDescriptor;
   compilerBin: string;
 }): Promise<{ serviceId: string; sourceFile: string; wasmPath: string; module: string }> {
   const wasmPath = input.wasmPath
@@ -294,6 +349,7 @@ async function compileRegisterStartIntrospect(input: {
     wasmPath,
     entry: input.entry,
     serviceType: input.serviceType,
+    agent: input.agent,
     displayName: input.displayName
   });
 
@@ -373,10 +429,22 @@ program
   .option("--entry <name>", "MCP entry function", "mcp_main")
   .option("--name <display>", "Optional display name")
   .option("--service-type <type>", "Service type: mcp | agent", "mcp")
+  .option("--agent-id <id>", "Agent identifier (service-type=agent)")
+  .option("--agent-name <name>", "Agent display name override (service-type=agent)")
+  .option("--agent-role <role>", "Agent role (service-type=agent)")
+  .option("--agent-objective <text>", "Agent objective (service-type=agent)")
+  .option("--agent-inputs <items>", "Comma-separated expected inputs (service-type=agent)")
+  .option("--agent-outputs <items>", "Comma-separated expected outputs (service-type=agent)")
+  .option("--agent-mcp-tools <items>", "Comma-separated allowed MCP tools (service-type=agent)")
+  .option("--agent-llm-providers <items>", "Comma-separated allowed LLM providers (service-type=agent)")
+  .option("--agent-handoff-targets <items>", "Comma-separated handoff targets (service-type=agent)")
+  .option("--agent-depends-on <items>", "Comma-separated upstream dependencies (service-type=agent)")
+  .option("--agent-version <version>", "Agent descriptor version")
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (service, opts) => {
     const runtime = runtimeOpts();
     const { sourceFile, moduleName } = resolveSourceAndModule(String(service), opts.module);
+    const serviceType = parseServiceType(opts.serviceType);
     const out = await compileRegisterStartIntrospect({
       daemonUrl: runtime.daemonUrl,
       authToken: runtime.authToken,
@@ -385,7 +453,8 @@ program
       wasmPath: opts.wasm,
       entry: opts.entry,
       displayName: opts.name,
-      serviceType: parseServiceType(opts.serviceType),
+      serviceType,
+      agent: buildAgentDescriptorFromOpts(serviceType, opts as Record<string, unknown>, moduleName, opts.name),
       compilerBin: opts.compilerBin
     });
     process.stdout.write(`${JSON.stringify({ ok: true, ...out }, null, 2)}\n`);
@@ -397,6 +466,15 @@ program
   .option("--recursive", "Recurse into subdirectories")
   .option("--entry <name>", "MCP entry function", "mcp_main")
   .option("--service-type <type>", "Service type for all added services: mcp | agent", "mcp")
+  .option("--agent-role <role>", "Agent role (service-type=agent)")
+  .option("--agent-objective <text>", "Agent objective (service-type=agent)")
+  .option("--agent-inputs <items>", "Comma-separated expected inputs (service-type=agent)")
+  .option("--agent-outputs <items>", "Comma-separated expected outputs (service-type=agent)")
+  .option("--agent-mcp-tools <items>", "Comma-separated allowed MCP tools (service-type=agent)")
+  .option("--agent-llm-providers <items>", "Comma-separated allowed LLM providers (service-type=agent)")
+  .option("--agent-handoff-targets <items>", "Comma-separated handoff targets (service-type=agent)")
+  .option("--agent-depends-on <items>", "Comma-separated upstream dependencies (service-type=agent)")
+  .option("--agent-version <version>", "Agent descriptor version")
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (dir, opts) => {
     const runtime = runtimeOpts();
@@ -408,6 +486,7 @@ program
     }
 
     const services: Array<{ serviceId: string; sourceFile: string; wasmPath: string; module: string }> = [];
+    const serviceType = parseServiceType(opts.serviceType);
     for (const sourceFile of files) {
       const moduleName = path.basename(sourceFile, path.extname(sourceFile));
       const result = await compileRegisterStartIntrospect({
@@ -416,7 +495,8 @@ program
         sourceFile,
         moduleName,
         entry: opts.entry,
-        serviceType: parseServiceType(opts.serviceType),
+        serviceType,
+        agent: buildAgentDescriptorFromOpts(serviceType, opts as Record<string, unknown>, moduleName, moduleName),
         compilerBin: opts.compilerBin
       });
       services.push(result);
@@ -446,15 +526,28 @@ program
   .option("--entry <name>", "MCP entry function", "mcp_main")
   .option("--name <display>", "Optional display name")
   .option("--service-type <type>", "Service type: mcp | agent", "mcp")
+  .option("--agent-id <id>", "Agent identifier (service-type=agent)")
+  .option("--agent-name <name>", "Agent display name override (service-type=agent)")
+  .option("--agent-role <role>", "Agent role (service-type=agent)")
+  .option("--agent-objective <text>", "Agent objective (service-type=agent)")
+  .option("--agent-inputs <items>", "Comma-separated expected inputs (service-type=agent)")
+  .option("--agent-outputs <items>", "Comma-separated expected outputs (service-type=agent)")
+  .option("--agent-mcp-tools <items>", "Comma-separated allowed MCP tools (service-type=agent)")
+  .option("--agent-llm-providers <items>", "Comma-separated allowed LLM providers (service-type=agent)")
+  .option("--agent-handoff-targets <items>", "Comma-separated handoff targets (service-type=agent)")
+  .option("--agent-depends-on <items>", "Comma-separated upstream dependencies (service-type=agent)")
+  .option("--agent-version <version>", "Agent descriptor version")
   .action(async (opts) => {
     const runtime = runtimeOpts();
     process.stderr.write("warning: `add-local` is legacy; prefer `add <service>`.\n");
+    const serviceType = parseServiceType(opts.serviceType);
     const manifest = localManifest({
       sourceFile: path.resolve(opts.source),
       module: opts.module,
       wasmPath: path.resolve(opts.wasm),
       entry: opts.entry,
-      serviceType: parseServiceType(opts.serviceType),
+      serviceType,
+      agent: buildAgentDescriptorFromOpts(serviceType, opts as Record<string, unknown>, opts.module, opts.name),
       displayName: opts.name
     });
 
@@ -474,12 +567,24 @@ program
   .option("--entry <name>", "MCP entry function", "mcp_main")
   .option("--name <display>", "Optional display name")
   .option("--service-type <type>", "Service type: mcp | agent", "mcp")
+  .option("--agent-id <id>", "Agent identifier (service-type=agent)")
+  .option("--agent-name <name>", "Agent display name override (service-type=agent)")
+  .option("--agent-role <role>", "Agent role (service-type=agent)")
+  .option("--agent-objective <text>", "Agent objective (service-type=agent)")
+  .option("--agent-inputs <items>", "Comma-separated expected inputs (service-type=agent)")
+  .option("--agent-outputs <items>", "Comma-separated expected outputs (service-type=agent)")
+  .option("--agent-mcp-tools <items>", "Comma-separated allowed MCP tools (service-type=agent)")
+  .option("--agent-llm-providers <items>", "Comma-separated allowed LLM providers (service-type=agent)")
+  .option("--agent-handoff-targets <items>", "Comma-separated handoff targets (service-type=agent)")
+  .option("--agent-depends-on <items>", "Comma-separated upstream dependencies (service-type=agent)")
+  .option("--agent-version <version>", "Agent descriptor version")
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (opts) => {
     const runtime = runtimeOpts();
     process.stderr.write("warning: `start-source` is legacy; prefer `add <service>`.\n");
     const sourceFile = path.resolve(opts.source);
     const moduleName = opts.module ?? path.basename(sourceFile, path.extname(sourceFile));
+    const serviceType = parseServiceType(opts.serviceType);
     const out = await compileRegisterStartIntrospect({
       daemonUrl: runtime.daemonUrl,
       authToken: runtime.authToken,
@@ -488,7 +593,8 @@ program
       wasmPath: opts.wasm,
       entry: opts.entry,
       displayName: opts.name,
-      serviceType: parseServiceType(opts.serviceType),
+      serviceType,
+      agent: buildAgentDescriptorFromOpts(serviceType, opts as Record<string, unknown>, moduleName, opts.name),
       compilerBin: opts.compilerBin
     });
     process.stdout.write(`${JSON.stringify({ ok: true, ...out }, null, 2)}\n`);
@@ -500,6 +606,17 @@ program
   .requiredOption("--module <name>", "Logical module name")
   .option("--name <display>", "Optional display name")
   .option("--service-type <type>", "Service type: mcp | agent", "mcp")
+  .option("--agent-id <id>", "Agent identifier (service-type=agent)")
+  .option("--agent-name <name>", "Agent display name override (service-type=agent)")
+  .option("--agent-role <role>", "Agent role (service-type=agent)")
+  .option("--agent-objective <text>", "Agent objective (service-type=agent)")
+  .option("--agent-inputs <items>", "Comma-separated expected inputs (service-type=agent)")
+  .option("--agent-outputs <items>", "Comma-separated expected outputs (service-type=agent)")
+  .option("--agent-mcp-tools <items>", "Comma-separated allowed MCP tools (service-type=agent)")
+  .option("--agent-llm-providers <items>", "Comma-separated allowed LLM providers (service-type=agent)")
+  .option("--agent-handoff-targets <items>", "Comma-separated handoff targets (service-type=agent)")
+  .option("--agent-depends-on <items>", "Comma-separated upstream dependencies (service-type=agent)")
+  .option("--agent-version <version>", "Agent descriptor version")
   .option("--auth-ref <name>", "Auth secret reference name (resolved from env)")
   .option("--timeout-ms <ms>", "Remote request timeout in milliseconds")
   .option("--allow-tools <items>", "Comma-separated remote tool allowlist (optional)")
@@ -513,11 +630,13 @@ program
     const allowedTools = opts.allowTools
       ? String(opts.allowTools).split(",").map((s) => s.trim()).filter(Boolean)
       : undefined;
+    const serviceType = parseServiceType(opts.serviceType);
     const manifest = remoteManifest({
       endpoint: opts.endpoint,
       module: opts.module,
       displayName: opts.name,
-      serviceType: parseServiceType(opts.serviceType),
+      serviceType,
+      agent: buildAgentDescriptorFromOpts(serviceType, opts as Record<string, unknown>, opts.module, opts.name),
       authRef: opts.authRef,
       timeoutMs: Number.isFinite(timeoutMs as number) && (timeoutMs as number) > 0 ? timeoutMs : undefined,
       allowedTools,

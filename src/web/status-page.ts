@@ -500,6 +500,7 @@ function summaryCards(data) {
 function agentSummaryCards(summary) {
   const s = summary || {};
   return [
+    ['Agent Services', Number(s.agentServices || 0)],
     ['Runs', Number(s.totalRuns || 0)],
     ['Running', Number(s.running || 0)],
     ['Waiting', Number(s.waiting || 0)],
@@ -773,6 +774,31 @@ function renderServiceDetails(serviceId, data) {
 }
 
 function renderAgentRunDetails(runId, events) {
+  const lines = [];
+  for (const evt of (events || [])) {
+    const data = evt && evt.data && typeof evt.data === 'object' ? evt.data : {};
+    if (evt.kind === 'agent.step_started') {
+      const stepId = typeof data.stepId === 'string' ? data.stepId : '';
+      lines.push('START ' + (stepId || 'step'));
+    } else if (evt.kind === 'agent.tool_called') {
+      const tool = typeof data.tool === 'string' ? data.tool : '';
+      lines.push(' -> MCP ' + (tool || 'tool'));
+    } else if (evt.kind === 'agent.llm_called') {
+      const provider = typeof data.provider === 'string' ? data.provider : 'llm';
+      const model = typeof data.model === 'string' ? data.model : '';
+      lines.push(' -> LLM ' + provider + (model ? (':' + model) : ''));
+    } else if (evt.kind === 'agent.handoff') {
+      const target = typeof data.to === 'string' ? data.to : (typeof data.target === 'string' ? data.target : 'agent');
+      lines.push(' -> A2A ' + target);
+    } else if (evt.kind === 'agent.step_completed') {
+      const stepId = typeof data.stepId === 'string' ? data.stepId : '';
+      lines.push('END ' + (stepId || 'step'));
+    } else if (evt.kind === 'agent.run_completed') {
+      lines.push('RUN COMPLETED');
+    } else if (evt.kind === 'agent.run_failed') {
+      lines.push('RUN FAILED');
+    }
+  }
   const rows = (events || []).map((evt) => {
     const sid = evt.serviceId ? ' [' + esc(evt.serviceId) + ']' : '';
     return '<li class="code">' + formatLocalTime(evt.at) + ' · ' + esc(evt.kind) + sid + ' · ' + esc(evt.message) + '</li>';
@@ -780,6 +806,8 @@ function renderAgentRunDetails(runId, events) {
   return '<div class="detail-box">' +
     '<h3 class="detail-title">Run</h3>' +
     '<div class="code">' + esc(runId) + '</div>' +
+    '<h3 class="detail-title">Flow</h3>' +
+    '<pre class="code" style="margin:0; white-space:pre-wrap;">' + esc(lines.join('\n') || 'No flow edges captured yet.') + '</pre>' +
     '<h3 class="detail-title">Events</h3>' +
     (rows ? '<ul class="detail-list">' + rows + '</ul>' : '<div class="code">No events for this run.</div>') +
   '</div>';
@@ -853,7 +881,15 @@ async function refresh() {
       ? agentEventsResult.value
       : { items: [] };
     const summarySafe = (data && data.summary) ? data.summary : { total: 0, mcpServices: 0, agentServices: 0, running: 0, runningMcp: 0, runningAgent: 0, degraded: 0, stopped: 0, local: 0, remote: 0 };
-    const agentSummarySafe = (data && data.agents) ? data.agents : { totalRuns: 0, running: 0, waiting: 0, completed: 0, failed: 0, cancelled: 0 };
+    const agentSummarySafe = {
+      totalRuns: Number(data && data.agents && data.agents.totalRuns || 0),
+      running: Number(data && data.agents && data.agents.running || 0),
+      waiting: Number(data && data.agents && data.agents.waiting || 0),
+      completed: Number(data && data.agents && data.agents.completed || 0),
+      failed: Number(data && data.agents && data.agents.failed || 0),
+      cancelled: Number(data && data.agents && data.agents.cancelled || 0),
+      agentServices: Number(summarySafe.agentServices || 0)
+    };
     const services = Array.isArray(data && data.services) ? data.services : [];
     const mcpServices = services.filter((svc) => classifyServiceType(svc) === 'mcp');
     const agentServices = services.filter((svc) => classifyServiceType(svc) === 'agent');
@@ -973,6 +1009,9 @@ async function refresh() {
       const displayName = esc(svc.displayName || svc.serviceId);
       const serviceId = esc(svc.serviceId);
       const originType = esc(svc.originType);
+      const agentMeta = svc.agent || {};
+      const roleLabel = agentMeta && agentMeta.role ? String(agentMeta.role) : 'unknown-role';
+      const objectiveLabel = agentMeta && agentMeta.objective ? String(agentMeta.objective) : '';
       const restartLabel = esc(restart);
       const remotePolicyLabel = esc(remotePolicy);
       const healthLabel = esc(svc.health);
@@ -982,7 +1021,7 @@ async function refresh() {
         ? '<tr class="detail-row"><td colspan="7">' + renderServiceDetails(svc.serviceId, detailCache[key]) + '</td></tr>'
         : '';
       return '<tr>' +
-        '<td><strong>' + displayName + '</strong><div class="id code">' + serviceId + '</div></td>' +
+        '<td><strong>' + displayName + '</strong><div class="id code">' + serviceId + '</div><div class="id code">role=' + esc(roleLabel) + (objectiveLabel ? ', objective=' + esc(objectiveLabel) : '') + '</div></td>' +
         '<td><span class="code">' + originType + '</span></td>' +
         '<td><div class="code">' + restartLabel + '</div>' + (remotePolicy ? '<div class="id code">' + remotePolicyLabel + '</div>' : '') + '</td>' +
         '<td>' + badge(svc.lifecycle) + '</td>' +
@@ -1006,7 +1045,7 @@ async function refresh() {
       const runId = esc(run.runId || 'unknown');
       const key = String(run.runId || '');
       const status = String(run.status || 'queued').toUpperCase();
-      const counters = 'steps=' + Number(run.stepCount || 0) + ', handoffs=' + Number(run.handoffCount || 0) + ', calls=' + Number(run.toolCallCount || 0);
+      const counters = 'steps=' + Number(run.stepCount || 0) + ', handoffs=' + Number(run.handoffCount || 0) + ', mcp=' + Number(run.toolCallCount || 0) + ', llm=' + Number(run.llmCallCount || 0) + (run.currentStepId ? ', current=' + String(run.currentStepId) : '');
       const detailRow = agentExpanded[key]
         ? '<tr class="detail-row"><td colspan="6">' + renderAgentRunDetails(key, agentDetailCache[key]) + '</td></tr>'
         : '';

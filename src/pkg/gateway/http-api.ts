@@ -96,6 +96,7 @@ function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) 
     sourceFile: record.manifest.metadata.sourceFile,
     module: record.manifest.metadata.module,
     serviceType: inferredType,
+    agent: inferredType === "agent" ? (record.manifest.metadata.agent ?? null) : null,
     originType: record.manifest.spec.origin.type,
     lifecycle: record.runtime.lifecycle,
     health: record.runtime.health,
