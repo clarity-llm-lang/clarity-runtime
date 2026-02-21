@@ -4,6 +4,25 @@ import { renderStatusPage } from "../../web/status-page.js";
 import { isJsonRpcRequest, failure, type JsonRpcRequest } from "./mcp-jsonrpc.js";
 import { McpRouter } from "./mcp-router.js";
 
+const SYSTEM_TOOLS = [
+  "runtime__status_summary",
+  "runtime__list_services",
+  "runtime__get_service",
+  "runtime__get_logs",
+  "runtime__start_service",
+  "runtime__stop_service",
+  "runtime__restart_service",
+  "runtime__refresh_interface",
+  "runtime__unquarantine_service",
+  "runtime__get_audit",
+  "runtime__clarity_help",
+  "runtime__clarity_sources",
+  "runtime__register_local",
+  "runtime__register_remote",
+  "runtime__register_via_url",
+  "runtime__apply_manifest"
+] as const;
+
 function json(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
   res.setHeader("content-type", "application/json; charset=utf-8");
@@ -153,6 +172,10 @@ export async function handleHttp(manager: ServiceManager, req: IncomingMessage, 
           listen,
           mcpPath: "/mcp",
           healthy: true
+        },
+        systemTools: {
+          count: SYSTEM_TOOLS.length,
+          items: SYSTEM_TOOLS
         },
         summary,
         services,

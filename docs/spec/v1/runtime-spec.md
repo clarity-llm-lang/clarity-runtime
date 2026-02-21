@@ -41,6 +41,8 @@
 - `runtime__refresh_interface`
 - `runtime__unquarantine_service`
 - `runtime__get_audit`
+- `runtime__clarity_help`
+- `runtime__clarity_sources`
 - `runtime__register_local` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
 - `runtime__register_remote` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
 - `runtime__register_via_url` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)

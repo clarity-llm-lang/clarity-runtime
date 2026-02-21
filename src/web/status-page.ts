@@ -174,6 +174,35 @@ export function renderStatusPage(): string {
     }
 
     .btn:hover { filter: brightness(1.1); }
+    .btn.ghost {
+      border-color: rgba(148, 163, 184, 0.35);
+      background: rgba(10, 16, 30, 0.55);
+      color: #cbd7e6;
+    }
+    .detail-row td {
+      background: rgba(8, 14, 28, 0.72);
+      border-top: none;
+    }
+    .detail-box {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .detail-title {
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      font-size: 10px;
+      margin: 0;
+    }
+    .detail-list {
+      margin: 0;
+      padding-left: 16px;
+      display: grid;
+      gap: 4px;
+    }
 
     .audit {
       max-height: 280px;
@@ -256,6 +285,10 @@ export function renderStatusPage(): string {
     </div>
   </div>
 <script>
+const expanded = {};
+const detailCache = {};
+let latestSystemTools = [];
+
 async function call(path, method = 'GET') {
   const res = await fetch(path, { method, headers: { 'content-type': 'application/json' } });
   if (!res.ok) throw new Error(await res.text());
@@ -269,8 +302,10 @@ function badge(state) {
 
 function summaryCards(data) {
   const s = data.summary;
+  const systemCount = typeof data.systemToolCount === 'number' ? data.systemToolCount : 0;
   return [
-    ['Total', s.total],
+    ['Services', s.total],
+    ['System Tools', systemCount],
     ['Running', s.running],
     ['Degraded', s.degraded],
     ['Stopped', s.stopped],
@@ -284,52 +319,170 @@ async function action(id, op) {
   await refresh();
 }
 
+function esc(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function renderSystemDetails(systemTools) {
+  const items = (systemTools || []).map((name) => '<li class="code">' + esc(name) + '</li>').join('');
+  return '<div class="detail-box">' +
+    '<h3 class="detail-title">System Tool Names</h3>' +
+    (items ? '<ul class="detail-list">' + items + '</ul>' : '<div class="code">No system tools reported</div>') +
+  '</div>';
+}
+
+function renderServiceDetails(serviceId, data) {
+  if (!data) {
+    return '<div class="detail-box"><div class="code">Loading details...</div></div>';
+  }
+
+  if (data.error) {
+    return '<div class="detail-box"><div class="code" style="color:#ffb5b5">' + esc(data.error) + '</div></div>';
+  }
+
+  const tools = Array.isArray(data.tools) ? data.tools : [];
+  const logs = Array.isArray(data.logs) ? data.logs : [];
+  const toolItems = tools.length > 0
+    ? '<ul class="detail-list">' + tools.map((name) => '<li class="code">' + esc(name) + '</li>').join('') + '</ul>'
+    : '<div class="code">No interface tools yet. Try Refresh Interface.</div>';
+  const logItems = logs.length > 0
+    ? '<ul class="detail-list">' + logs.map((line) => '<li class="code">' + esc(line) + '</li>').join('') + '</ul>'
+    : '<div class="code">No recent logs.</div>';
+
+  return '<div class="detail-box">' +
+    '<h3 class="detail-title">Interface Tools</h3>' +
+    toolItems +
+    '<h3 class="detail-title">Recent Logs / Calls</h3>' +
+    logItems +
+  '</div>';
+}
+
+async function toggleDetails(key, kind, serviceId) {
+  expanded[key] = !expanded[key];
+  if (expanded[key] && kind === 'service' && !detailCache[key]) {
+    try {
+      const [iface, logs] = await Promise.all([
+        call('/api/services/' + encodeURIComponent(serviceId) + '/interface'),
+        call('/api/services/' + encodeURIComponent(serviceId) + '/logs?limit=15')
+      ]);
+      detailCache[key] = {
+        tools: Array.isArray(iface.tools) ? iface.tools.map((t) => t && t.name ? t.name : '').filter(Boolean) : [],
+        logs: Array.isArray(logs.lines) ? logs.lines : []
+      };
+    } catch (error) {
+      detailCache[key] = {
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+  if (expanded[key] && kind === 'system') {
+    detailCache[key] = { systemTools: latestSystemTools || [] };
+  }
+  await refresh();
+}
+
 async function refresh() {
-  const [data, audit] = await Promise.all([
-    call('/api/status'),
-    call('/api/audit?limit=25')
-  ]);
-  document.getElementById('summary').innerHTML = summaryCards(data);
-  const rows = data.services.map((svc) => {
-    const toolCount = svc.interface?.tools ?? 0;
-    const resCount = svc.interface?.resources ?? 0;
-    const promptCount = svc.interface?.prompts ?? 0;
-    const restart = svc.policy?.restart
-      ? svc.policy.restart.mode + '/' + svc.policy.restart.maxRestarts + 'x/' + svc.policy.restart.windowSeconds + 's'
-      : 'n/a';
-    const remotePolicy = svc.policy?.remote
-      ? 'to=' + (svc.policy.remote.timeoutMs ?? 'default') + 'ms, tools=' + ((svc.policy.remote.allowedTools || []).length > 0 ? svc.policy.remote.allowedTools.join(',') : '*') +
-        ', payload=' + (svc.policy.remote.maxPayloadBytes ?? 'default') +
-        ', conc=' + (svc.policy.remote.maxConcurrency ?? 'default')
-      : '';
-    return '<tr>' +
-      '<td><strong>' + (svc.displayName || svc.serviceId) + '</strong><div class="id code">' + svc.serviceId + '</div></td>' +
-      '<td><span class="code">' + svc.originType + '</span></td>' +
-      '<td><div class="code">' + restart + '</div>' + (remotePolicy ? '<div class="id code">' + remotePolicy + '</div>' : '') + '</td>' +
-      '<td>' + badge(svc.lifecycle) + '</td>' +
-      '<td><span class="code">' + svc.health + '</span></td>' +
-      '<td>' + toolCount + ' tools, ' + resCount + ' resources, ' + promptCount + ' prompts</td>' +
+  try {
+    const [statusResult, auditResult] = await Promise.allSettled([
+      call('/api/status'),
+      call('/api/audit?limit=25')
+    ]);
+    const data = statusResult.status === 'fulfilled'
+      ? statusResult.value
+      : { summary: { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 }, services: [], systemTools: { items: [] } };
+    const audit = auditResult.status === 'fulfilled'
+      ? auditResult.value
+      : { items: [] };
+    const summarySafe = (data && data.summary) ? data.summary : { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 };
+    const services = Array.isArray(data && data.services) ? data.services : [];
+    const systemTools = Array.isArray(data && data.systemTools && data.systemTools.items) ? data.systemTools.items : [];
+    latestSystemTools = systemTools;
+    document.getElementById('summary').innerHTML = summaryCards({
+      summary: summarySafe,
+      systemToolCount: systemTools.length
+    });
+
+    const systemRow = '<tr>' +
+      '<td><strong>Runtime System</strong><div class="id code">system__runtime</div></td>' +
+      '<td><span class="code">system</span></td>' +
+      '<td><div class="code">built-in</div></td>' +
+      '<td>' + badge('RUNNING') + '</td>' +
+      '<td><span class="code">HEALTHY</span></td>' +
+      '<td>' + systemTools.length + ' tools, 0 resources, 0 prompts</td>' +
       '<td>' +
-        '<button class="btn" onclick="action(\'' + svc.serviceId + '\',\'start\')">Start</button>' +
-        '<button class="btn" onclick="action(\'' + svc.serviceId + '\',\'stop\')">Stop</button>' +
-        '<button class="btn" onclick="action(\'' + svc.serviceId + '\',\'restart\')">Restart</button>' +
-        '<button class="btn secondary" onclick="action(\'' + svc.serviceId + '\',\'introspect\')">Refresh Interface</button>' +
-        (svc.lifecycle === 'QUARANTINED'
-          ? '<button class="btn secondary" onclick="action(\'' + svc.serviceId + '\',\'unquarantine\')">Unquarantine</button>'
-          : '') +
+        '<button class="btn ghost" onclick="toggleDetails(\'system__runtime\',\'system\',\'\')">Details</button>' +
       '</td>' +
     '</tr>';
-  }).join('');
-  document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:#9daec4">No services registered</td></tr>';
+    const systemDetailRow = expanded.system__runtime
+      ? '<tr class="detail-row"><td colspan="7">' + renderSystemDetails(systemTools) + '</td></tr>'
+      : '';
 
-  const auditRows = (audit.items || []).slice().reverse().map((evt) => {
-    const sid = evt.serviceId ? ' [' + evt.serviceId + ']' : '';
-    return '<li class="audit-item">' +
-      '<div class="audit-meta">' + evt.at + ' · ' + evt.kind + sid + '</div>' +
-      '<div class="audit-msg">' + evt.message + '</div>' +
-    '</li>';
-  }).join('');
-  document.getElementById('audit').innerHTML = auditRows || '<li class="audit-item"><div class="audit-msg" style="color:#9daec4">No events yet</div></li>';
+    const serviceRows = services.map((svc) => {
+      const iface = svc.interface || {};
+      const policy = svc.policy || {};
+      const remote = policy.remote || null;
+      const toolCount = typeof iface.tools === 'number' ? iface.tools : 0;
+      const resCount = typeof iface.resources === 'number' ? iface.resources : 0;
+      const promptCount = typeof iface.prompts === 'number' ? iface.prompts : 0;
+      const restart = policy.restart
+        ? policy.restart.mode + '/' + policy.restart.maxRestarts + 'x/' + policy.restart.windowSeconds + 's'
+        : 'n/a';
+      const remotePolicy = remote
+        ? 'to=' + (remote.timeoutMs != null ? remote.timeoutMs : 'default') + 'ms, tools=' + ((remote.allowedTools || []).length > 0 ? remote.allowedTools.join(',') : '*') +
+          ', payload=' + (remote.maxPayloadBytes != null ? remote.maxPayloadBytes : 'default') +
+          ', conc=' + (remote.maxConcurrency != null ? remote.maxConcurrency : 'default')
+        : '';
+      const key = 'svc__' + svc.serviceId;
+      const detailRow = expanded[key]
+        ? '<tr class="detail-row"><td colspan="7">' + renderServiceDetails(svc.serviceId, detailCache[key]) + '</td></tr>'
+        : '';
+      return '<tr>' +
+        '<td><strong>' + (svc.displayName || svc.serviceId) + '</strong><div class="id code">' + svc.serviceId + '</div></td>' +
+        '<td><span class="code">' + svc.originType + '</span></td>' +
+        '<td><div class="code">' + restart + '</div>' + (remotePolicy ? '<div class="id code">' + remotePolicy + '</div>' : '') + '</td>' +
+        '<td>' + badge(svc.lifecycle) + '</td>' +
+        '<td><span class="code">' + svc.health + '</span></td>' +
+        '<td>' + toolCount + ' tools, ' + resCount + ' resources, ' + promptCount + ' prompts</td>' +
+        '<td>' +
+          '<button class="btn ghost" onclick="toggleDetails(\'' + key + '\',\'service\',\'' + svc.serviceId + '\')">Details</button>' +
+          '<button class="btn" data-service="' + svc.serviceId + '" data-op="start" onclick="action(this.dataset.service,this.dataset.op)">Start</button>' +
+          '<button class="btn" data-service="' + svc.serviceId + '" data-op="stop" onclick="action(this.dataset.service,this.dataset.op)">Stop</button>' +
+          '<button class="btn" data-service="' + svc.serviceId + '" data-op="restart" onclick="action(this.dataset.service,this.dataset.op)">Restart</button>' +
+          '<button class="btn secondary" data-service="' + svc.serviceId + '" data-op="introspect" onclick="action(this.dataset.service,this.dataset.op)">Refresh Interface</button>' +
+          (svc.lifecycle === 'QUARANTINED'
+            ? '<button class="btn secondary" data-service="' + svc.serviceId + '" data-op="unquarantine" onclick="action(this.dataset.service,this.dataset.op)">Unquarantine</button>'
+            : '') +
+        '</td>' +
+      '</tr>' + detailRow;
+    }).join('');
+    const rows = systemRow + systemDetailRow + serviceRows;
+    document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:#9daec4">No services registered</td></tr>';
+
+    const auditItems = Array.isArray(audit && audit.items) ? audit.items : [];
+    const auditRows = auditItems.slice().reverse().map((evt) => {
+      const sid = evt.serviceId ? ' [' + evt.serviceId + ']' : '';
+      return '<li class="audit-item">' +
+        '<div class="audit-meta">' + evt.at + ' · ' + evt.kind + sid + '</div>' +
+        '<div class="audit-msg">' + evt.message + '</div>' +
+      '</li>';
+    }).join('');
+    const auditFallback = statusResult.status === 'rejected'
+      ? 'Status endpoint unavailable'
+      : (auditResult.status === 'rejected' ? 'Audit endpoint unavailable' : 'No events yet');
+    document.getElementById('audit').innerHTML = auditRows || '<li class="audit-item"><div class="audit-msg" style="color:#9daec4">' + auditFallback + '</div></li>';
+  } catch (error) {
+    document.getElementById('summary').innerHTML = summaryCards({
+      summary: { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
+      systemToolCount: 0
+    });
+    document.getElementById('rows').innerHTML = '<tr><td colspan="7" style="color:#ffb5b5">UI render error: ' + String(error) + '</td></tr>';
+    document.getElementById('audit').innerHTML = '<li class="audit-item"><div class="audit-msg" style="color:#ffb5b5">UI render error</div></li>';
+  }
 }
 
 refresh();

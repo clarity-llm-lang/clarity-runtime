@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readdir, readFile } from "node:fs/promises";
 import type { ServiceManager } from "../supervisor/service-manager.js";
 import type { MCPServiceManifest } from "../../types/contracts.js";
 import { validateManifest } from "../rpc/manifest.js";
@@ -126,6 +127,32 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
       type: "object",
       properties: {
         limit: { type: "integer", minimum: 1, maximum: 2000 }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__clarity_help",
+    description: "Return Clarity-oriented guidance for LLM usage in this runtime workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        topic: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__clarity_sources",
+    description: "List workspace .clarity files and optionally include short source excerpts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dir: { type: "string" },
+        recursive: { type: "boolean" },
+        limit: { type: "integer", minimum: 1, maximum: 200 },
+        include_excerpt: { type: "boolean" },
+        excerpt_chars: { type: "integer", minimum: 64, maximum: 8000 }
       },
       additionalProperties: false
     }
@@ -316,6 +343,38 @@ function contentJson(payload: unknown): { content: Array<{ type: "text"; text: s
   };
 }
 
+function isSubPathOfWorkspace(targetPath: string): boolean {
+  const workspace = path.resolve(process.cwd());
+  const target = path.resolve(targetPath);
+  return target === workspace || target.startsWith(`${workspace}${path.sep}`);
+}
+
+function resolveWorkspacePath(inputPath: string | undefined, fallback = "."): string {
+  const resolved = path.resolve(inputPath ?? fallback);
+  if (!isSubPathOfWorkspace(resolved)) {
+    throw new Error("path must be inside the current workspace");
+  }
+  return resolved;
+}
+
+async function walkClarityFiles(rootDir: string, recursive: boolean): Promise<string[]> {
+  const out: string[] = [];
+  const entries = await readdir(rootDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      if (recursive) {
+        out.push(...(await walkClarityFiles(fullPath, true)));
+      }
+      continue;
+    }
+    if (entry.isFile() && path.extname(entry.name) === ".clarity") {
+      out.push(fullPath);
+    }
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
 function summarizeService(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) {
   return {
     service_id: record.manifest.metadata.serviceId,
@@ -497,6 +556,84 @@ export class McpRouter {
       const limit = asInteger(payload.limit) ?? 200;
       return contentJson({
         items: this.manager.getRecentEvents(limit)
+      });
+    }
+
+    if (name === "runtime__clarity_help") {
+      const topic = (asString(payload.topic) ?? "overview").toLowerCase();
+      const help = {
+        overview: {
+          goal: "Help the LLM work with Clarity sources while runtime executes compiled wasm artifacts.",
+          workflow: [
+            "Use runtime__clarity_sources to inspect real .clarity files in this workspace.",
+            "Use `clarityctl add <service>` (or add-all) to compile/register/start services.",
+            "Use runtime__list_services + runtime__get_service to understand live wiring."
+          ],
+          important: [
+            "Authoring source is .clarity.",
+            "Execution artifact is .wasm (built under .clarity/build by default).",
+            "Runtime tool names are namespaced as <namespace>__<tool>."
+          ]
+        },
+        prompts: {
+          prompt_templates: [
+            "Explain this file's MCP surface and expected tools.",
+            "Refactor this .clarity module for clearer tool boundaries.",
+            "Generate tests/examples for these exported functions."
+          ]
+        },
+        onboarding: {
+          commands: [
+            "clarityctl add <service>",
+            "clarityctl add-all ./examples --recursive",
+            "clarityctl list",
+            "clarityctl introspect <service_id>"
+          ]
+        }
+      } as const;
+
+      return contentJson({
+        topic,
+        ...(("overview" in help && (help as Record<string, unknown>)[topic]) ? { details: (help as Record<string, unknown>)[topic] } : { details: help.overview }),
+        all_topics: Object.keys(help)
+      });
+    }
+
+    if (name === "runtime__clarity_sources") {
+      const dir = resolveWorkspacePath(asString(payload.dir), ".");
+      const recursive = asBoolean(payload.recursive) ?? true;
+      const limit = asInteger(payload.limit) ?? 50;
+      const includeExcerpt = asBoolean(payload.include_excerpt) ?? false;
+      const excerptChars = asIntegerMin(payload.excerpt_chars, 64) ?? 512;
+      const files = await walkClarityFiles(dir, recursive);
+      const selected = files.slice(0, Math.max(1, Math.min(limit, 200)));
+      const workspace = path.resolve(process.cwd());
+
+      const items = await Promise.all(
+        selected.map(async (filePath) => {
+          const relative = path.relative(workspace, filePath);
+          if (!includeExcerpt) {
+            return {
+              file: relative,
+              module: path.basename(filePath, ".clarity")
+            };
+          }
+
+          const raw = await readFile(filePath, "utf8");
+          return {
+            file: relative,
+            module: path.basename(filePath, ".clarity"),
+            excerpt: raw.slice(0, excerptChars)
+          };
+        })
+      );
+
+      return contentJson({
+        workspace,
+        dir: path.relative(workspace, dir) || ".",
+        total_found: files.length,
+        returned: items.length,
+        items
       });
     }
 
