@@ -85,6 +85,11 @@ const AUDIT_EVENT_ALLOWLIST = new Set([
   "mcp.tool_called"
 ]);
 
+function includeLifecycleAudit(env = process.env): boolean {
+  const raw = (env.CLARITY_AUDIT_INCLUDE_LIFECYCLE ?? "1").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 export interface AuditEvent {
   seq: number;
   at: string;
@@ -122,6 +127,7 @@ export class ServiceManager {
   private readonly startFailures = new Map<string, number[]>();
   private readonly events: AuditEvent[] = [];
   private readonly eventSubscribers = new Set<(event: AuditEvent) => void>();
+  private readonly lifecycleAuditEnabled: boolean;
   private telemetryWriteQueue: Promise<void> = Promise.resolve();
   private telemetryLoaded = false;
   private eventSeq = 1;
@@ -131,6 +137,7 @@ export class ServiceManager {
   constructor(registry: ServiceRegistry, telemetryPath = DEFAULT_TELEMETRY_PATH) {
     this.registry = registry;
     this.telemetryPath = telemetryPath;
+    this.lifecycleAuditEnabled = includeLifecycleAudit();
   }
 
   async init(): Promise<void> {
@@ -1050,7 +1057,8 @@ export class ServiceManager {
     message: string;
     data?: unknown;
   }): void {
-    if (!AUDIT_EVENT_ALLOWLIST.has(input.kind)) {
+    const allowLifecycle = this.lifecycleAuditEnabled && input.kind.startsWith("service.");
+    if (!AUDIT_EVENT_ALLOWLIST.has(input.kind) && !allowLifecycle) {
       return;
     }
     const event: AuditEvent = {

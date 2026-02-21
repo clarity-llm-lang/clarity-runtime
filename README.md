@@ -231,6 +231,7 @@ Not implemented yet:
 - `CLARITY_ENABLE_MCP_PROVISIONING=1`: enable runtime MCP self-provisioning tools (`runtime__register_*`, `runtime__apply_manifest`).
 - `CLARITY_ENABLE_COMPILER_INSTALL=1`: allow `clarity__ensure_compiler` to execute install commands.
 - `CLARITY_COMPILER_INSTALL_ALLOWLIST=brew,apt-get`: optional installer command allowlist for `clarity__ensure_compiler`.
+- `CLARITY_AUDIT_INCLUDE_LIFECYCLE=1`: include service lifecycle events in audit (`service.*`). Set `0` to log only MCP tool calls.
 
 ## Security Defaults
 
@@ -244,7 +245,7 @@ Not implemented yet:
 - `GET /api/events`: SSE stream for live runtime events.
 - Status page now includes an audit timeline and `Unquarantine` action for quarantined services.
 - Telemetry persists across daemon restarts in `.clarity/runtime/telemetry.json`.
-- Audit policy now records MCP tool invocations (`mcp.tool_called`) and does not persist secret/lifecycle event details.
+- Audit policy always records MCP tool invocations (`mcp.tool_called`), excludes secret payloads, and can include lifecycle events (`service.*`) via `CLARITY_AUDIT_INCLUDE_LIFECYCLE=1` (default on).
 - Auth lifecycle/validation APIs:
   - `GET /api/security/auth/providers`
   - `GET|POST /api/security/auth/validate`
