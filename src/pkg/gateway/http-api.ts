@@ -1,4 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ServiceManager } from "../supervisor/service-manager.js";
 import { renderStatusPage } from "../../web/status-page.js";
 import { isJsonRpcRequest, failure, type JsonRpcRequest } from "./mcp-jsonrpc.js";
@@ -46,6 +49,14 @@ const RUNTIME_SYSTEM_TOOLS = [
 ] as const;
 
 const SYSTEM_TOOLS = [...RUNTIME_SYSTEM_TOOLS, ...CLARITY_SYSTEM_TOOLS].map((t) => t.name);
+const FAVICON_SVG_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../../assets/clarity-github-avatar.svg"
+);
+const FAVICON_PNG_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../../assets/clarity-github-avatar.png"
+);
 
 function json(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -54,6 +65,12 @@ function json(res: ServerResponse, status: number, data: unknown): void {
 }
 
 function text(res: ServerResponse, status: number, body: string, type = "text/plain; charset=utf-8"): void {
+  res.statusCode = status;
+  res.setHeader("content-type", type);
+  res.end(body);
+}
+
+function bytes(res: ServerResponse, status: number, body: Buffer, type: string): void {
   res.statusCode = status;
   res.setHeader("content-type", type);
   res.end(body);
@@ -118,6 +135,18 @@ export async function handleHttp(
   const mcpRouter = new McpRouter(manager);
 
   try {
+    if (method === "GET" && url.pathname === "/favicon.svg") {
+      const favicon = await readFile(FAVICON_SVG_PATH, "utf8");
+      text(res, 200, favicon, "image/svg+xml; charset=utf-8");
+      return;
+    }
+
+    if (method === "GET" && (url.pathname === "/favicon.ico" || url.pathname === "/favicon.png" || url.pathname === "/apple-touch-icon.png")) {
+      const favicon = await readFile(FAVICON_PNG_PATH);
+      bytes(res, 200, favicon, "image/png");
+      return;
+    }
+
     if (method === "GET" && (url.pathname === "/" || url.pathname === "/status")) {
       text(res, 200, renderStatusPage(), "text/html; charset=utf-8");
       return;

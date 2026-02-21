@@ -4,6 +4,10 @@ export function renderStatusPage(): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png?v=1" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=1" />
+  <link rel="shortcut icon" href="/favicon.ico?v=1" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=1" />
   <title>Clarity Runtime Status</title>
   <style>
     :root {
