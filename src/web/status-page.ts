@@ -355,13 +355,13 @@ function badge(state) {
 
 function summaryCards(data) {
   const s = data.summary;
-  const runtimeCount = typeof data.runtimeToolCount === 'number' ? data.runtimeToolCount : 0;
-  const clarityCount = typeof data.clarityToolCount === 'number' ? data.clarityToolCount : 0;
+  const systemServices = typeof data.systemServiceCount === 'number' ? data.systemServiceCount : 0;
+  const totalServices = (typeof s.total === 'number' ? s.total : 0) + systemServices;
+  const runningWithSystem = (typeof s.running === 'number' ? s.running : 0) + systemServices;
   return [
-    ['Services', s.total],
-    ['Runtime Tools', runtimeCount],
-    ['Clarity Tools', clarityCount],
-    ['Running', s.running],
+    ['Services', totalServices],
+    ['System Services', systemServices],
+    ['Running', runningWithSystem],
     ['Degraded', s.degraded],
     ['Stopped', s.stopped],
     ['Local', s.local],
@@ -524,8 +524,7 @@ async function refresh() {
     }
     document.getElementById('summary').innerHTML = summaryCards({
       summary: summarySafe,
-      runtimeToolCount: runtimeTools.length,
-      clarityToolCount: clarityTools.length
+      systemServiceCount: 2
     });
 
     const runtimeSystemRow = '<tr>' +
@@ -668,8 +667,7 @@ async function refresh() {
   } catch (error) {
     document.getElementById('summary').innerHTML = summaryCards({
       summary: { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
-      runtimeToolCount: 0,
-      clarityToolCount: 0
+      systemServiceCount: 2
     });
     document.getElementById('rows').innerHTML = '<tr><td colspan="7" style="color:#a72525">UI render error: ' + String(error) + '</td></tr>';
     document.getElementById('inspector').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';
