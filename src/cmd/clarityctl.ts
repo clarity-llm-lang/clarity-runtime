@@ -521,6 +521,25 @@ for (const action of ["start", "stop", "restart", "introspect"] as const) {
 }
 
 program
+  .command("remove <serviceId>")
+  .option("--cleanup-artifacts", "Delete local wasm artifact when removing local service")
+  .action(async (serviceId, opts) => {
+    const runtime = runtimeOpts();
+    const out = await api<Record<string, unknown>>(
+      runtime.daemonUrl,
+      `/api/services/${encodeURIComponent(serviceId)}`,
+      runtime.authToken,
+      {
+        method: "DELETE",
+        body: JSON.stringify({
+          cleanup_artifacts: Boolean(opts.cleanupArtifacts)
+        })
+      }
+    );
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+program
   .command("details <serviceId>")
   .option("--log-limit <n>", "Recent log lines", "50")
   .option("--event-limit <n>", "Recent events", "100")
@@ -555,6 +574,57 @@ program
       runtime.authToken
     );
     process.stdout.write(`${out.lines.join("\n")}\n`);
+  });
+
+const authCmd = program.command("auth").description("Remote auth provider and secret lifecycle operations");
+
+authCmd
+  .command("providers")
+  .action(async () => {
+    const runtime = runtimeOpts();
+    const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/security/auth/providers", runtime.authToken);
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+authCmd
+  .command("validate <authRef>")
+  .action(async (authRef) => {
+    const runtime = runtimeOpts();
+    const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/security/auth/validate", runtime.authToken, {
+      method: "POST",
+      body: JSON.stringify({ auth_ref: authRef })
+    });
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+authCmd
+  .command("list-secrets")
+  .action(async () => {
+    const runtime = runtimeOpts();
+    const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/security/auth/secrets", runtime.authToken);
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+authCmd
+  .command("set-secret <authRef> <secret>")
+  .action(async (authRef, secret) => {
+    const runtime = runtimeOpts();
+    const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/security/auth/secrets", runtime.authToken, {
+      method: "POST",
+      body: JSON.stringify({ auth_ref: authRef, secret })
+    });
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+authCmd
+  .command("delete-secret <authRef>")
+  .action(async (authRef) => {
+    const runtime = runtimeOpts();
+    const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/security/auth/secrets", runtime.authToken, {
+      method: "DELETE",
+      body: JSON.stringify({ auth_ref: authRef })
+    });
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });
 
 program

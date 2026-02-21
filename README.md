@@ -120,8 +120,14 @@ clarityctl start <service_id>
 clarityctl stop <service_id>
 clarityctl restart <service_id>
 clarityctl introspect <service_id>
+clarityctl remove <service_id> [--cleanup-artifacts]
 clarityctl details <service_id> [--log-limit <n>] [--event-limit <n>] [--call-limit <n>]
 clarityctl logs <service_id>
+clarityctl auth providers
+clarityctl auth validate <auth_ref>
+clarityctl auth list-secrets
+clarityctl auth set-secret <auth_ref> <secret>
+clarityctl auth delete-secret <auth_ref>
 clarityctl bootstrap --clients codex,claude
 clarityctl doctor
 ```
@@ -148,14 +154,14 @@ clarityctl start-source --source <file.clarity> [--module <name>] [--wasm <file.
 
 ## Current Status
 
-Implemented in v1 scaffold:
+Implemented for v0.9 baseline:
 
 - service contracts and manifest schema (`clarity.runtime/v1`)
 - persistent registry (`.clarity/runtime/registry.json`)
 - daemon HTTP API and status page
-- add/list/start/stop/restart/introspect flows
+- add/list/start/stop/restart/introspect/remove flows
 - gateway `/mcp` JSON-RPC endpoint (`initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`)
-- built-in runtime control MCP tools (`runtime__status_summary`, `runtime__list_services`, `runtime__get_service`, `runtime__get_logs`, `runtime__start_service`, `runtime__stop_service`, `runtime__restart_service`, `runtime__refresh_interface`, `runtime__unquarantine_service`, `runtime__get_audit`, `runtime__validate_auth_ref`, `runtime__auth_provider_health`, `runtime__list_auth_secrets`, `runtime__set_auth_secret`, `runtime__delete_auth_secret`)
+- built-in runtime control MCP tools (`runtime__status_summary`, `runtime__list_services`, `runtime__get_service`, `runtime__get_logs`, `runtime__start_service`, `runtime__stop_service`, `runtime__restart_service`, `runtime__refresh_interface`, `runtime__unquarantine_service`, `runtime__remove_service`, `runtime__get_audit`, `runtime__validate_auth_ref`, `runtime__auth_provider_health`, `runtime__list_auth_secrets`, `runtime__set_auth_secret`, `runtime__delete_auth_secret`)
 - built-in Clarity-assist MCP tools (`runtime__clarity_help`, `runtime__clarity_sources`, `runtime__clarity_project_structure`, `runtime__ensure_compiler`, `runtime__bootstrap_clarity_app`) for default-language guidance, source discovery, app scaffolding, compiler readiness/install checks, and one-call bootstrap
 - gated MCP self-provisioning tools (`runtime__register_local`, `runtime__register_remote`, `runtime__register_via_url`, `runtime__apply_manifest`) protected by `CLARITY_ENABLE_MCP_PROVISIONING=1`
 - stdio bridge mode via `clarityctl gateway serve --stdio`
@@ -163,11 +169,14 @@ Implemented in v1 scaffold:
 - local function execution tools for local services (`<namespace>__fn__<exported_function>`)
 - baseline remote policy controls (timeout + allowed-tools + payload-size + concurrency manifest policy + optional host allowlist)
 - bootstrap writers for Codex/Claude config files
+- durable runtime telemetry store (`.clarity/runtime/telemetry.json`) for events + service logs across daemon restarts
+- deprovision endpoint/tooling with optional local artifact cleanup
+- end-to-end runtime integration tests covering API/MCP registration/call/remove lifecycle
 
 Not implemented yet:
 
 - direct native `clarityc start` command in the compiler repo (runtime side is ready via `clarityctl add`; compiler integration should make runtime an explicit requirement)
-- remote auth/policy isolation hardening (secret lifecycle and provider health tools are now available)
+- remote auth/policy isolation hardening for stricter multi-tenant trust boundaries
 
 ---
 
@@ -195,6 +204,9 @@ Not implemented yet:
 | In-process WASM host execution | Done            | Local function tools execute directly via wasm instantiate/call in runtime                                                                                                                                                          |
 | Auth/policy hardening          | In progress     | Timeout/allowed-tools/payload-size/concurrency/host-allowlist baseline implemented; auth provider backend (`legacy env`, `env`, `file`, `header_env`) + validation/secret lifecycle tools added; isolation policy hardening pending |
 | MCP self-provisioning          | Done (gated)    | `runtime__register_local`, `runtime__register_remote`, `runtime__apply_manifest` behind `CLARITY_ENABLE_MCP_PROVISIONING=1`                                                                                                         |
+| Durable audit/log persistence  | Done            | Events + service logs persisted to `.clarity/runtime/telemetry.json` and reloaded on daemon boot                                                                                                                                    |
+| Deprovision + cleanup          | Done            | `DELETE /api/services/:id` and `clarityctl remove` with optional local artifact cleanup                                                                                                                                             |
+| Runtime integration tests      | Done (baseline) | End-to-end API/MCP tests for register/start/introspect/call/remove                                                                                                                                                                  |
 
 ---
 
@@ -231,12 +243,15 @@ Not implemented yet:
 - `GET /api/audit?limit=200`: latest runtime audit/events.
 - `GET /api/events`: SSE stream for live runtime events.
 - Status page now includes an audit timeline and `Unquarantine` action for quarantined services.
+- Telemetry persists across daemon restarts in `.clarity/runtime/telemetry.json`.
 - Auth lifecycle/validation APIs:
   - `GET /api/security/auth/providers`
   - `GET|POST /api/security/auth/validate`
   - `GET /api/security/auth/secrets`
   - `POST /api/security/auth/secrets` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
   - `DELETE /api/security/auth/secrets` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
+- Service deprovision API:
+  - `DELETE /api/services/:serviceId` with optional body `{ "cleanup_artifacts": true }`
 
 ## CI/CD And GitHub
 

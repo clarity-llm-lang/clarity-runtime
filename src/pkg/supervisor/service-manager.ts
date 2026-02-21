@@ -1,4 +1,5 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, rename, rm, writeFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 import { Worker } from "node:worker_threads";
 import type {
   InterfaceSnapshot,
@@ -71,6 +72,15 @@ function byteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
 
+const DEFAULT_TELEMETRY_PATH = path.resolve(process.cwd(), ".clarity/runtime/telemetry.json");
+
+interface TelemetryFile {
+  version: 1;
+  updatedAt: string;
+  events: AuditEvent[];
+  logs: Record<string, string[]>;
+}
+
 export interface AuditEvent {
   seq: number;
   at: string;
@@ -99,6 +109,7 @@ type WorkerResponse =
 
 export class ServiceManager {
   private readonly registry: ServiceRegistry;
+  private readonly telemetryPath: string;
   private readonly starts = new Map<string, number>();
   private readonly logs = new Map<string, string[]>();
   private readonly remoteInitialized = new Set<string>();
@@ -107,15 +118,27 @@ export class ServiceManager {
   private readonly startFailures = new Map<string, number[]>();
   private readonly events: AuditEvent[] = [];
   private readonly eventSubscribers = new Set<(event: AuditEvent) => void>();
+  private telemetryWriteQueue: Promise<void> = Promise.resolve();
+  private telemetryLoaded = false;
   private eventSeq = 1;
   private remoteRequestCounter = 1;
   private pidCounter = 49000;
 
-  constructor(registry: ServiceRegistry) {
+  constructor(registry: ServiceRegistry, telemetryPath = DEFAULT_TELEMETRY_PATH) {
     this.registry = registry;
+    this.telemetryPath = telemetryPath;
+  }
+
+  async init(): Promise<void> {
+    if (this.telemetryLoaded) {
+      return;
+    }
+    await this.loadTelemetry();
+    this.telemetryLoaded = true;
   }
 
   async applyManifest(manifest: MCPServiceManifest): Promise<ServiceRecord> {
+    await this.init();
     manifest.spec.toolNamespace = normalizeNamespace(manifest.spec.toolNamespace ?? manifest.metadata.module);
     manifest.metadata.serviceId =
       manifest.metadata.serviceId
@@ -143,16 +166,19 @@ export class ServiceManager {
   }
 
   async list(): Promise<ServiceRecord[]> {
+    await this.init();
     const records = await this.registry.list();
     return records.map((record) => this.withLiveRuntime(record));
   }
 
   async get(serviceId: string): Promise<ServiceRecord | undefined> {
+    await this.init();
     const record = await this.registry.get(serviceId);
     return record ? this.withLiveRuntime(record) : undefined;
   }
 
   async unquarantine(serviceId: string): Promise<ServiceRecord> {
+    await this.init();
     const current = await this.registry.get(serviceId);
     if (!current) {
       throw new Error(`service not found: ${serviceId}`);
@@ -178,6 +204,7 @@ export class ServiceManager {
   }
 
   async start(serviceId: string): Promise<ServiceRecord> {
+    await this.init();
     const existing = await this.registry.get(serviceId);
     if (!existing) {
       throw new Error(`service not found: ${serviceId}`);
@@ -274,6 +301,7 @@ export class ServiceManager {
   }
 
   async stop(serviceId: string): Promise<ServiceRecord> {
+    await this.init();
     const updated = await this.registry.update(serviceId, (current) => ({
       ...current,
       runtime: {
@@ -298,6 +326,7 @@ export class ServiceManager {
   }
 
   async restart(serviceId: string): Promise<ServiceRecord> {
+    await this.init();
     await this.stop(serviceId);
     await this.registry.update(serviceId, (current) => ({
       ...current,
@@ -316,24 +345,47 @@ export class ServiceManager {
     return updated;
   }
 
-  async remove(serviceId: string): Promise<boolean> {
+  async remove(serviceId: string, options?: { cleanupArtifacts?: boolean }): Promise<{ removed: boolean; artifactRemoved: boolean; serviceId: string }> {
+    await this.init();
+    const current = await this.registry.get(serviceId);
+    if (!current) {
+      return { removed: false, artifactRemoved: false, serviceId };
+    }
+
+    let artifactRemoved = false;
+    if (options?.cleanupArtifacts && current.manifest.spec.origin.type === "local_wasm") {
+      try {
+        await rm(current.manifest.spec.origin.wasmPath, { force: true });
+        artifactRemoved = true;
+      } catch {
+        artifactRemoved = false;
+      }
+    }
+
     this.starts.delete(serviceId);
     this.logs.delete(serviceId);
     this.remoteInitialized.delete(serviceId);
     this.remoteInFlight.delete(serviceId);
+    this.startFailures.delete(serviceId);
+    this.localModuleCache.delete(serviceId);
     const removed = await this.registry.remove(serviceId);
     if (removed) {
       this.emitEvent({
         kind: "service.removed",
         serviceId,
         level: "info",
-        message: `Service removed: ${serviceId}`
+        message: `Service removed: ${serviceId}`,
+        data: {
+          cleanupArtifacts: !!options?.cleanupArtifacts,
+          artifactRemoved
+        }
       });
     }
-    return removed;
+    return { removed, artifactRemoved, serviceId };
   }
 
   async refreshInterface(serviceId: string): Promise<InterfaceSnapshot> {
+    await this.init();
     const service = await this.registry.get(serviceId);
     if (!service) {
       throw new Error(`service not found: ${serviceId}`);
@@ -437,6 +489,7 @@ export class ServiceManager {
   }
 
   async callTool(serviceId: string, toolName: string, args: unknown): Promise<unknown> {
+    await this.init();
     const service = await this.registry.get(serviceId);
     if (!service) {
       throw new Error(`service not found: ${serviceId}`);
@@ -564,7 +617,12 @@ export class ServiceManager {
     this.emitEvent(input);
   }
 
+  async shutdown(): Promise<void> {
+    await this.telemetryWriteQueue;
+  }
+
   async tickUptimes(): Promise<void> {
+    await this.init();
     const all = await this.registry.list();
     const running = new Set(
       all
@@ -974,7 +1032,11 @@ export class ServiceManager {
   private appendLog(serviceId: string, line: string): void {
     const current = this.logs.get(serviceId) ?? [];
     current.push(`[${nowIso()}] ${line}`);
+    if (current.length > 2000) {
+      current.shift();
+    }
     this.logs.set(serviceId, current);
+    void this.persistTelemetry();
   }
 
   private emitEvent(input: {
@@ -997,6 +1059,7 @@ export class ServiceManager {
     if (this.events.length > 2000) {
       this.events.shift();
     }
+    void this.persistTelemetry();
     for (const subscriber of this.eventSubscribers) {
       try {
         subscriber(event);
@@ -1004,6 +1067,55 @@ export class ServiceManager {
         // Swallow subscriber errors.
       }
     }
+  }
+
+  private async loadTelemetry(): Promise<void> {
+    await mkdir(path.dirname(this.telemetryPath), { recursive: true });
+    try {
+      const raw = await readFile(this.telemetryPath, "utf8");
+      const parsed = JSON.parse(raw) as Partial<TelemetryFile>;
+      if (parsed.version !== 1 || !Array.isArray(parsed.events) || !parsed.logs || typeof parsed.logs !== "object") {
+        throw new Error("telemetry shape validation failed");
+      }
+
+      this.events.splice(0, this.events.length, ...parsed.events);
+      this.logs.clear();
+      for (const [serviceId, lines] of Object.entries(parsed.logs)) {
+        if (Array.isArray(lines)) {
+          this.logs.set(serviceId, lines.map((line) => String(line)));
+        }
+      }
+      const lastSeq = this.events.length > 0 ? this.events[this.events.length - 1].seq : 0;
+      this.eventSeq = Math.max(1, lastSeq + 1);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/ENOENT/.test(message)) {
+        process.stderr.write(`telemetry reset after parse failure: ${message}\n`);
+      }
+      await this.writeTelemetry();
+    }
+  }
+
+  private async persistTelemetry(): Promise<void> {
+    this.telemetryWriteQueue = this.telemetryWriteQueue.then(async () => {
+      await this.writeTelemetry();
+    }).catch((error) => {
+      process.stderr.write(`telemetry persist failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    });
+    await this.telemetryWriteQueue;
+  }
+
+  private async writeTelemetry(): Promise<void> {
+    const payload: TelemetryFile = {
+      version: 1,
+      updatedAt: nowIso(),
+      events: this.events,
+      logs: Object.fromEntries(this.logs.entries())
+    };
+    await mkdir(path.dirname(this.telemetryPath), { recursive: true });
+    const tempPath = `${this.telemetryPath}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    await rename(tempPath, this.telemetryPath);
   }
 
   private async shouldQuarantine(service: ServiceRecord, failedStart: boolean): Promise<boolean> {
