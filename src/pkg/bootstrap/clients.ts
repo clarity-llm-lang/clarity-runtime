@@ -4,7 +4,7 @@ import path from "node:path";
 
 async function upsertTomlMcp(filePath: string, serverName: string, command: string, args: string[]): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
-  let content = "";
+  let content: string;
   try {
     content = await readFile(filePath, "utf8");
   } catch {
@@ -36,7 +36,7 @@ export async function bootstrapClaude(command: string, args: string[]): Promise<
   const configPath = path.join(os.homedir(), ".claude.json");
   await mkdir(path.dirname(configPath), { recursive: true });
 
-  let data: Record<string, unknown> = {};
+  let data: Record<string, unknown>;
   try {
     data = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
   } catch {
