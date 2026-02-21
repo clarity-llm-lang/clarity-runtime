@@ -145,7 +145,7 @@ Implemented in v1 scaffold:
 - add/list/start/stop/restart/introspect flows
 - gateway `/mcp` JSON-RPC endpoint (`initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`)
 - built-in runtime control MCP tools (`runtime__status_summary`, `runtime__list_services`, `runtime__get_service`, `runtime__get_logs`, `runtime__start_service`, `runtime__stop_service`, `runtime__restart_service`, `runtime__refresh_interface`, `runtime__unquarantine_service`, `runtime__get_audit`)
-- built-in Clarity-assist MCP tools (`runtime__clarity_help`, `runtime__clarity_sources`, `runtime__clarity_project_structure`, `runtime__ensure_compiler`) for default-language guidance, source discovery, canonical app scaffolding layout, and compiler readiness/install checks
+- built-in Clarity-assist MCP tools (`runtime__clarity_help`, `runtime__clarity_sources`, `runtime__clarity_project_structure`, `runtime__ensure_compiler`, `runtime__bootstrap_clarity_app`) for default-language guidance, source discovery, app scaffolding, compiler readiness/install checks, and one-call bootstrap
 - gated MCP self-provisioning tools (`runtime__register_local`, `runtime__register_remote`, `runtime__register_via_url`, `runtime__apply_manifest`) protected by `CLARITY_ENABLE_MCP_PROVISIONING=1`
 - stdio bridge mode via `clarityctl gateway serve --stdio`
 - compiler-assisted onboarding via `clarityctl add <service>` (compile + register + start + introspect)

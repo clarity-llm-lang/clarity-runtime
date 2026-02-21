@@ -1,6 +1,6 @@
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import type { ServiceManager } from "../supervisor/service-manager.js";
 import type { MCPServiceManifest } from "../../types/contracts.js";
 import { validateManifest } from "../rpc/manifest.js";
@@ -182,6 +182,28 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
         auto_install: { type: "boolean" },
         install_command: { type: "array", items: { type: "string" } },
         timeout_seconds: { type: "integer", minimum: 1, maximum: 600 }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__bootstrap_clarity_app",
+    description: "Scaffold a Clarity app, ensure compiler readiness, compile wasm, and register/start the service.",
+    inputSchema: {
+      type: "object",
+      required: ["project_name"],
+      properties: {
+        project_name: { type: "string" },
+        module_name: { type: "string" },
+        dir: { type: "string" },
+        compiler_bin: { type: "string" },
+        auto_install: { type: "boolean" },
+        install_command: { type: "array", items: { type: "string" } },
+        timeout_seconds: { type: "integer", minimum: 1, maximum: 600 },
+        register_service: { type: "boolean" },
+        start_now: { type: "boolean" },
+        introspect: { type: "boolean" },
+        overwrite: { type: "boolean" }
       },
       additionalProperties: false
     }
@@ -460,6 +482,72 @@ async function walkClarityFiles(rootDir: string, recursive: boolean): Promise<st
   return out.sort((a, b) => a.localeCompare(b));
 }
 
+function assertProjectName(value: string): void {
+  if (!/^[a-zA-Z0-9._-]+$/.test(value)) {
+    throw new Error("project_name must match [a-zA-Z0-9._-]+");
+  }
+}
+
+function projectBlueprint(projectName: string, moduleName: string, includeTemplates: boolean): Array<{ path: string; purpose: string; template?: string }> {
+  const files: Array<{ path: string; purpose: string; template?: string }> = [
+    {
+      path: `${projectName}/src/main.clarity`,
+      purpose: "Primary Clarity module exported by the application."
+    },
+    {
+      path: `${projectName}/README.md`,
+      purpose: "Project usage, runbook, and MCP tool examples."
+    },
+    {
+      path: `${projectName}/clarity.toml`,
+      purpose: "Project metadata and build/runtime configuration."
+    },
+    {
+      path: `${projectName}/tests/smoke.md`,
+      purpose: "Simple manual/agent smoke tests for expected tool behavior."
+    }
+  ];
+
+  if (includeTemplates) {
+    files[0].template = [
+      `module ${moduleName} {`,
+      "  // Deterministic pseudo-random roll from seed in [1, 10].",
+      "  export fn roll(seed: int) -> int {",
+      "    let next = (seed * 1103515245 + 12345) % 2147483647;",
+      "    return (next % 10) + 1;",
+      "  }",
+      "}"
+    ].join("\n");
+    files[1].template = [
+      `# ${projectName}`,
+      "",
+      "Minimal Clarity MCP application.",
+      "",
+      "## Example",
+      "",
+      "Use the exported tool/function:",
+      "- `roll(seed: int) -> int`"
+    ].join("\n");
+    files[2].template = [
+      `name = "${projectName}"`,
+      `module = "${moduleName}"`,
+      "",
+      "[build]",
+      'entry = "mcp_main"',
+      'out_dir = ".clarity/build"'
+    ].join("\n");
+    files[3].template = [
+      "# Smoke test",
+      "",
+      "1. Build and register the service.",
+      "2. Call `roll(42)` and verify result is within 1..10.",
+      "3. Call `roll(42)` again and verify deterministic output."
+    ].join("\n");
+  }
+
+  return files;
+}
+
 function summarizeService(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) {
   return {
     service_id: record.manifest.metadata.serviceId,
@@ -702,62 +790,7 @@ export class McpRouter {
       const projectName = asString(payload.project_name) ?? "my-clarity-app";
       const moduleName = asString(payload.module_name) ?? "App";
       const includeTemplates = asBoolean(payload.include_templates) ?? true;
-
-      const files: Array<{ path: string; purpose: string; template?: string }> = [
-        {
-          path: `${projectName}/src/main.clarity`,
-          purpose: "Primary Clarity module exported by the application."
-        },
-        {
-          path: `${projectName}/README.md`,
-          purpose: "Project usage, runbook, and MCP tool examples."
-        },
-        {
-          path: `${projectName}/clarity.toml`,
-          purpose: "Project metadata and build/runtime configuration."
-        },
-        {
-          path: `${projectName}/tests/smoke.md`,
-          purpose: "Simple manual/agent smoke tests for expected tool behavior."
-        }
-      ];
-
-      if (includeTemplates) {
-        files[0].template = [
-          `module ${moduleName} {`,
-          "  // Deterministic pseudo-random roll from seed in [1, 10].",
-          "  export fn roll(seed: int) -> int {",
-          "    let next = (seed * 1103515245 + 12345) % 2147483647;",
-          "    return (next % 10) + 1;",
-          "  }",
-          "}"
-        ].join("\n");
-        files[1].template = [
-          `# ${projectName}`,
-          "",
-          "Minimal Clarity MCP application.",
-          "",
-          "## Example",
-          "",
-          "Use the exported tool/function:",
-          "- `roll(seed: int) -> int`"
-        ].join("\n");
-        files[2].template = [
-          `name = "${projectName}"`,
-          `module = "${moduleName}"`,
-          "",
-          "[build]",
-          'entry = "mcp_main"',
-          'out_dir = ".clarity/build"'
-        ].join("\n");
-        files[3].template = [
-          "# Smoke test",
-          "",
-          "1. Build and register the service.",
-          "2. Call `roll(42)` and verify result is within 1..10.",
-          "3. Call `roll(42)` again and verify deterministic output."
-        ].join("\n");
-      }
+      const files = projectBlueprint(projectName, moduleName, includeTemplates);
 
       return contentJson({
         project_name: projectName,
@@ -855,6 +888,143 @@ export class McpRouter {
         },
         version: checkAfter.stdout || checkAfter.stderr,
         verification: checkAfter.code === 0 ? "compiler available after install" : "install ran but compiler check still failed"
+      });
+    }
+
+    if (name === "runtime__bootstrap_clarity_app") {
+      const projectName = asString(payload.project_name);
+      if (!projectName) throw new Error("runtime__bootstrap_clarity_app requires project_name");
+      assertProjectName(projectName);
+
+      const moduleName = asString(payload.module_name) ?? "App";
+      const baseDir = resolveWorkspacePath(asString(payload.dir), ".");
+      const projectDir = resolveWorkspacePath(path.join(baseDir, projectName));
+      const overwrite = asBoolean(payload.overwrite) ?? false;
+      const compilerBin = asString(payload.compiler_bin) ?? process.env.CLARITYC_BIN ?? "clarityc";
+      const autoInstall = asBoolean(payload.auto_install) ?? false;
+      const timeoutSeconds = asIntegerMin(payload.timeout_seconds, 1) ?? 120;
+      const timeoutMs = timeoutSeconds * 1000;
+      const installCommandFromArgs = asStringList(payload.install_command);
+      const registerService = asBoolean(payload.register_service) ?? true;
+      const startNow = asBoolean(payload.start_now) ?? true;
+      const introspect = asBoolean(payload.introspect) ?? true;
+
+      const files = projectBlueprint(projectName, moduleName, true);
+      const filesWritten: string[] = [];
+
+      for (const file of files) {
+        const relPath = file.path.slice(projectName.length + 1);
+        const absPath = resolveWorkspacePath(path.join(projectDir, relPath));
+        await mkdir(path.dirname(absPath), { recursive: true });
+        const existing = await readFile(absPath, "utf8").catch(() => null);
+        if (existing !== null && !overwrite) {
+          throw new Error(`file exists: ${path.relative(process.cwd(), absPath)} (set overwrite=true to replace)`);
+        }
+        await writeFile(absPath, `${file.template ?? ""}\n`, "utf8");
+        filesWritten.push(path.relative(process.cwd(), absPath) || absPath);
+      }
+
+      const checkBefore = await runCommand(compilerBin, ["--version"], timeoutMs).catch((error) => ({
+        code: -1,
+        stdout: "",
+        stderr: error instanceof Error ? error.message : String(error)
+      }));
+
+      let installSummary: { command: string[]; exit_code: number } | null = null;
+      if (checkBefore.code !== 0 && autoInstall) {
+        const installTokens = installCommandFromArgs
+          ?? asStringList((process.env.CLARITY_COMPILER_INSTALL_CMD ?? "").split(" ").filter(Boolean));
+        if (!installTokens || installTokens.length === 0) {
+          throw new Error("auto_install requested but no install_command provided and CLARITY_COMPILER_INSTALL_CMD is empty");
+        }
+        const installCmd = installTokens[0]!;
+        const installArgs = installTokens.slice(1);
+        assertCompilerInstallEnabled(installCmd);
+        const installResult = await runCommand(installCmd, installArgs, timeoutMs);
+        installSummary = { command: [installCmd, ...installArgs], exit_code: installResult.code };
+        if (installResult.code !== 0) {
+          throw new Error(`install command failed: ${installResult.stderr || `exit code ${installResult.code}`}`);
+        }
+      } else if (checkBefore.code !== 0 && !autoInstall) {
+        throw new Error("compiler unavailable; rerun with auto_install=true or install clarityc manually");
+      }
+
+      const checkAfter = await runCommand(compilerBin, ["--version"], timeoutMs).catch((error) => ({
+        code: -1,
+        stdout: "",
+        stderr: error instanceof Error ? error.message : String(error)
+      }));
+      if (checkAfter.code !== 0) {
+        throw new Error(`compiler check failed after bootstrap: ${checkAfter.stderr || "unknown error"}`);
+      }
+
+      const sourcePath = resolveWorkspacePath(path.join(projectDir, "src", "main.clarity"));
+      const wasmPath = resolveWorkspacePath(path.join(projectDir, ".clarity", "build", `${moduleName}.wasm`));
+      await mkdir(path.dirname(wasmPath), { recursive: true });
+      const compileResult = await runCommand(compilerBin, ["compile", sourcePath, "-o", wasmPath], timeoutMs);
+      if (compileResult.code !== 0) {
+        throw new Error(`compile failed: ${compileResult.stderr || `exit code ${compileResult.code}`}`);
+      }
+
+      let service: ReturnType<typeof summarizeService> | null = null;
+      if (registerService) {
+        const manifest: MCPServiceManifest = {
+          apiVersion: "clarity.runtime/v1",
+          kind: "MCPService",
+          metadata: {
+            sourceFile: sourcePath,
+            module: moduleName,
+            displayName: projectName
+          },
+          spec: {
+            origin: {
+              type: "local_wasm",
+              wasmPath,
+              entry: "mcp_main"
+            },
+            enabled: true,
+            autostart: true,
+            restartPolicy: {
+              mode: "on-failure",
+              maxRestarts: 5,
+              windowSeconds: 60
+            },
+            policyRef: "default",
+            toolNamespace: normalizeNamespace(moduleName)
+          }
+        };
+
+        const applied = await this.manager.applyManifest(manifest);
+        const serviceId = applied.manifest.metadata.serviceId!;
+        if (startNow) {
+          await this.manager.start(serviceId);
+        }
+        if (introspect) {
+          await this.manager.refreshInterface(serviceId);
+        }
+        const latest = await this.manager.get(serviceId);
+        if (!latest) {
+          throw new Error(`service not found after bootstrap: ${serviceId}`);
+        }
+        service = summarizeService(latest);
+      }
+
+      return contentJson({
+        project_name: projectName,
+        project_dir: path.relative(process.cwd(), projectDir) || ".",
+        module_name: moduleName,
+        files_written: filesWritten,
+        compiler: {
+          compiler_bin: compilerBin,
+          version: checkAfter.stdout || checkAfter.stderr,
+          ...(installSummary ? { install: installSummary } : {})
+        },
+        compile: {
+          source: path.relative(process.cwd(), sourcePath),
+          wasm: path.relative(process.cwd(), wasmPath)
+        },
+        registered: registerService,
+        service
       });
     }
 

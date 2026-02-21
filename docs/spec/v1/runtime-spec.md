@@ -48,6 +48,7 @@
 - `runtime__clarity_sources`
 - `runtime__clarity_project_structure`
 - `runtime__ensure_compiler`
+- `runtime__bootstrap_clarity_app`
 - `runtime__register_local` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
 - `runtime__register_remote` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
 - `runtime__register_via_url` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)

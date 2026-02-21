@@ -22,6 +22,7 @@ const SYSTEM_TOOLS = [
   "runtime__clarity_sources",
   "runtime__clarity_project_structure",
   "runtime__ensure_compiler",
+  "runtime__bootstrap_clarity_app",
   "runtime__register_local",
   "runtime__register_remote",
   "runtime__register_via_url",
