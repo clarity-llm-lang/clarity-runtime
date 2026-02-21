@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.5.0...v0.6.0) (2026-02-21)
+
+
+### Features
+
+* **runtime:** enforce explicit agent service descriptors ([6daeeb5](https://github.com/clarity-llm-lang/clarity-runtime/commit/6daeeb58ad72faf593eecd837316fc8100726609))
+* **runtime:** enforce explicit agent service descriptors ([5b677e0](https://github.com/clarity-llm-lang/clarity-runtime/commit/5b677e04d7d7babcf90d0ac609d4d530cfa4ff49))
+* separate agent services from mcp services ([16983c1](https://github.com/clarity-llm-lang/clarity-runtime/commit/16983c10344d331e4ee2a728c557f7144e2b6f79))
+
 ## [0.5.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.4.0...v0.5.0) (2026-02-21)
 
 
