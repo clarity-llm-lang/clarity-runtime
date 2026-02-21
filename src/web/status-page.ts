@@ -696,11 +696,7 @@ function formatLocalTime(value) {
 }
 
 function classifyServiceType(svc) {
-  if (svc && (svc.serviceType === 'mcp' || svc.serviceType === 'agent')) {
-    return svc.serviceType;
-  }
-  const sample = ((svc && svc.displayName) || '') + ' ' + ((svc && svc.module) || '') + ' ' + ((svc && svc.sourceFile) || '');
-  return /(^|[^a-z])agent([^a-z]|$)/i.test(sample) ? 'agent' : 'mcp';
+  return svc && svc.serviceType === 'agent' ? 'agent' : 'mcp';
 }
 
 function renderSystemDetails(runtimeTools, clarityTools) {

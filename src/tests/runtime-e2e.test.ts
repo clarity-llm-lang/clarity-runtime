@@ -162,7 +162,8 @@ test("runtime e2e API + MCP flow supports remote registration and deprovision", 
           kind: "MCPService",
           metadata: {
             sourceFile: `${remote.baseUrl}/mcp`,
-            module: "EchoSvc"
+            module: "EchoSvc",
+            serviceType: "mcp"
           },
           spec: {
             origin: {

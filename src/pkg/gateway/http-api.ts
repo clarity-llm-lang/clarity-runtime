@@ -119,14 +119,7 @@ function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) 
 
 function inferServiceType(record: Awaited<ReturnType<ServiceManager["list"]>>[number]): "mcp" | "agent" {
   const explicit = record.manifest.metadata.serviceType;
-  if (explicit === "mcp" || explicit === "agent") {
-    return explicit;
-  }
-  const sample = `${record.manifest.metadata.displayName ?? ""} ${record.manifest.metadata.module ?? ""} ${record.manifest.metadata.sourceFile ?? ""}`.toLowerCase();
-  if (/(^|[^a-z])agent([^a-z]|$)/.test(sample)) {
-    return "agent";
-  }
-  return "mcp";
+  return explicit === "agent" ? "agent" : "mcp";
 }
 
 function extractRecentCalls(events: Array<{ kind: string; at: string; message: string; data?: unknown }>, limit: number): Array<{ at: string; message: string; data?: unknown }> {

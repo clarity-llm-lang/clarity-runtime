@@ -8,7 +8,8 @@ test("validateManifest accepts valid local_wasm manifest", () => {
     kind: "MCPService",
     metadata: {
       sourceFile: "/tmp/sample.clarity",
-      module: "Sample"
+      module: "Sample",
+      serviceType: "mcp"
     },
     spec: {
       origin: {
@@ -39,7 +40,8 @@ test("validateManifest rejects remote endpoint traversal/invalid URL", () => {
         kind: "MCPService",
         metadata: {
           sourceFile: "bad",
-          module: "Bad"
+          module: "Bad",
+          serviceType: "mcp"
         },
         spec: {
           origin: {

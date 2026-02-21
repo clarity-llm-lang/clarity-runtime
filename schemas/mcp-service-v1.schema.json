@@ -8,7 +8,7 @@
     "kind": { "const": "MCPService" },
     "metadata": {
       "type": "object",
-      "required": ["sourceFile", "module"],
+      "required": ["sourceFile", "module", "serviceType"],
       "properties": {
         "serviceId": { "type": "string", "pattern": "^svc_[a-f0-9]{12}$" },
         "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },

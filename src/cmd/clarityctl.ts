@@ -44,13 +44,14 @@ function localManifest(input: {
   displayName?: string;
   serviceType?: "mcp" | "agent";
 }): MCPServiceManifest {
+  const serviceType = input.serviceType ?? "mcp";
   return {
     apiVersion: "clarity.runtime/v1",
     kind: "MCPService",
     metadata: {
       sourceFile: input.sourceFile,
       module: input.module,
-      ...(input.serviceType ? { serviceType: input.serviceType } : {}),
+      serviceType,
       displayName: input.displayName
     },
     spec: {
@@ -83,13 +84,14 @@ function remoteManifest(input: {
   maxPayloadBytes?: number;
   maxConcurrency?: number;
 }): MCPServiceManifest {
+  const serviceType = input.serviceType ?? "mcp";
   return {
     apiVersion: "clarity.runtime/v1",
     kind: "MCPService",
     metadata: {
       sourceFile: input.endpoint,
       module: input.module,
-      ...(input.serviceType ? { serviceType: input.serviceType } : {}),
+      serviceType,
       displayName: input.displayName
     },
     spec: {

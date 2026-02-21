@@ -668,14 +668,7 @@ function projectBlueprint(projectName: string, moduleName: string, includeTempla
 }
 
 function summarizeService(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) {
-  const explicit = record.manifest.metadata.serviceType;
-  const inferred = (() => {
-    if (explicit === "mcp" || explicit === "agent") {
-      return explicit;
-    }
-    const sample = `${record.manifest.metadata.displayName ?? ""} ${record.manifest.metadata.module ?? ""} ${record.manifest.metadata.sourceFile ?? ""}`.toLowerCase();
-    return /(^|[^a-z])agent([^a-z]|$)/.test(sample) ? "agent" : "mcp";
-  })();
+  const inferred = record.manifest.metadata.serviceType === "agent" ? "agent" : "mcp";
   return {
     service_id: record.manifest.metadata.serviceId,
     display_name: record.manifest.metadata.displayName,
@@ -1258,6 +1251,7 @@ export class McpRouter {
             metadata: {
               sourceFile: sourcePath,
               module: moduleName,
+              serviceType: "mcp",
               displayName: projectName
             },
             spec: {
@@ -1413,7 +1407,7 @@ export class McpRouter {
       if (!wasmPath) throw new Error("runtime__register_local requires wasm_path");
 
       const module = asString(payload.module) ?? inferModuleFromPath(wasmPath);
-      const serviceType = asServiceType(payload.service_type);
+      const serviceType = asServiceType(payload.service_type) ?? "mcp";
       const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
       const sourceFile = asString(payload.source_file) ?? wasmPath;
       const manifest: MCPServiceManifest = {
@@ -1422,7 +1416,7 @@ export class McpRouter {
         metadata: {
           sourceFile,
           module,
-          ...(serviceType ? { serviceType } : {}),
+          serviceType,
           ...(asString(payload.display_name) ? { displayName: asString(payload.display_name) } : {})
         },
         spec: {
@@ -1474,7 +1468,7 @@ export class McpRouter {
       assertRemoteHostAllowed(endpoint);
 
       const module = asString(payload.module) ?? inferModuleFromEndpoint(endpoint);
-      const serviceType = asServiceType(payload.service_type);
+      const serviceType = asServiceType(payload.service_type) ?? "mcp";
       const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
       const timeoutMs = asIntegerMin(payload.timeout_ms, 1);
       const maxPayloadBytes = asIntegerMin(payload.max_payload_bytes, 1024);
@@ -1485,7 +1479,7 @@ export class McpRouter {
         metadata: {
           sourceFile: endpoint,
           module,
-          ...(serviceType ? { serviceType } : {}),
+          serviceType,
           ...(asString(payload.display_name) ? { displayName: asString(payload.display_name) } : {})
         },
         spec: {
@@ -1542,7 +1536,7 @@ export class McpRouter {
       assertRemoteHostAllowed(endpoint);
 
       const module = asString(payload.module) ?? inferModuleFromEndpoint(endpoint);
-      const serviceType = asServiceType(payload.service_type);
+      const serviceType = asServiceType(payload.service_type) ?? "mcp";
       const namespace = normalizeNamespace(asString(payload.tool_namespace) ?? module);
       const timeoutMs = asIntegerMin(payload.timeout_ms, 1);
       const maxPayloadBytes = asIntegerMin(payload.max_payload_bytes, 1024);
@@ -1553,7 +1547,7 @@ export class McpRouter {
         metadata: {
           sourceFile: endpoint,
           module,
-          ...(serviceType ? { serviceType } : {}),
+          serviceType,
           ...(asString(payload.display_name) ? { displayName: asString(payload.display_name) } : {})
         },
         spec: {
