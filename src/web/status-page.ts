@@ -4,6 +4,10 @@ export function renderStatusPage(): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png?v=1" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=1" />
+  <link rel="shortcut icon" href="/favicon.ico?v=1" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=1" />
   <title>Clarity Runtime Status</title>
   <style>
     :root {
@@ -211,10 +215,6 @@ export function renderStatusPage(): string {
       display: grid;
       gap: 4px;
     }
-    .inspector {
-      margin-top: 14px;
-      margin-bottom: 14px;
-    }
     .bootstrap {
       margin-top: 14px;
       margin-bottom: 14px;
@@ -295,11 +295,6 @@ export function renderStatusPage(): string {
       </table>
     </div>
 
-    <div class="card inspector">
-      <h2 class="audit-title">Service Inspector</h2>
-      <div id="inspector" class="code" style="display:grid; gap:8px; color:var(--panel-muted)">Select a service row and click Open.</div>
-    </div>
-
     <div class="card bootstrap">
       <h2 class="audit-title">Client Bootstrap Config</h2>
       <div id="bootstrap-config" class="code" style="display:grid; gap:8px; color:var(--panel-muted)">Loading bootstrap config...</div>
@@ -318,7 +313,6 @@ const expanded = {};
 const detailCache = {};
 let latestRuntimeTools = [];
 let latestClarityTools = [];
-let selectedServiceId = null;
 const queryParams = new URLSearchParams(window.location.search);
 const authToken = queryParams.get('token') || window.localStorage.getItem('clarity_auth_token');
 if (authToken) {
@@ -335,6 +329,19 @@ async function call(path, method = 'GET', body = undefined) {
   return res.json();
 }
 
+function normalizeToolItems(raw) {
+  const items = Array.isArray(raw) ? raw : [];
+  return items.map((item) => {
+    if (item && typeof item === 'object') {
+      return {
+        name: String(item.name || ''),
+        description: item.description ? String(item.description) : ''
+      };
+    }
+    return { name: String(item || ''), description: '' };
+  }).filter((item) => item.name.length > 0);
+}
+
 function badge(state) {
   const cls = state === 'RUNNING' ? 'run' : state === 'CRASHED' || state === 'QUARANTINED' ? 'crash' : 'stop';
   return '<span class="badge ' + cls + '">' + esc(state) + '</span>';
@@ -342,13 +349,13 @@ function badge(state) {
 
 function summaryCards(data) {
   const s = data.summary;
-  const runtimeCount = typeof data.runtimeToolCount === 'number' ? data.runtimeToolCount : 0;
-  const clarityCount = typeof data.clarityToolCount === 'number' ? data.clarityToolCount : 0;
+  const systemServices = typeof data.systemServiceCount === 'number' ? data.systemServiceCount : 0;
+  const totalServices = (typeof s.total === 'number' ? s.total : 0) + systemServices;
+  const runningWithSystem = (typeof s.running === 'number' ? s.running : 0) + systemServices;
   return [
-    ['Services', s.total],
-    ['Runtime Tools', runtimeCount],
-    ['Clarity Tools', clarityCount],
-    ['Running', s.running],
+    ['Services', totalServices],
+    ['System Services', systemServices],
+    ['Running', runningWithSystem],
     ['Degraded', s.degraded],
     ['Stopped', s.stopped],
     ['Local', s.local],
@@ -376,13 +383,26 @@ function esc(value) {
 }
 
 function renderSystemDetails(runtimeTools, clarityTools) {
-  const runtimeItems = (runtimeTools || []).map((name) => '<li class="code">' + esc(name) + '</li>').join('');
-  const clarityItems = (clarityTools || []).map((name) => '<li class="code">' + esc(name) + '</li>').join('');
+  const runtimeItems = (runtimeTools || []).map((tool) => '<li class="code">' + esc(tool.name) + '</li>').join('');
+  const clarityItems = (clarityTools || []).map((tool) => '<li class="code">' + esc(tool.name) + '</li>').join('');
   return '<div class="detail-box">' +
     '<h3 class="detail-title">Runtime Tool Names</h3>' +
     (runtimeItems ? '<ul class="detail-list">' + runtimeItems + '</ul>' : '<div class="code">No runtime tools reported</div>') +
     '<h3 class="detail-title">Clarity Tool Names</h3>' +
     (clarityItems ? '<ul class="detail-list">' + clarityItems + '</ul>' : '<div class="code">No clarity tools reported</div>') +
+  '</div>';
+}
+
+function renderToolCatalog(title, subtitle, tools) {
+  const rows = (tools || []).map((tool) => (
+    '<li class="code"><strong>' + esc(tool.name) + '</strong>' +
+    (tool.description ? '<div class="id">' + esc(tool.description) + '</div>' : '') +
+    '</li>'
+  )).join('');
+  return '<div class="detail-box">' +
+    '<h3 class="detail-title">' + esc(title) + '</h3>' +
+    '<div class="code">' + esc(subtitle) + '</div>' +
+    (rows ? '<ul class="detail-list">' + rows + '</ul>' : '<div class="code">No tools available.</div>') +
   '</div>';
 }
 
@@ -395,12 +415,24 @@ function renderServiceDetails(serviceId, data) {
     return '<div class="detail-box"><div class="code" style="color:#a72525">' + esc(data.error) + '</div></div>';
   }
 
+  const summary = data.summary || {};
   const iface = data.interface || {};
-  const tools = Array.isArray(iface.tools) ? iface.tools.map((t) => t && t.name ? t.name : '').filter(Boolean) : [];
+  const tools = Array.isArray(iface.tools)
+    ? iface.tools
+      .map((tool) => ({
+        name: tool && tool.name ? String(tool.name) : '',
+        description: tool && tool.description ? String(tool.description) : ''
+      }))
+      .filter((tool) => tool.name.length > 0)
+    : [];
   const logs = Array.isArray(data.logs) ? data.logs : [];
   const calls = Array.isArray(data.recentCalls) ? data.recentCalls : [];
   const toolItems = tools.length > 0
-    ? '<ul class="detail-list">' + tools.map((name) => '<li class="code">' + esc(name) + '</li>').join('') + '</ul>'
+    ? '<ul class="detail-list">' + tools.map((tool) => (
+      '<li class="code"><strong>' + esc(tool.name) + '</strong>' +
+      (tool.description ? '<div class="id">' + esc(tool.description) + '</div>' : '') +
+      '</li>'
+    )).join('') + '</ul>'
     : '<div class="code">No interface tools yet. Try Refresh Interface.</div>';
   const logItems = logs.length > 0
     ? '<ul class="detail-list">' + logs.map((line) => '<li class="code">' + esc(line) + '</li>').join('') + '</ul>'
@@ -410,6 +442,10 @@ function renderServiceDetails(serviceId, data) {
     : '<div class="code">No recent tool calls.</div>';
 
   return '<div class="detail-box">' +
+    '<h3 class="detail-title">Service</h3>' +
+    '<div class="code">' + esc(summary.displayName || summary.serviceId || serviceId) + '</div>' +
+    '<div class="id code">' + esc(summary.serviceId || serviceId) + '</div>' +
+    '<div class="id code">state=' + esc(summary.lifecycle || 'unknown') + ', health=' + esc(summary.health || 'unknown') + '</div>' +
     '<h3 class="detail-title">Interface Tools</h3>' +
     toolItems +
     '<h3 class="detail-title">Recent Tool Calls</h3>' +
@@ -419,33 +455,11 @@ function renderServiceDetails(serviceId, data) {
   '</div>';
 }
 
-function getSelectedFromQuery() {
-  const params = new URLSearchParams(window.location.search);
-  return params.get('service');
-}
-
-function setSelectedInQuery(serviceId) {
-  const params = new URLSearchParams(window.location.search);
-  if (serviceId) {
-    params.set('service', serviceId);
-  } else {
-    params.delete('service');
-  }
-  const next = window.location.pathname + '?' + params.toString();
-  window.history.replaceState({}, '', next);
-}
-
-async function openService(serviceId) {
-  selectedServiceId = serviceId;
-  setSelectedInQuery(serviceId);
-  await refresh();
-}
-
 async function toggleDetails(key, kind, serviceId) {
   expanded[key] = !expanded[key];
   if (expanded[key] && kind === 'service' && !detailCache[key]) {
     try {
-      detailCache[key] = await call('/api/services/' + encodeURIComponent(serviceId) + '/details?log_limit=20&event_limit=60&call_limit=20');
+      detailCache[key] = await call('/api/services/' + encodeURIComponent(serviceId) + '/details?log_limit=60&event_limit=120&call_limit=30');
     } catch (error) {
       detailCache[key] = {
         error: error instanceof Error ? error.message : String(error)
@@ -483,12 +497,8 @@ async function refresh() {
       : { items: [] };
     const summarySafe = (data && data.summary) ? data.summary : { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 };
     const services = Array.isArray(data && data.services) ? data.services : [];
-    const runtimeTools = Array.isArray(data && data.systemTools && data.systemTools.runtime && data.systemTools.runtime.items)
-      ? data.systemTools.runtime.items
-      : [];
-    const clarityTools = Array.isArray(data && data.systemTools && data.systemTools.clarity && data.systemTools.clarity.items)
-      ? data.systemTools.clarity.items
-      : [];
+    const runtimeTools = normalizeToolItems(data && data.systemTools && data.systemTools.runtime && data.systemTools.runtime.items);
+    const clarityTools = normalizeToolItems(data && data.systemTools && data.systemTools.clarity && data.systemTools.clarity.items);
     let bootstrap = { clients: [] };
     try {
       bootstrap = await call('/api/bootstrap/status');
@@ -497,29 +507,39 @@ async function refresh() {
     }
     latestRuntimeTools = runtimeTools;
     latestClarityTools = clarityTools;
-    if (selectedServiceId === null) {
-      selectedServiceId = getSelectedFromQuery();
-    }
     document.getElementById('summary').innerHTML = summaryCards({
       summary: summarySafe,
-      runtimeToolCount: runtimeTools.length,
-      clarityToolCount: clarityTools.length
+      systemServiceCount: 2
     });
 
-    const systemRow = '<tr>' +
+    const runtimeSystemRow = '<tr>' +
       '<td><strong>Runtime System</strong><div class="id code">system__runtime</div></td>' +
       '<td><span class="code">system</span></td>' +
       '<td><div class="code">built-in</div></td>' +
       '<td>' + badge('RUNNING') + '</td>' +
       '<td><span class="code">HEALTHY</span></td>' +
-      '<td>' + runtimeTools.length + ' runtime tools, ' + clarityTools.length + ' clarity tools</td>' +
+      '<td>' + runtimeTools.length + ' runtime tools</td>' +
       '<td>' +
         '<button class="btn ghost" data-key="system__runtime" data-kind="system" data-service="" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
-        '<button class="btn ghost" data-service="system__runtime" onclick="openService(this.dataset.service)">Open</button>' +
       '</td>' +
     '</tr>';
-    const systemDetailRow = expanded.system__runtime
-      ? '<tr class="detail-row"><td colspan="7">' + renderSystemDetails(runtimeTools, clarityTools) + '</td></tr>'
+    const runtimeSystemDetailRow = expanded.system__runtime
+      ? '<tr class="detail-row"><td colspan="7">' + renderToolCatalog('Runtime System', 'Built-in runtime control tools with descriptions.', runtimeTools) + '</td></tr>'
+      : '';
+
+    const claritySystemRow = '<tr>' +
+      '<td><strong>Clarity System</strong><div class="id code">system__clarity</div></td>' +
+      '<td><span class="code">system</span></td>' +
+      '<td><div class="code">built-in</div></td>' +
+      '<td>' + badge('RUNNING') + '</td>' +
+      '<td><span class="code">HEALTHY</span></td>' +
+      '<td>' + clarityTools.length + ' clarity tools</td>' +
+      '<td>' +
+        '<button class="btn ghost" data-key="system__clarity" data-kind="system" data-service="" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
+      '</td>' +
+    '</tr>';
+    const claritySystemDetailRow = expanded.system__clarity
+      ? '<tr class="detail-row"><td colspan="7">' + renderToolCatalog('Clarity System', 'Built-in clarity-assist tools with descriptions.', clarityTools) + '</td></tr>'
       : '';
 
     const serviceRows = services.map((svc) => {
@@ -557,7 +577,6 @@ async function refresh() {
         '<td>' + toolCount + ' tools, ' + resCount + ' resources, ' + promptCount + ' prompts</td>' +
         '<td>' +
           '<button class="btn ghost" data-key="' + keyAttr + '" data-kind="service" data-service="' + serviceId + '" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
-          '<button class="btn ghost" data-service="' + serviceId + '" onclick="openService(this.dataset.service)">Open</button>' +
           '<button class="btn" data-service="' + serviceId + '" data-op="start" onclick="action(this.dataset.service,this.dataset.op)">Start</button>' +
           '<button class="btn" data-service="' + serviceId + '" data-op="stop" onclick="action(this.dataset.service,this.dataset.op)">Stop</button>' +
           '<button class="btn" data-service="' + serviceId + '" data-op="restart" onclick="action(this.dataset.service,this.dataset.op)">Restart</button>' +
@@ -568,37 +587,8 @@ async function refresh() {
         '</td>' +
       '</tr>' + detailRow;
     }).join('');
-    const rows = systemRow + systemDetailRow + serviceRows;
+    const rows = runtimeSystemRow + runtimeSystemDetailRow + claritySystemRow + claritySystemDetailRow + serviceRows;
     document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:var(--panel-muted)">No services registered</td></tr>';
-
-    if (!selectedServiceId) {
-      document.getElementById('inspector').innerHTML = 'Select a service row and click Open.';
-    } else if (selectedServiceId === 'system__runtime') {
-      document.getElementById('inspector').innerHTML =
-        '<div class="detail-box">' +
-          '<h3 class="detail-title">Runtime System</h3>' +
-          '<div class="code">Built-in runtime + clarity MCP tools.</div>' +
-          '<h3 class="detail-title">Runtime Tool Names</h3>' +
-          '<ul class="detail-list">' + runtimeTools.map((name) => '<li class="code">' + esc(name) + '</li>').join('') + '</ul>' +
-          '<h3 class="detail-title">Clarity Tool Names</h3>' +
-          '<ul class="detail-list">' + clarityTools.map((name) => '<li class="code">' + esc(name) + '</li>').join('') + '</ul>' +
-        '</div>';
-    } else {
-      try {
-        const inspectorData = await call('/api/services/' + encodeURIComponent(selectedServiceId) + '/details?log_limit=60&event_limit=120&call_limit=30');
-        detailCache['svc__' + selectedServiceId] = inspectorData;
-        document.getElementById('inspector').innerHTML =
-          '<div class="detail-box">' +
-            '<h3 class="detail-title">Service</h3>' +
-            '<div class="code">' + esc((inspectorData.summary && inspectorData.summary.displayName) || selectedServiceId) + '</div>' +
-            '<div class="id code">' + esc(selectedServiceId) + '</div>' +
-          '</div>' +
-          renderServiceDetails(selectedServiceId, inspectorData);
-      } catch (error) {
-        document.getElementById('inspector').innerHTML =
-          '<div class="detail-box"><div class="code" style="color:#a72525">' + esc(error instanceof Error ? error.message : String(error)) + '</div></div>';
-      }
-    }
 
     const bootstrapClients = Array.isArray(bootstrap && bootstrap.clients) ? bootstrap.clients : [];
     const bootstrapRows = bootstrapClients.map((row) => {
@@ -628,11 +618,9 @@ async function refresh() {
   } catch (error) {
     document.getElementById('summary').innerHTML = summaryCards({
       summary: { total: 0, running: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
-      runtimeToolCount: 0,
-      clarityToolCount: 0
+      systemServiceCount: 2
     });
     document.getElementById('rows').innerHTML = '<tr><td colspan="7" style="color:#a72525">UI render error: ' + String(error) + '</td></tr>';
-    document.getElementById('inspector').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';
     document.getElementById('bootstrap-config').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';
     document.getElementById('audit').innerHTML = '<li class="audit-item"><div class="audit-msg" style="color:#a72525">UI render error</div></li>';
   }

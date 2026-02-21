@@ -12,7 +12,7 @@ async function callBootstrapTool(router: McpRouter, args: Record<string, unknown
     id: 1,
     method: "tools/call",
     params: {
-      name: "runtime__bootstrap_clarity_app",
+      name: "clarity__bootstrap_app",
       arguments: args
     }
   });
@@ -23,7 +23,7 @@ async function callBootstrapTool(router: McpRouter, args: Record<string, unknown
   return response;
 }
 
-test("runtime__bootstrap_clarity_app is idempotent on retry with same project", async () => {
+test("clarity__bootstrap_app is idempotent on retry with same project", async () => {
   const workspaceTmp = await mkdtemp(path.join(process.cwd(), ".tmp-bootstrap-idempotent-"));
   const registryPath = path.join(workspaceTmp, "registry.json");
   const telemetryPath = path.join(workspaceTmp, "telemetry.json");
@@ -91,7 +91,7 @@ exit 1
   }
 });
 
-test("runtime__bootstrap_clarity_app rolls back files when compile fails", async () => {
+test("clarity__bootstrap_app rolls back files when compile fails", async () => {
   const workspaceTmp = await mkdtemp(path.join(process.cwd(), ".tmp-bootstrap-rollback-"));
   const registryPath = path.join(workspaceTmp, "registry.json");
   const telemetryPath = path.join(workspaceTmp, "telemetry.json");

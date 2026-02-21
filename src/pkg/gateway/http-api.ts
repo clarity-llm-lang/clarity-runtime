@@ -1,4 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ServiceManager } from "../supervisor/service-manager.js";
 import { renderStatusPage } from "../../web/status-page.js";
 import { isJsonRpcRequest, failure, type JsonRpcRequest } from "./mcp-jsonrpc.js";
@@ -15,37 +18,45 @@ import {
 } from "../security/remote-auth.js";
 
 const CLARITY_SYSTEM_TOOLS = [
-  "runtime__clarity_help",
-  "runtime__clarity_sources",
-  "runtime__clarity_project_structure",
-  "runtime__ensure_compiler",
-  "runtime__bootstrap_clarity_app"
+  { name: "clarity__help", description: "Clarity-first guidance and workflow hints for LLM usage." },
+  { name: "clarity__sources", description: "List .clarity files in workspace and optionally include excerpts." },
+  { name: "clarity__project_structure", description: "Return recommended Clarity app structure with templates." },
+  { name: "clarity__ensure_compiler", description: "Check/install clarityc with install-policy gates." },
+  { name: "clarity__bootstrap_app", description: "Scaffold/build/register a Clarity app with rollback semantics." }
 ] as const;
 
 const RUNTIME_SYSTEM_TOOLS = [
-  "runtime__status_summary",
-  "runtime__list_services",
-  "runtime__get_service",
-  "runtime__get_logs",
-  "runtime__start_service",
-  "runtime__stop_service",
-  "runtime__restart_service",
-  "runtime__refresh_interface",
-  "runtime__unquarantine_service",
-  "runtime__remove_service",
-  "runtime__get_audit",
-  "runtime__validate_auth_ref",
-  "runtime__auth_provider_health",
-  "runtime__list_auth_secrets",
-  "runtime__set_auth_secret",
-  "runtime__delete_auth_secret",
-  "runtime__register_local",
-  "runtime__register_remote",
-  "runtime__register_via_url",
-  "runtime__apply_manifest"
+  { name: "runtime__status_summary", description: "Summarize service and health counts." },
+  { name: "runtime__list_services", description: "List all registered services." },
+  { name: "runtime__get_service", description: "Fetch complete details for one service." },
+  { name: "runtime__get_logs", description: "Fetch recent logs for one service." },
+  { name: "runtime__start_service", description: "Start a stopped service." },
+  { name: "runtime__stop_service", description: "Stop a running service." },
+  { name: "runtime__restart_service", description: "Restart a service." },
+  { name: "runtime__refresh_interface", description: "Refresh tool/resource/prompt snapshot for service." },
+  { name: "runtime__unquarantine_service", description: "Clear quarantine so a service can start again." },
+  { name: "runtime__remove_service", description: "Deprovision service with optional artifact cleanup." },
+  { name: "runtime__get_audit", description: "Read recent runtime audit events." },
+  { name: "runtime__validate_auth_ref", description: "Validate authRef and return redacted diagnostics." },
+  { name: "runtime__auth_provider_health", description: "Report remote auth provider/file-root health." },
+  { name: "runtime__list_auth_secrets", description: "List file-backed secret handles (no secret values)." },
+  { name: "runtime__set_auth_secret", description: "Create/rotate file-backed auth secret." },
+  { name: "runtime__delete_auth_secret", description: "Delete file-backed auth secret." },
+  { name: "runtime__register_local", description: "Register local wasm service via MCP." },
+  { name: "runtime__register_remote", description: "Register remote MCP service via MCP." },
+  { name: "runtime__register_via_url", description: "Quick-register remote service from URL via MCP." },
+  { name: "runtime__apply_manifest", description: "Apply full service manifest via MCP." }
 ] as const;
 
-const SYSTEM_TOOLS = [...RUNTIME_SYSTEM_TOOLS, ...CLARITY_SYSTEM_TOOLS] as const;
+const SYSTEM_TOOLS = [...RUNTIME_SYSTEM_TOOLS, ...CLARITY_SYSTEM_TOOLS].map((t) => t.name);
+const FAVICON_SVG_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../../assets/clarity-github-avatar.svg"
+);
+const FAVICON_PNG_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../../assets/clarity-github-avatar.png"
+);
 
 function json(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -54,6 +65,12 @@ function json(res: ServerResponse, status: number, data: unknown): void {
 }
 
 function text(res: ServerResponse, status: number, body: string, type = "text/plain; charset=utf-8"): void {
+  res.statusCode = status;
+  res.setHeader("content-type", type);
+  res.end(body);
+}
+
+function bytes(res: ServerResponse, status: number, body: Buffer, type: string): void {
   res.statusCode = status;
   res.setHeader("content-type", type);
   res.end(body);
@@ -98,7 +115,7 @@ function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) 
 
 function extractRecentCalls(events: Array<{ kind: string; at: string; message: string; data?: unknown }>, limit: number): Array<{ at: string; message: string; data?: unknown }> {
   const calls = events
-    .filter((event) => event.kind === "service.tool_called")
+    .filter((event) => event.kind === "mcp.tool_called")
     .map((event) => ({
       at: event.at,
       message: event.message,
@@ -118,6 +135,18 @@ export async function handleHttp(
   const mcpRouter = new McpRouter(manager);
 
   try {
+    if (method === "GET" && url.pathname === "/favicon.svg") {
+      const favicon = await readFile(FAVICON_SVG_PATH, "utf8");
+      text(res, 200, favicon, "image/svg+xml; charset=utf-8");
+      return;
+    }
+
+    if (method === "GET" && (url.pathname === "/favicon.ico" || url.pathname === "/favicon.png" || url.pathname === "/apple-touch-icon.png")) {
+      const favicon = await readFile(FAVICON_PNG_PATH);
+      bytes(res, 200, favicon, "image/png");
+      return;
+    }
+
     if (method === "GET" && (url.pathname === "/" || url.pathname === "/status")) {
       text(res, 200, renderStatusPage(), "text/html; charset=utf-8");
       return;
@@ -283,16 +312,6 @@ export async function handleHttp(
         env: process.env,
         cwd: process.cwd()
       });
-      manager.recordRuntimeEvent({
-        kind: "security.auth_secret_upserted",
-        level: "info",
-        message: "Remote auth secret updated",
-        data: {
-          authRef: out.authRef,
-          provider: out.provider,
-          path: out.path
-        }
-      });
       json(res, 200, out);
       return;
     }
@@ -314,17 +333,6 @@ export async function handleHttp(
         env: process.env,
         cwd: process.cwd()
       });
-      manager.recordRuntimeEvent({
-        kind: "security.auth_secret_deleted",
-        level: "info",
-        message: "Remote auth secret deleted",
-        data: {
-          authRef: out.authRef,
-          provider: out.provider,
-          path: out.path,
-          deleted: out.deleted
-        }
-      });
       json(res, 200, out);
       return;
     }
@@ -338,16 +346,6 @@ export async function handleHttp(
       const out = await validateRemoteAuthRef(authRef, {
         env: process.env,
         cwd: process.cwd()
-      });
-      manager.recordRuntimeEvent({
-        kind: "security.auth_ref_validated",
-        level: out.valid ? "info" : "warn",
-        message: out.valid ? "Remote authRef validated" : "Remote authRef validation failed",
-        data: {
-          authRef,
-          provider: out.provider,
-          valid: out.valid
-        }
       });
       json(res, 200, out);
       return;
@@ -365,16 +363,6 @@ export async function handleHttp(
       const out = await validateRemoteAuthRef(authRef, {
         env: process.env,
         cwd: process.cwd()
-      });
-      manager.recordRuntimeEvent({
-        kind: "security.auth_ref_validated",
-        level: out.valid ? "info" : "warn",
-        message: out.valid ? "Remote authRef validated" : "Remote authRef validation failed",
-        data: {
-          authRef,
-          provider: out.provider,
-          valid: out.valid
-        }
       });
       json(res, 200, out);
       return;

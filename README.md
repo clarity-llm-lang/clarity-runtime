@@ -162,7 +162,7 @@ Implemented for v0.9 baseline:
 - add/list/start/stop/restart/introspect/remove flows
 - gateway `/mcp` JSON-RPC endpoint (`initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`)
 - built-in runtime control MCP tools (`runtime__status_summary`, `runtime__list_services`, `runtime__get_service`, `runtime__get_logs`, `runtime__start_service`, `runtime__stop_service`, `runtime__restart_service`, `runtime__refresh_interface`, `runtime__unquarantine_service`, `runtime__remove_service`, `runtime__get_audit`, `runtime__validate_auth_ref`, `runtime__auth_provider_health`, `runtime__list_auth_secrets`, `runtime__set_auth_secret`, `runtime__delete_auth_secret`)
-- built-in Clarity-assist MCP tools (`runtime__clarity_help`, `runtime__clarity_sources`, `runtime__clarity_project_structure`, `runtime__ensure_compiler`, `runtime__bootstrap_clarity_app`) for default-language guidance, source discovery, app scaffolding, compiler readiness/install checks, and one-call bootstrap
+- built-in Clarity-assist MCP tools (`clarity__help`, `clarity__sources`, `clarity__project_structure`, `clarity__ensure_compiler`, `clarity__bootstrap_app`) for default-language guidance, source discovery, app scaffolding, compiler readiness/install checks, and one-call bootstrap
 - gated MCP self-provisioning tools (`runtime__register_local`, `runtime__register_remote`, `runtime__register_via_url`, `runtime__apply_manifest`) protected by `CLARITY_ENABLE_MCP_PROVISIONING=1`
 - stdio bridge mode via `clarityctl gateway serve --stdio`
 - compiler-assisted onboarding via `clarityctl add <service>` (compile + register + start + introspect)
@@ -229,8 +229,9 @@ Not implemented yet:
 - `CLARITY_REMOTE_MAX_CONCURRENCY=8`: default max in-flight remote requests per service when manifest value is not set.
 - `CLARITY_REMOTE_AUTH_FILE_ROOT=/absolute/path`: optional root directory for `file:` auth refs (defaults to `.clarity/secrets` under workspace).
 - `CLARITY_ENABLE_MCP_PROVISIONING=1`: enable runtime MCP self-provisioning tools (`runtime__register_*`, `runtime__apply_manifest`).
-- `CLARITY_ENABLE_COMPILER_INSTALL=1`: allow `runtime__ensure_compiler` to execute install commands.
-- `CLARITY_COMPILER_INSTALL_ALLOWLIST=brew,apt-get`: optional installer command allowlist for `runtime__ensure_compiler`.
+- `CLARITY_ENABLE_COMPILER_INSTALL=1`: allow `clarity__ensure_compiler` to execute install commands.
+- `CLARITY_COMPILER_INSTALL_ALLOWLIST=brew,apt-get`: optional installer command allowlist for `clarity__ensure_compiler`.
+- `CLARITY_AUDIT_INCLUDE_LIFECYCLE=1`: include service lifecycle events in audit (`service.*`). Set `0` to log only MCP tool calls.
 
 ## Security Defaults
 
@@ -244,6 +245,7 @@ Not implemented yet:
 - `GET /api/events`: SSE stream for live runtime events.
 - Status page now includes an audit timeline and `Unquarantine` action for quarantined services.
 - Telemetry persists across daemon restarts in `.clarity/runtime/telemetry.json`.
+- Audit policy always records MCP tool invocations (`mcp.tool_called`), excludes secret payloads, and can include lifecycle events (`service.*`) via `CLARITY_AUDIT_INCLUDE_LIFECYCLE=1` (default on).
 - Auth lifecycle/validation APIs:
   - `GET /api/security/auth/providers`
   - `GET|POST /api/security/auth/validate`
