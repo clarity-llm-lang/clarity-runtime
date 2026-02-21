@@ -5,6 +5,13 @@ import type { ServiceManager } from "../supervisor/service-manager.js";
 import type { MCPServiceManifest } from "../../types/contracts.js";
 import { validateManifest } from "../rpc/manifest.js";
 import { normalizeNamespace } from "../security/namespace.js";
+import {
+  deleteRemoteAuthSecret,
+  getRemoteAuthProviderHealth,
+  listRemoteAuthFileSecrets,
+  upsertRemoteAuthSecret,
+  validateRemoteAuthRef
+} from "../security/remote-auth.js";
 import { failure, success, type JsonRpcRequest, type JsonRpcResponse } from "./mcp-jsonrpc.js";
 
 interface RoutedTool {
@@ -129,6 +136,61 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
       type: "object",
       properties: {
         limit: { type: "integer", minimum: 1, maximum: 2000 }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__validate_auth_ref",
+    description: "Validate a remote authRef configuration and return redacted diagnostics.",
+    inputSchema: {
+      type: "object",
+      required: ["auth_ref"],
+      properties: {
+        auth_ref: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__auth_provider_health",
+    description: "Return remote auth provider support and file-root health.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__list_auth_secrets",
+    description: "List file-backed authRef secret handles (never returns secret values).",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__set_auth_secret",
+    description: "Create or rotate a file-backed authRef secret. Provisioning gate required.",
+    inputSchema: {
+      type: "object",
+      required: ["auth_ref", "secret"],
+      properties: {
+        auth_ref: { type: "string" },
+        secret: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__delete_auth_secret",
+    description: "Delete a file-backed authRef secret. Provisioning gate required.",
+    inputSchema: {
+      type: "object",
+      required: ["auth_ref"],
+      properties: {
+        auth_ref: { type: "string" }
       },
       additionalProperties: false
     }
@@ -730,6 +792,96 @@ export class McpRouter {
       return contentJson({
         items: this.manager.getRecentEvents(limit)
       });
+    }
+
+    if (name === "runtime__validate_auth_ref") {
+      const authRef = asString(payload.auth_ref);
+      if (!authRef) throw new Error("runtime__validate_auth_ref requires auth_ref");
+      const validation = await validateRemoteAuthRef(authRef, {
+        env: process.env,
+        cwd: process.cwd()
+      });
+      this.manager.recordRuntimeEvent({
+        kind: "security.auth_ref_validated",
+        level: validation.valid ? "info" : "warn",
+        message: validation.valid ? "Remote authRef validated" : "Remote authRef validation failed",
+        data: {
+          authRef,
+          provider: validation.provider,
+          valid: validation.valid
+        }
+      });
+      return contentJson(validation);
+    }
+
+    if (name === "runtime__auth_provider_health") {
+      return contentJson(await getRemoteAuthProviderHealth({
+        env: process.env,
+        cwd: process.cwd()
+      }));
+    }
+
+    if (name === "runtime__list_auth_secrets") {
+      const items = await listRemoteAuthFileSecrets({
+        env: process.env,
+        cwd: process.cwd()
+      });
+      return contentJson({
+        count: items.length,
+        items
+      });
+    }
+
+    if (name === "runtime__set_auth_secret") {
+      assertProvisioningEnabled();
+      const authRef = asString(payload.auth_ref);
+      const secret = asString(payload.secret);
+      if (!authRef) throw new Error("runtime__set_auth_secret requires auth_ref");
+      if (!secret) throw new Error("runtime__set_auth_secret requires secret");
+
+      const result = await upsertRemoteAuthSecret(authRef, secret, {
+        env: process.env,
+        cwd: process.cwd()
+      });
+      this.manager.recordRuntimeEvent({
+        kind: "security.auth_secret_upserted",
+        level: "info",
+        message: "Remote auth secret updated",
+        data: {
+          authRef: result.authRef,
+          provider: result.provider,
+          path: result.path
+        }
+      });
+      return contentJson({
+        authRef: result.authRef,
+        provider: result.provider,
+        path: result.path,
+        written: result.written
+      });
+    }
+
+    if (name === "runtime__delete_auth_secret") {
+      assertProvisioningEnabled();
+      const authRef = asString(payload.auth_ref);
+      if (!authRef) throw new Error("runtime__delete_auth_secret requires auth_ref");
+
+      const result = await deleteRemoteAuthSecret(authRef, {
+        env: process.env,
+        cwd: process.cwd()
+      });
+      this.manager.recordRuntimeEvent({
+        kind: "security.auth_secret_deleted",
+        level: "info",
+        message: "Remote auth secret deleted",
+        data: {
+          authRef: result.authRef,
+          provider: result.provider,
+          path: result.path,
+          deleted: result.deleted
+        }
+      });
+      return contentJson(result);
     }
 
     if (name === "runtime__clarity_help") {
