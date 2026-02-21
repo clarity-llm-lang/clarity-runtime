@@ -296,7 +296,10 @@ export function renderStatusPage(): string {
     </div>
 
     <div class="card inspector">
-      <h2 class="audit-title">Service Inspector</h2>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <h2 class="audit-title" style="margin:0;">Service Inspector</h2>
+        <button id="inspector-close" class="btn ghost" style="display:none;" onclick="closeInspector()">Close Inspector</button>
+      </div>
       <div id="inspector" class="code" style="display:grid; gap:8px; color:var(--panel-muted)">Select a service row and click Open.</div>
     </div>
 
@@ -467,6 +470,12 @@ async function openService(serviceId) {
   await refresh();
 }
 
+async function closeInspector() {
+  selectedServiceId = null;
+  setSelectedInQuery(null);
+  await refresh();
+}
+
 async function toggleDetails(key, kind, serviceId) {
   expanded[key] = !expanded[key];
   if (expanded[key] && kind === 'service' && !detailCache[key]) {
@@ -609,20 +618,24 @@ async function refresh() {
     document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" style="color:var(--panel-muted)">No services registered</td></tr>';
 
     if (!selectedServiceId) {
+      document.getElementById('inspector-close').style.display = 'none';
       document.getElementById('inspector').innerHTML = 'Select a service row and click Open.';
     } else if (selectedServiceId === 'system__runtime') {
+      document.getElementById('inspector-close').style.display = '';
       document.getElementById('inspector').innerHTML = renderToolCatalog(
         'Runtime System',
         'Full runtime control tool catalog with descriptions.',
         runtimeTools
       );
     } else if (selectedServiceId === 'system__clarity') {
+      document.getElementById('inspector-close').style.display = '';
       document.getElementById('inspector').innerHTML = renderToolCatalog(
         'Clarity System',
         'Full clarity-assist tool catalog with descriptions.',
         clarityTools
       );
     } else {
+      document.getElementById('inspector-close').style.display = '';
       try {
         const inspectorData = await call('/api/services/' + encodeURIComponent(selectedServiceId) + '/details?log_limit=60&event_limit=120&call_limit=30');
         detailCache['svc__' + selectedServiceId] = inspectorData;
@@ -670,6 +683,7 @@ async function refresh() {
       systemServiceCount: 2
     });
     document.getElementById('rows').innerHTML = '<tr><td colspan="7" style="color:#a72525">UI render error: ' + String(error) + '</td></tr>';
+    document.getElementById('inspector-close').style.display = 'none';
     document.getElementById('inspector').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';
     document.getElementById('bootstrap-config').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';
     document.getElementById('audit').innerHTML = '<li class="audit-item"><div class="audit-msg" style="color:#a72525">UI render error</div></li>';
