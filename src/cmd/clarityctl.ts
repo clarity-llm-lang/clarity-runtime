@@ -632,6 +632,7 @@ program
   .option("--clients <items>", "Comma separated clients", "codex,claude")
   .option("--transport <mode>", "Bootstrap transport: stdio | http", "stdio")
   .option("--endpoint <url>", "HTTP endpoint to use when --transport http")
+  .option("--update-agents-md", "Also upsert workspace AGENTS.md Clarity defaults (managed block)")
   .action(async (opts) => {
     const runtime = runtimeOpts();
     const clients = String(opts.clients)
@@ -652,8 +653,26 @@ program
       body: JSON.stringify({
         clients,
         transport,
+        ...(opts.updateAgentsMd ? { update_agents_md: true } : {}),
         ...(transport === "http" ? { endpoint } : {})
       })
+    });
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+program
+  .command("bootstrap-remove")
+  .option("--clients <items>", "Comma separated clients", "codex,claude")
+  .action(async (opts) => {
+    const runtime = runtimeOpts();
+    const clients = String(opts.clients)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/bootstrap", runtime.authToken, {
+      method: "DELETE",
+      body: JSON.stringify({ clients })
     });
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });

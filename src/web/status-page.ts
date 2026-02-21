@@ -214,6 +214,25 @@ export function renderStatusPage(): string {
       background: rgba(255, 255, 255, 0.62);
       color: #2a3d58;
     }
+    .bootstrap-note {
+      border: 1px solid rgba(8, 143, 178, 0.32);
+      background: rgba(207, 238, 248, 0.72);
+      color: #0f4257;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .bootstrap-note.warn {
+      border-color: rgba(220, 38, 38, 0.3);
+      background: rgba(252, 231, 231, 0.82);
+      color: #922727;
+    }
+    .bootstrap-note.error {
+      border-color: rgba(220, 38, 38, 0.3);
+      background: rgba(252, 231, 231, 0.82);
+      color: #922727;
+    }
     .detail-row td {
       background: rgba(230, 237, 246, 0.9);
       border-top: none;
@@ -242,6 +261,13 @@ export function renderStatusPage(): string {
     .bootstrap {
       margin-top: 14px;
       margin-bottom: 14px;
+    }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
     }
 
     .audit {
@@ -326,17 +352,24 @@ export function renderStatusPage(): string {
       </div>
 
       <div class="card bootstrap">
-        <h2 class="audit-title">Client Bootstrap Config</h2>
-        <div id="bootstrap-config" class="code" style="display:grid; gap:8px; color:var(--panel-muted)">Loading bootstrap config...</div>
-        <div style="margin-top:8px; display:grid; gap:8px;">
-          <label class="code" for="bootstrap-transport">Transport</label>
-          <select id="bootstrap-transport" class="btn secondary" onchange="onBootstrapTransportChange()">
-            <option value="http" selected>http</option>
-            <option value="stdio">stdio</option>
-          </select>
-          <label class="code" for="bootstrap-endpoint">HTTP Endpoint</label>
-          <input id="bootstrap-endpoint" class="code" style="padding:8px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2); color:var(--panel-text);" />
-          <button class="btn secondary" onclick="bootstrapClients()">Configure Codex + Claude</button>
+        <div class="section-head">
+          <h2 class="audit-title" style="margin:0">Client Bootstrap Config</h2>
+          <button id="bootstrap-toggle" class="btn ghost" onclick="toggleBootstrapPanel()">Minimize</button>
+        </div>
+        <div id="bootstrap-body">
+          <div id="bootstrap-config" class="code" style="display:grid; gap:8px; color:var(--panel-muted)">Loading bootstrap config...</div>
+          <div id="bootstrap-action-msg"></div>
+          <div style="margin-top:8px; display:grid; gap:8px;">
+            <label class="code" for="bootstrap-transport">Transport</label>
+            <select id="bootstrap-transport" class="btn secondary" onchange="onBootstrapTransportChange(true)">
+              <option value="http" selected>http</option>
+              <option value="stdio">stdio</option>
+            </select>
+            <label class="code" for="bootstrap-endpoint">HTTP Endpoint</label>
+            <input id="bootstrap-endpoint" oninput="onBootstrapEndpointInput()" class="code" style="padding:8px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2); color:var(--panel-text);" />
+            <button class="btn secondary" onclick="bootstrapClients()">Configure Codex + Claude</button>
+            <button class="btn" onclick="removeBootstrapClients()">Remove Codex + Claude MCP</button>
+          </div>
         </div>
       </div>
 
@@ -378,6 +411,10 @@ const agentDetailCache = {};
 let latestRuntimeTools = [];
 let latestClarityTools = [];
 let activeTab = 'mcp';
+let bootstrapFormDirty = false;
+let bootstrapFormInitialized = false;
+let bootstrapActionMessage = '';
+let bootstrapCollapsed = false;
 const queryParams = new URLSearchParams(window.location.search);
 const authToken = queryParams.get('token') || window.localStorage.getItem('clarity_auth_token');
 if (authToken) {
@@ -460,32 +497,119 @@ function setTab(tab) {
   agentsTab.classList.toggle('active', !mcpActive);
 }
 
+function setBootstrapCollapsed(collapsed) {
+  bootstrapCollapsed = !!collapsed;
+  const body = document.getElementById('bootstrap-body');
+  const toggle = document.getElementById('bootstrap-toggle');
+  if (body) {
+    body.style.display = bootstrapCollapsed ? 'none' : '';
+  }
+  if (toggle) {
+    toggle.textContent = bootstrapCollapsed ? 'Expand' : 'Minimize';
+  }
+}
+
+function toggleBootstrapPanel() {
+  setBootstrapCollapsed(!bootstrapCollapsed);
+}
+
 async function action(id, op) {
   await call('/api/services/' + encodeURIComponent(id) + '/' + op, 'POST');
   await refresh();
 }
 
 async function bootstrapClients() {
-  const transportEl = document.getElementById('bootstrap-transport');
-  const endpointEl = document.getElementById('bootstrap-endpoint');
-  const transport = transportEl && transportEl.value === 'stdio' ? 'stdio' : 'http';
-  const endpoint = endpointEl && typeof endpointEl.value === 'string'
-    ? endpointEl.value.trim()
-    : '';
-  await call('/api/bootstrap', 'POST', JSON.stringify({
-    clients: ['codex', 'claude'],
-    transport,
-    ...(transport === 'http' && endpoint ? { endpoint } : {})
-  }));
-  await refresh();
+  try {
+    const transportEl = document.getElementById('bootstrap-transport');
+    const endpointEl = document.getElementById('bootstrap-endpoint');
+    const transport = transportEl && transportEl.value === 'stdio' ? 'stdio' : 'http';
+    const endpoint = endpointEl && typeof endpointEl.value === 'string'
+      ? endpointEl.value.trim()
+      : '';
+    const result = await call('/api/bootstrap', 'POST', JSON.stringify({
+      clients: ['codex', 'claude'],
+      transport,
+      ...(transport === 'http' && endpoint ? { endpoint } : {})
+    }));
+    bootstrapActionMessage = '<div class="bootstrap-note">Saved: transport=' + esc(result.transport || transport) + (result.endpoint ? ', endpoint=' + esc(result.endpoint) : '') + '.</div>';
+    bootstrapFormDirty = false;
+    bootstrapFormInitialized = true;
+    await refresh();
+  } catch (error) {
+    bootstrapActionMessage = '<div class="bootstrap-note error">Configure failed: ' + esc(String(error)) + '</div>';
+    const msgEl = document.getElementById('bootstrap-action-msg');
+    if (msgEl) msgEl.innerHTML = bootstrapActionMessage;
+  }
 }
 
-function onBootstrapTransportChange() {
+async function removeBootstrapClients() {
+  try {
+    await call('/api/bootstrap', 'DELETE', JSON.stringify({
+      clients: ['codex', 'claude']
+    }));
+    bootstrapActionMessage = '<div class="bootstrap-note">Removed clarity_gateway from Codex and Claude.</div>';
+    bootstrapFormDirty = false;
+    bootstrapFormInitialized = false;
+    await refresh();
+  } catch (error) {
+    bootstrapActionMessage = '<div class="bootstrap-note error">Remove failed: ' + esc(String(error)) + '</div>';
+    const msgEl = document.getElementById('bootstrap-action-msg');
+    if (msgEl) msgEl.innerHTML = bootstrapActionMessage;
+  }
+}
+
+function onBootstrapTransportChange(markDirty = false) {
   const transportEl = document.getElementById('bootstrap-transport');
   const endpointEl = document.getElementById('bootstrap-endpoint');
   if (!transportEl || !endpointEl) return;
+  if (markDirty) {
+    bootstrapFormDirty = true;
+  }
   const isHttp = transportEl.value !== 'stdio';
   endpointEl.disabled = !isHttp;
+}
+
+function onBootstrapEndpointInput() {
+  bootstrapFormDirty = true;
+}
+
+function chooseBootstrapTransport(clients) {
+  const list = Array.isArray(clients) ? clients : [];
+  const codex = list.find((row) => row && row.client === 'codex');
+  const claude = list.find((row) => row && row.client === 'claude');
+  const preferred = codex && codex.configured ? codex : (claude && claude.configured ? claude : codex || claude);
+  if (preferred && preferred.transport === 'stdio') return 'stdio';
+  if (preferred && (preferred.transport === 'http' || preferred.endpoint)) return 'http';
+  return 'http';
+}
+
+function normalizeBootstrapCfg(row) {
+  if (!row) return { configured: false, transport: undefined, endpoint: '' };
+  const transport = row.transport === 'stdio' ? 'stdio' : (row.transport === 'http' || row.endpoint ? 'http' : undefined);
+  const endpoint = typeof row.endpoint === 'string' ? row.endpoint.trim() : '';
+  return { configured: !!row.configured, transport, endpoint };
+}
+
+function buildBootstrapConsistencyNote(codexCfg, claudeCfg) {
+  const codex = normalizeBootstrapCfg(codexCfg);
+  const claude = normalizeBootstrapCfg(claudeCfg);
+  const details = [];
+  if (codex.configured !== claude.configured) {
+    details.push(codex.configured ? 'Claude is not configured' : 'Codex is not configured');
+  }
+  if (codex.transport && claude.transport && codex.transport !== claude.transport) {
+    details.push('transport differs (' + codex.transport + ' vs ' + claude.transport + ')');
+  }
+  if (codex.transport === 'http' && claude.transport === 'http' && codex.endpoint && claude.endpoint && codex.endpoint !== claude.endpoint) {
+    details.push('HTTP endpoint differs');
+  }
+  if (details.length > 0) {
+    return '<div class="bootstrap-note warn"><strong>Codex/Claude config mismatch:</strong> ' + esc(details.join('; ')) + '.</div>';
+  }
+  if (codex.configured || claude.configured) {
+    return '<div class="bootstrap-note"><strong>Codex and Claude are aligned.</strong> Current transport: ' + esc(codex.transport || claude.transport || 'unknown') + '.</div>';
+  }
+  return '<div class="bootstrap-note">Codex and Claude are not configured yet.</div>';
 }
 
 function esc(value) {
@@ -495,6 +619,15 @@ function esc(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function formatLocalTime(value) {
+  if (!value) return '';
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) {
+    return esc(String(value));
+  }
+  return esc(date.toLocaleString());
 }
 
 function renderSystemDetails(runtimeTools, clarityTools) {
@@ -553,7 +686,7 @@ function renderServiceDetails(serviceId, data) {
     ? '<ul class="detail-list">' + logs.map((line) => '<li class="code">' + esc(line) + '</li>').join('') + '</ul>'
     : '<div class="code">No recent logs.</div>';
   const callItems = calls.length > 0
-    ? '<ul class="detail-list">' + calls.map((row) => '<li class="code">' + esc(row.at + ' ' + row.message) + '</li>').join('') + '</ul>'
+    ? '<ul class="detail-list">' + calls.map((row) => '<li class="code">' + formatLocalTime(row.at) + ' ' + esc(row.message) + '</li>').join('') + '</ul>'
     : '<div class="code">No recent tool calls.</div>';
 
   return '<div class="detail-box">' +
@@ -573,7 +706,7 @@ function renderServiceDetails(serviceId, data) {
 function renderAgentRunDetails(runId, events) {
   const rows = (events || []).map((evt) => {
     const sid = evt.serviceId ? ' [' + esc(evt.serviceId) + ']' : '';
-    return '<li class="code">' + esc(evt.at + ' · ' + evt.kind + sid + ' · ' + evt.message) + '</li>';
+    return '<li class="code">' + formatLocalTime(evt.at) + ' · ' + esc(evt.kind) + sid + ' · ' + esc(evt.message) + '</li>';
   }).join('');
   return '<div class="detail-box">' +
     '<h3 class="detail-title">Run</h3>' +
@@ -762,7 +895,7 @@ async function refresh() {
         '<td><span class="code">' + esc(run.agent || 'unknown') + '</span></td>' +
         '<td>' + badge(status) + '</td>' +
         '<td><span class="code">' + esc(counters) + '</span></td>' +
-        '<td><span class="code">' + esc(run.updatedAt || '') + '</span></td>' +
+        '<td><span class="code">' + formatLocalTime(run.updatedAt || '') + '</span></td>' +
         '<td><button class="btn ghost" data-run-id="' + runId + '" onclick="toggleAgentDetails(this.dataset.runId)">Details</button></td>' +
       '</tr>' + detailRow;
     }).join('');
@@ -789,21 +922,29 @@ async function refresh() {
       '</div>';
     }).join('');
     const codexCfg = bootstrapClients.find((row) => row && row.client === 'codex');
-    if (bootstrapTransportEl) {
-      const selectedTransport = codexCfg && codexCfg.transport === 'stdio' ? 'stdio' : 'http';
+    const claudeCfg = bootstrapClients.find((row) => row && row.client === 'claude');
+    const selectedTransport = chooseBootstrapTransport(bootstrapClients);
+    const activeCfg = codexCfg || bootstrapClients.find((row) => row && row.client === 'claude');
+    if (bootstrapTransportEl && (!bootstrapFormDirty || !bootstrapFormInitialized)) {
       bootstrapTransportEl.value = selectedTransport;
     }
-    if (bootstrapEndpointEl && codexCfg && codexCfg.endpoint) {
-      bootstrapEndpointEl.value = codexCfg.endpoint;
+    if (bootstrapEndpointEl && (!bootstrapFormDirty || !bootstrapFormInitialized)) {
+      if (activeCfg && activeCfg.endpoint) {
+        bootstrapEndpointEl.value = activeCfg.endpoint;
+      } else if (!bootstrapEndpointEl.value) {
+        bootstrapEndpointEl.value = window.location.origin + '/mcp';
+      }
     }
-    onBootstrapTransportChange();
-    document.getElementById('bootstrap-config').innerHTML = bootstrapRows || '<div class="code">Bootstrap status unavailable.</div>';
+    bootstrapFormInitialized = true;
+    onBootstrapTransportChange(false);
+    document.getElementById('bootstrap-action-msg').innerHTML = bootstrapActionMessage;
+    document.getElementById('bootstrap-config').innerHTML = buildBootstrapConsistencyNote(codexCfg, claudeCfg) + (bootstrapRows || '<div class="code">Bootstrap status unavailable.</div>');
 
     const auditItems = Array.isArray(audit && audit.items) ? audit.items : [];
     const auditRows = auditItems.slice().reverse().map((evt) => {
       const sid = evt.serviceId ? ' [' + esc(evt.serviceId) + ']' : '';
       return '<li class="audit-item">' +
-        '<div class="audit-meta">' + esc(evt.at) + ' · ' + esc(evt.kind) + sid + '</div>' +
+        '<div class="audit-meta">' + formatLocalTime(evt.at) + ' · ' + esc(evt.kind) + sid + '</div>' +
         '<div class="audit-msg">' + esc(evt.message) + '</div>' +
       '</li>';
     }).join('');
@@ -815,7 +956,7 @@ async function refresh() {
     const agentAuditRows = agentEvents.slice().reverse().map((evt) => {
       const runId = evt && evt.data && typeof evt.data.runId === 'string' ? ' [' + esc(evt.data.runId) + ']' : '';
       return '<li class="audit-item">' +
-        '<div class="audit-meta">' + esc(evt.at) + ' · ' + esc(evt.kind) + runId + '</div>' +
+        '<div class="audit-meta">' + formatLocalTime(evt.at) + ' · ' + esc(evt.kind) + runId + '</div>' +
         '<div class="audit-msg">' + esc(evt.message || '') + '</div>' +
       '</li>';
     }).join('');
@@ -836,6 +977,7 @@ async function refresh() {
 }
 
 setTab(activeTab);
+setBootstrapCollapsed(bootstrapCollapsed);
 refresh();
 setInterval(refresh, 4000);
 </script>

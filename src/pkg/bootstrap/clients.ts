@@ -11,6 +11,56 @@ export interface BootstrapOptions {
   endpoint?: string;
 }
 
+const AGENTS_MANAGED_START = "<!-- clarity-runtime:managed:clarity-defaults:start -->";
+const AGENTS_MANAGED_END = "<!-- clarity-runtime:managed:clarity-defaults:end -->";
+
+function buildAgentsManagedBlock(): string {
+  return [
+    AGENTS_MANAGED_START,
+    "## Clarity Runtime Defaults",
+    "- Default language for this workspace: Clarity.",
+    "- If the user explicitly requests another language, follow that request.",
+    "- Prefer Clarity-native scaffold/build/test flows before cross-language alternatives.",
+    AGENTS_MANAGED_END,
+    ""
+  ].join("\n");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function upsertManagedAgentsBlock(content: string): string {
+  const managedBlock = buildAgentsManagedBlock();
+  const pattern = new RegExp(`${escapeRegExp(AGENTS_MANAGED_START)}[\\s\\S]*?${escapeRegExp(AGENTS_MANAGED_END)}\\n?`, "m");
+  if (pattern.test(content)) {
+    const next = content.replace(pattern, managedBlock);
+    return next.endsWith("\n") ? next : `${next}\n`;
+  }
+  const base = content.trimEnd();
+  if (base.length === 0) {
+    return managedBlock;
+  }
+  return `${base}\n\n${managedBlock}`;
+}
+
+export async function upsertWorkspaceAgentsDefaults(workspaceRoot = process.cwd()): Promise<{ updated: boolean; path: string }> {
+  const agentsPath = path.join(workspaceRoot, "AGENTS.md");
+  let content = "";
+  try {
+    content = await readFile(agentsPath, "utf8");
+  } catch {
+    content = "";
+  }
+  const next = upsertManagedAgentsBlock(content);
+  if (next === content) {
+    return { updated: false, path: agentsPath };
+  }
+  await mkdir(path.dirname(agentsPath), { recursive: true });
+  await writeFile(agentsPath, next, "utf8");
+  return { updated: true, path: agentsPath };
+}
+
 function parseTomlStringArray(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw
@@ -41,24 +91,47 @@ async function upsertTomlMcp(filePath: string, serverName: string, options: Boot
   }
 
   const block = buildTomlMcpBlock(serverName, options);
-  const keyPattern = new RegExp(`\\[mcp_servers\\.${serverName.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\][\\s\\S]*?(?=\\n\\[|$)`, "m");
+  const escapedServerName = serverName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyPattern = new RegExp(`(?:^|\\n)\\[mcp_servers\\.${escapedServerName}\\][\\s\\S]*?(?=\\n\\[|$)`, "g");
+  const hadBlock = keyPattern.test(content);
+  if (hadBlock) {
+    content = content.replace(keyPattern, "");
+  }
+  const base = content.trimEnd();
+  const separator = base.length > 0 ? "\n\n" : "";
+  await writeFile(filePath, `${base}${separator}${block}`, "utf8");
+}
 
-  if (keyPattern.test(content)) {
-    content = content.replace(keyPattern, block.trimEnd());
-  } else {
-    if (content.length && !content.endsWith("\n")) {
-      content += "\n";
-    }
-    content += `\n${block}`;
+async function removeTomlMcp(filePath: string, serverName: string): Promise<boolean> {
+  let content: string;
+  try {
+    content = await readFile(filePath, "utf8");
+  } catch {
+    return false;
   }
 
-  await writeFile(filePath, content.trimStart() + "\n", "utf8");
+  const escapedServerName = serverName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyPattern = new RegExp(`(?:^|\\n)\\[mcp_servers\\.${escapedServerName}\\][\\s\\S]*?(?=\\n\\[|$)`, "g");
+  const next = content.replace(keyPattern, "");
+  if (next === content) {
+    return false;
+  }
+
+  const normalized = next.replace(/\n{3,}/g, "\n\n").trimEnd();
+  await writeFile(filePath, normalized.length > 0 ? `${normalized}\n` : "", "utf8");
+  return true;
 }
 
 export async function bootstrapCodex(options: BootstrapOptions): Promise<{ updated: boolean; path: string }> {
   const configPath = path.join(os.homedir(), ".codex", "config.toml");
   await upsertTomlMcp(configPath, "clarity_gateway", options);
   return { updated: true, path: configPath };
+}
+
+export async function unbootstrapCodex(): Promise<{ updated: boolean; path: string }> {
+  const configPath = path.join(os.homedir(), ".codex", "config.toml");
+  const updated = await removeTomlMcp(configPath, "clarity_gateway");
+  return { updated, path: configPath };
 }
 
 export async function bootstrapClaude(options: BootstrapOptions): Promise<{ updated: boolean; path: string }> {
@@ -89,6 +162,29 @@ export async function bootstrapClaude(options: BootstrapOptions): Promise<{ upda
   return { updated: true, path: configPath };
 }
 
+export async function unbootstrapClaude(): Promise<{ updated: boolean; path: string }> {
+  const configPath = path.join(os.homedir(), ".claude.json");
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+  } catch {
+    return { updated: false, path: configPath };
+  }
+
+  const mcpServers = (data.mcpServers as Record<string, unknown> | undefined) ?? {};
+  if (!Object.prototype.hasOwnProperty.call(mcpServers, "clarity_gateway")) {
+    return { updated: false, path: configPath };
+  }
+  delete mcpServers.clarity_gateway;
+  if (Object.keys(mcpServers).length > 0) {
+    data.mcpServers = mcpServers;
+  } else {
+    delete data.mcpServers;
+  }
+  await writeFile(configPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  return { updated: true, path: configPath };
+}
+
 export interface BootstrapClientStatus {
   client: "codex" | "claude";
   path: string;
@@ -103,9 +199,17 @@ export async function codexBootstrapStatus(): Promise<BootstrapClientStatus> {
   const configPath = path.join(os.homedir(), ".codex", "config.toml");
   try {
     const content = await readFile(configPath, "utf8");
-    const blockPattern = /\[mcp_servers\.clarity_gateway\][\s\S]*?(?=\n\[|$)/m;
-    const block = content.match(blockPattern)?.[0] ?? "";
-    const endpoint = block.match(/^\s*url\s*=\s*"([^"]+)"/m)?.[1];
+    const blockPattern = /\[mcp_servers\.clarity_gateway\][\s\S]*?(?=\n\[|$)/g;
+    const blocks = [...content.matchAll(blockPattern)].map((m) => m[0]);
+    const block = blocks.length > 0 ? blocks[blocks.length - 1] : "";
+    const endpoint = block.match(/^\s*(?:url|endpoint)\s*=\s*"([^"]+)"/m)?.[1];
+    const transportRaw = block.match(/^\s*transport\s*=\s*"([^"]+)"/m)?.[1]?.trim().toLowerCase();
+    const transport =
+      endpoint || transportRaw === "http" || transportRaw === "https" || transportRaw === "streamable_http"
+        ? ("http" as const)
+        : block.length > 0
+          ? ("stdio" as const)
+          : undefined;
     const command = block.match(/^\s*command\s*=\s*"([^"]+)"/m)?.[1];
     const argsRaw = block.match(/^\s*args\s*=\s*\[([^\]]*)\]/m)?.[1];
     const args = parseTomlStringArray(argsRaw);
@@ -113,8 +217,8 @@ export async function codexBootstrapStatus(): Promise<BootstrapClientStatus> {
       client: "codex",
       path: configPath,
       configured: block.length > 0,
-      ...(endpoint ? { transport: "http" as const, endpoint } : {}),
-      ...(!endpoint ? { transport: "stdio" as const } : {}),
+      ...(transport ? { transport } : {}),
+      ...(endpoint ? { endpoint } : {}),
       ...(command ? { command } : {}),
       ...(args.length > 0 ? { args } : {})
     };

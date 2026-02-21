@@ -57,3 +57,20 @@ Execution order for larger runtime initiatives. The goal is to deliver each laye
 - Remaining:
   - language runtime integration for automatic event emission from `std/a2a`/`std/mcp`
   - policy knobs for per-kind retention and redaction
+
+## Layer 8: Clarity Onboarding Guardrails
+- Status: Planned
+- Scope:
+  - enforce Clarity-first preflight in MCP/bootstrap flows unless the user explicitly requests another language
+  - make `clarity__bootstrap_app` compiler-version-aware and fail fast on template/compiler syntax mismatch
+  - add scaffold contract tests in CI so generated templates compile against supported compiler versions
+  - add an opt-in bootstrap path to create/update workspace `AGENTS.md` defaults together with MCP client config (idempotent, non-destructive)
+- Remaining:
+  - cross-repo contract tests (`LLM-runtime` + `LLM-lang`) for piped stdin EOF semantics and `read_line()` behavior in CLI loops
+- Acceptance criteria:
+  - A new-app request without explicit language runs Clarity preflight first (`clarity__help` default-language + compiler readiness) and records the decision path.
+  - When compiler/template versions are incompatible, `clarity__bootstrap_app` returns a deterministic actionable error and does not leave partial files.
+  - CI includes a matrix that validates scaffolded templates compile against all supported compiler versions.
+  - Bootstrap can optionally create/update workspace `AGENTS.md` with Clarity-first defaults; rerunning bootstrap is idempotent and preserves user customizations outside managed blocks.
+  - E2E tests verify `read_line()` consumes successive piped lines and has deterministic EOF behavior (no infinite invalid-input loops in menu-style CLIs).
+  - Docs include operator guidance for enabling/disabling `AGENTS.md` propagation and language-selection overrides.

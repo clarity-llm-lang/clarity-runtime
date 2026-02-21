@@ -35,6 +35,7 @@
 - `POST /api/services/apply`: apply manifest.
 - `POST /api/services/:id/start|stop|restart|introspect|unquarantine`.
 - `POST /api/bootstrap`: write Codex/Claude client registration (`transport=stdio|http`; `endpoint` required for http).
+- `DELETE /api/bootstrap`: remove Codex/Claude `clarity_gateway` registration.
 - `GET /api/bootstrap/status`: read Codex/Claude bootstrap configuration status and file paths.
 
 ## Built-in MCP Control Tools
@@ -92,7 +93,7 @@
 - `clarityctl add-all [dir] [--recursive]`
 - `clarityctl add-remote --endpoint ... --module ... [--timeout-ms ...] [--allow-tools ...] [--max-payload-bytes ...] [--max-concurrency ...]`
 - Legacy compatibility: `clarityctl add-local ...`, `clarityctl start-source ...`
-- `clarityctl list|status|start|stop|restart|introspect|details|logs|bootstrap|doctor` (`bootstrap` supports stdio/http client config; `doctor` checks daemon, compiler, workspace)
+- `clarityctl list|status|start|stop|restart|introspect|details|logs|bootstrap|bootstrap-remove|doctor` (`bootstrap` supports stdio/http client config; `bootstrap-remove` removes client registrations; `doctor` checks daemon, compiler, workspace)
 - `clarityctl gateway serve --stdio`
 
 ## Planned Next
