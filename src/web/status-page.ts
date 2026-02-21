@@ -316,12 +316,6 @@ export function renderStatusPage(): string {
       gap: 8px;
       margin-bottom: 8px;
     }
-    .trigger-filters {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
     .run-summary {
       display: grid;
       gap: 4px;
@@ -446,15 +440,6 @@ export function renderStatusPage(): string {
 
     <div id="agents-panel" style="display:none">
       <div class="grid" id="agent-summary"></div>
-      <div class="trigger-filters" id="agent-trigger-filters">
-        <button class="btn ghost" data-trigger-filter="all" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">All Triggers</button>
-        <button class="btn ghost" data-trigger-filter="timer" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">Timer</button>
-        <button class="btn ghost" data-trigger-filter="event" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">Event</button>
-        <button class="btn ghost" data-trigger-filter="call" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">Call</button>
-        <button class="btn ghost" data-trigger-filter="api" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">API</button>
-        <button class="btn ghost" data-trigger-filter="a2a" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">A2A</button>
-        <button class="btn ghost" data-trigger-filter="unknown" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">Unknown</button>
-      </div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -487,7 +472,6 @@ let latestRuntimeTools = [];
 let latestClarityTools = [];
 let latestServices = [];
 let activeTab = 'mcp';
-let activeAgentTriggerFilter = 'all';
 let bootstrapFormDirty = false;
 let bootstrapFormInitialized = false;
 let bootstrapActionMessage = '';
@@ -543,16 +527,6 @@ function normalizeTrigger(value) {
 function triggerBadge(value) {
   const trigger = normalizeTrigger(value);
   return '<span class="trigger">' + esc(trigger) + '</span>';
-}
-
-function setAgentTriggerFilter(value) {
-  const next = String(value || 'all').toLowerCase();
-  if (next === 'all' || next === 'timer' || next === 'event' || next === 'call' || next === 'api' || next === 'a2a' || next === 'unknown') {
-    activeAgentTriggerFilter = next;
-  } else {
-    activeAgentTriggerFilter = 'all';
-  }
-  refresh();
 }
 
 function summaryCards(data) {
@@ -1303,7 +1277,7 @@ async function refresh() {
     const mcpServices = services.filter((svc) => classifyServiceType(svc) === 'mcp');
     const agentServices = services.filter((svc) => classifyServiceType(svc) === 'agent');
     const agentRuns = Array.isArray(agentRunsBody && agentRunsBody.items) ? agentRunsBody.items : [];
-    const filteredAgentRuns = filterRunsByTrigger(agentRuns, activeAgentTriggerFilter);
+    const filteredAgentRuns = agentRuns;
     const agentEvents = Array.isArray(agentEventsBody && agentEventsBody.items) ? agentEventsBody.items : [];
     const runtimeTools = normalizeToolItems(data && data.systemTools && data.systemTools.runtime && data.systemTools.runtime.items);
     const clarityTools = normalizeToolItems(data && data.systemTools && data.systemTools.clarity && data.systemTools.clarity.items);
@@ -1322,15 +1296,6 @@ async function refresh() {
       systemServiceCount: 2
     });
     document.getElementById('agent-summary').innerHTML = agentSummaryCards(agentSummarySafe);
-    const triggerFilterRoot = document.getElementById('agent-trigger-filters');
-    if (triggerFilterRoot) {
-      const buttons = triggerFilterRoot.querySelectorAll('[data-trigger-filter]');
-      buttons.forEach((btn) => {
-        const selected = btn && btn.dataset ? btn.dataset.triggerFilter : '';
-        btn.classList.toggle('secondary', selected === activeAgentTriggerFilter || (activeAgentTriggerFilter === 'all' && selected === 'all'));
-      });
-    }
-
     const runtimeSystemRow = '<tr>' +
       '<td><strong>Runtime System</strong><div class="id code">system__runtime</div></td>' +
       '<td><span class="code">system</span></td>' +
