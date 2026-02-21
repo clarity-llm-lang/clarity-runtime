@@ -182,6 +182,20 @@ export function renderStatusPage(): string {
     .wait { background: rgba(217, 119, 6, 0.13); color: #935608; border-color: rgba(217, 119, 6, 0.32); }
     .stop { background: rgba(71, 85, 105, 0.12); color: #465b77; border-color: rgba(71, 85, 105, 0.28); }
     .crash { background: rgba(220, 38, 38, 0.12); color: #a72525; border-color: rgba(220, 38, 38, 0.35); }
+    .trigger {
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 10px;
+      font-weight: 700;
+      border: 1px solid rgba(53, 76, 116, 0.24);
+      background: rgba(255, 255, 255, 0.72);
+      color: #294260;
+      display: inline-block;
+      margin-right: 4px;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
 
     .code {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -296,6 +310,12 @@ export function renderStatusPage(): string {
       justify-content: space-between;
       gap: 8px;
       margin-bottom: 8px;
+    }
+    .trigger-filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
     }
 
     .audit {
@@ -417,6 +437,15 @@ export function renderStatusPage(): string {
 
     <div id="agents-panel" style="display:none">
       <div class="grid" id="agent-summary"></div>
+      <div class="trigger-filters" id="agent-trigger-filters">
+        <button class="btn ghost" data-trigger-filter="all" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">All Triggers</button>
+        <button class="btn ghost" data-trigger-filter="timer" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">Timer</button>
+        <button class="btn ghost" data-trigger-filter="event" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">Event</button>
+        <button class="btn ghost" data-trigger-filter="call" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">Call</button>
+        <button class="btn ghost" data-trigger-filter="api" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">API</button>
+        <button class="btn ghost" data-trigger-filter="a2a" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">A2A</button>
+        <button class="btn ghost" data-trigger-filter="unknown" onclick="setAgentTriggerFilter(this.dataset.triggerFilter)">Unknown</button>
+      </div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -426,26 +455,11 @@ export function renderStatusPage(): string {
               <th>Policy</th>
               <th>State</th>
               <th>Health</th>
-              <th>Interface</th>
+              <th>Runs</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody id="agent-service-rows"></tbody>
-        </table>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Run</th>
-              <th>Agent</th>
-              <th>Status</th>
-              <th>Counters</th>
-              <th>Updated</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="agent-rows"></tbody>
         </table>
       </div>
 
@@ -463,6 +477,7 @@ const agentDetailCache = {};
 let latestRuntimeTools = [];
 let latestClarityTools = [];
 let activeTab = 'mcp';
+let activeAgentTriggerFilter = 'all';
 let bootstrapFormDirty = false;
 let bootstrapFormInitialized = false;
 let bootstrapActionMessage = '';
@@ -505,6 +520,29 @@ function badge(state) {
         ? 'crash'
         : 'stop';
   return '<span class="badge ' + cls + '">' + esc(state) + '</span>';
+}
+
+function normalizeTrigger(value) {
+  const trigger = String(value || '').trim().toLowerCase();
+  if (trigger === 'timer' || trigger === 'event' || trigger === 'call' || trigger === 'api' || trigger === 'a2a') {
+    return trigger;
+  }
+  return 'unknown';
+}
+
+function triggerBadge(value) {
+  const trigger = normalizeTrigger(value);
+  return '<span class="trigger">' + esc(trigger) + '</span>';
+}
+
+function setAgentTriggerFilter(value) {
+  const next = String(value || 'all').toLowerCase();
+  if (next === 'all' || next === 'timer' || next === 'event' || next === 'call' || next === 'api' || next === 'a2a' || next === 'unknown') {
+    activeAgentTriggerFilter = next;
+  } else {
+    activeAgentTriggerFilter = 'all';
+  }
+  refresh();
 }
 
 function summaryCards(data) {
@@ -728,6 +766,14 @@ function classifyServiceType(svc) {
   return svc && svc.serviceType === 'agent' ? 'agent' : 'mcp';
 }
 
+function filterRunsByTrigger(runs, filter) {
+  const selected = String(filter || 'all');
+  if (selected === 'all') {
+    return Array.isArray(runs) ? runs : [];
+  }
+  return (Array.isArray(runs) ? runs : []).filter((run) => normalizeTrigger(run && run.trigger) === selected);
+}
+
 function renderSystemDetails(runtimeTools, clarityTools) {
   const runtimeItems = (runtimeTools || []).map((tool) => '<li class="code">' + esc(tool.name) + '</li>').join('');
   const clarityItems = (clarityTools || []).map((tool) => '<li class="code">' + esc(tool.name) + '</li>').join('');
@@ -827,7 +873,8 @@ function renderServiceDetails(serviceId, data) {
   '</div>';
 }
 
-function renderAgentRunDetails(runId, events) {
+function renderAgentRunDetails(run, events) {
+  const runId = String(run && run.runId || 'unknown');
   const lines = [];
   const flowNodes = ['run:' + runId];
   let lastNode = flowNodes[0];
@@ -876,15 +923,93 @@ function renderAgentRunDetails(runId, events) {
     const sid = evt.serviceId ? ' [' + esc(evt.serviceId) + ']' : '';
     return '<li class="code">' + formatLocalTime(evt.at) + ' · ' + esc(evt.kind) + sid + ' · ' + esc(evt.message) + '</li>';
   }).join('');
+  const triggerContext = run && run.triggerContext && typeof run.triggerContext === 'object' ? run.triggerContext : {};
+  const triggerContextEntries = Object.keys(triggerContext).sort().map((key) => (
+    '<li class="code"><strong>' + esc(key) + ':</strong> ' + esc(String(triggerContext[key])) + '</li>'
+  )).join('');
+  const triggeredBy = '<div class="detail-box">' +
+    '<h3 class="detail-title">Triggered By</h3>' +
+    '<div>' + triggerBadge(run && run.trigger) + '</div>' +
+    ((run && run.correlationId) ? '<div class="code">correlationId=' + esc(run.correlationId) + '</div>' : '') +
+    ((run && run.causationId) ? '<div class="code">causationId=' + esc(run.causationId) + '</div>' : '') +
+    ((run && run.trigger === 'a2a')
+      ? '<div class="code">A2A lineage: ' + esc((run.fromAgentId || 'unknown-agent')) + (run.parentRunId ? (' (run ' + run.parentRunId + ')') : '') + ' -> ' + esc(run.agent || 'unknown-agent') + ' (run ' + esc(runId) + ')</div>'
+      : '') +
+    (triggerContextEntries ? '<ul class="detail-list">' + triggerContextEntries + '</ul>' : '<div class="code">No trigger context provided.</div>') +
+  '</div>';
   return '<div class="detail-box">' +
     '<h3 class="detail-title">Run</h3>' +
     '<div class="code">' + esc(runId) + '</div>' +
+    triggeredBy +
     '<h3 class="detail-title">Flow</h3>' +
     flowStrip +
     '<h3 class="detail-title">Flow Trace</h3>' +
     '<pre class="code" style="margin:0; white-space:pre-wrap;">' + esc(lines.join('\\n') || 'No flow edges captured yet.') + '</pre>' +
     '<h3 class="detail-title">Events</h3>' +
     (rows ? '<ul class="detail-list">' + rows + '</ul>' : '<div class="code">No events for this run.</div>') +
+  '</div>';
+}
+
+function serviceAgentKeys(svc) {
+  const keys = new Set();
+  const push = (value) => {
+    if (typeof value !== 'string') return;
+    const v = value.trim().toLowerCase();
+    if (v) keys.add(v);
+  };
+  push(svc && svc.serviceId);
+  push(svc && svc.displayName);
+  push(svc && svc.module);
+  const agent = svc && svc.agent && typeof svc.agent === 'object' ? svc.agent : null;
+  if (agent) {
+    push(agent.agentId);
+    push(agent.name);
+  }
+  return keys;
+}
+
+function runBelongsToService(run, svc) {
+  if (!run || !svc) return false;
+  if (run.serviceId && svc.serviceId && String(run.serviceId) === String(svc.serviceId)) {
+    return true;
+  }
+  const keys = serviceAgentKeys(svc);
+  const runAgent = String(run.agent || '').trim().toLowerCase();
+  if (runAgent && keys.has(runAgent)) {
+    return true;
+  }
+  return false;
+}
+
+function renderAgentRunsForService(svc, allRuns) {
+  const matched = (Array.isArray(allRuns) ? allRuns : [])
+    .filter((run) => runBelongsToService(run, svc))
+    .slice(0, 12);
+  const chips = matched.slice(0, 4).map((run) => triggerBadge(run.trigger)).join('');
+  const summary = matched.length > 0
+    ? '<div class="code">' + matched.length + ' run(s) matched</div><div>' + chips + '</div>'
+    : '<div class="code">No runs matched this service yet.</div>';
+  const items = matched.map((run) => {
+    const runId = String(run.runId || 'unknown');
+    const key = runId;
+    const status = String(run.status || 'queued').toUpperCase();
+    const counters = 'steps=' + Number(run.stepCount || 0) + ', handoffs=' + Number(run.handoffCount || 0) + ', mcp=' + Number(run.toolCallCount || 0) + ', llm=' + Number(run.llmCallCount || 0) + (run.currentStepId ? ', current=' + String(run.currentStepId) : '');
+    const details = agentExpanded[key]
+      ? renderAgentRunDetails(run, agentDetailCache[key])
+      : '';
+    return '<div class="detail-box">' +
+      '<div><strong class="code">' + esc(runId) + '</strong> ' + badge(status) + ' ' + triggerBadge(run.trigger) + '</div>' +
+      '<div class="code">agent=' + esc(run.agent || 'unknown') + (run.serviceId ? ', service=' + esc(run.serviceId) : '') + '</div>' +
+      '<div class="code">' + esc(counters) + '</div>' +
+      '<div class="code">updated=' + formatLocalTime(run.updatedAt || '') + '</div>' +
+      '<div><button class="btn ghost" data-run-id="' + esc(runId) + '" onclick="toggleAgentDetails(this.dataset.runId)">Details</button></div>' +
+      details +
+    '</div>';
+  }).join('');
+  return '<div class="detail-box">' +
+    '<h3 class="detail-title">Recent Runs</h3>' +
+    summary +
+    (items || '') +
   '</div>';
 }
 
@@ -969,6 +1094,7 @@ async function refresh() {
     const mcpServices = services.filter((svc) => classifyServiceType(svc) === 'mcp');
     const agentServices = services.filter((svc) => classifyServiceType(svc) === 'agent');
     const agentRuns = Array.isArray(agentRunsBody && agentRunsBody.items) ? agentRunsBody.items : [];
+    const filteredAgentRuns = filterRunsByTrigger(agentRuns, activeAgentTriggerFilter);
     const agentEvents = Array.isArray(agentEventsBody && agentEventsBody.items) ? agentEventsBody.items : [];
     const runtimeTools = normalizeToolItems(data && data.systemTools && data.systemTools.runtime && data.systemTools.runtime.items);
     const clarityTools = normalizeToolItems(data && data.systemTools && data.systemTools.clarity && data.systemTools.clarity.items);
@@ -987,6 +1113,14 @@ async function refresh() {
       systemServiceCount: 2
     });
     document.getElementById('agent-summary').innerHTML = agentSummaryCards(agentSummarySafe);
+    const triggerFilterRoot = document.getElementById('agent-trigger-filters');
+    if (triggerFilterRoot) {
+      const buttons = triggerFilterRoot.querySelectorAll('[data-trigger-filter]');
+      buttons.forEach((btn) => {
+        const selected = btn && btn.dataset ? btn.dataset.triggerFilter : '';
+        btn.classList.toggle('secondary', selected === activeAgentTriggerFilter || (activeAgentTriggerFilter === 'all' && selected === 'all'));
+      });
+    }
 
     const runtimeSystemRow = '<tr>' +
       '<td><strong>Runtime System</strong><div class="id code">system__runtime</div></td>' +
@@ -1092,8 +1226,13 @@ async function refresh() {
       const healthLabel = esc(svc.health);
       const key = 'svc__' + svc.serviceId;
       const keyAttr = esc(key);
+      const matchedRuns = filteredAgentRuns.filter((run) => runBelongsToService(run, svc));
+      const runChips = matchedRuns.slice(0, 3).map((run) => triggerBadge(run.trigger)).join('');
+      const runColumn = matchedRuns.length > 0
+        ? '<div class="code">' + matchedRuns.length + ' run(s)</div><div>' + runChips + '</div>'
+        : '<div class="code">No runs</div>';
       const detailRow = expanded[key]
-        ? '<tr class="detail-row"><td colspan="7">' + renderServiceDetails(svc.serviceId, detailCache[key]) + '</td></tr>'
+        ? '<tr class="detail-row"><td colspan="7">' + renderServiceDetails(svc.serviceId, detailCache[key]) + renderAgentRunsForService(svc, filteredAgentRuns) + '</td></tr>'
         : '';
       return '<tr>' +
         '<td><strong>' + displayName + '</strong><div class="id code">' + serviceId + '</div><div class="id code">role=' + esc(roleLabel) + (objectiveLabel ? ', objective=' + esc(objectiveLabel) : '') + '</div></td>' +
@@ -1101,7 +1240,7 @@ async function refresh() {
         '<td><div class="code">' + restartLabel + '</div>' + (remotePolicy ? '<div class="id code">' + remotePolicyLabel + '</div>' : '') + '</td>' +
         '<td>' + badge(svc.lifecycle) + '</td>' +
         '<td><span class="code">' + healthLabel + '</span></td>' +
-        '<td>' + toolCount + ' tools, ' + resCount + ' resources, ' + promptCount + ' prompts</td>' +
+        '<td>' + runColumn + '</td>' +
         '<td>' +
           '<button class="btn ghost" data-key="' + keyAttr + '" data-kind="service" data-service="' + serviceId + '" onclick="toggleDetails(this.dataset.key,this.dataset.kind,this.dataset.service)">Details</button>' +
           '<button class="btn" data-service="' + serviceId + '" data-op="start" onclick="action(this.dataset.service,this.dataset.op)">Start</button>' +
@@ -1115,25 +1254,6 @@ async function refresh() {
       '</tr>' + detailRow;
     }).join('');
     document.getElementById('agent-service-rows').innerHTML = agentServiceRows || '<tr><td colspan="7" style="color:var(--panel-muted)">No agent services registered</td></tr>';
-
-    const agentRows = agentRuns.map((run) => {
-      const runId = esc(run.runId || 'unknown');
-      const key = String(run.runId || '');
-      const status = String(run.status || 'queued').toUpperCase();
-      const counters = 'steps=' + Number(run.stepCount || 0) + ', handoffs=' + Number(run.handoffCount || 0) + ', mcp=' + Number(run.toolCallCount || 0) + ', llm=' + Number(run.llmCallCount || 0) + (run.currentStepId ? ', current=' + String(run.currentStepId) : '');
-      const detailRow = agentExpanded[key]
-        ? '<tr class="detail-row"><td colspan="6">' + renderAgentRunDetails(key, agentDetailCache[key]) + '</td></tr>'
-        : '';
-      return '<tr>' +
-        '<td><strong class="code">' + runId + '</strong></td>' +
-        '<td><span class="code">' + esc(run.agent || 'unknown') + '</span></td>' +
-        '<td>' + badge(status) + '</td>' +
-        '<td><span class="code">' + esc(counters) + '</span></td>' +
-        '<td><span class="code">' + formatLocalTime(run.updatedAt || '') + '</span></td>' +
-        '<td><button class="btn ghost" data-run-id="' + runId + '" onclick="toggleAgentDetails(this.dataset.runId)">Details</button></td>' +
-      '</tr>' + detailRow;
-    }).join('');
-    document.getElementById('agent-rows').innerHTML = agentRows || '<tr><td colspan="6" style="color:var(--panel-muted)">No agent runs yet</td></tr>';
 
     const bootstrapClients = Array.isArray(bootstrap && bootstrap.clients) ? bootstrap.clients : [];
     const bootstrapTransportEl = document.getElementById('bootstrap-transport');
@@ -1209,7 +1329,6 @@ async function refresh() {
     document.getElementById('bootstrap-config').innerHTML = '<div class="code" style="color:#a72525">UI render error</div>';
     document.getElementById('audit').innerHTML = '<li class="audit-item"><div class="audit-msg" style="color:#a72525">UI render error</div></li>';
     document.getElementById('agent-summary').innerHTML = agentSummaryCards({ totalRuns: 0, running: 0, waiting: 0, completed: 0, failed: 0, cancelled: 0 });
-    document.getElementById('agent-rows').innerHTML = '<tr><td colspan="6" style="color:#a72525">UI render error: ' + String(error) + '</td></tr>';
     document.getElementById('agent-audit').innerHTML = '<li class="audit-item"><div class="audit-msg" style="color:#a72525">UI render error</div></li>';
   }
 }

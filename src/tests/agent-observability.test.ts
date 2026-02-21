@@ -128,11 +128,13 @@ test("ServiceManager summarizes agent runs from durable events", async () => {
     assert.equal(run1?.stepCount, 1);
     assert.equal(run1?.toolCallCount, 1);
     assert.equal(run1?.handoffCount, 1);
+    assert.equal(run1?.trigger, "call");
 
     const run2 = runs.find((run) => run.runId === "run-2");
     assert.ok(run2);
     assert.equal(run2?.status, "failed");
     assert.equal(run2?.failureReason, "timeout");
+    assert.equal(run2?.trigger, "unknown");
   } finally {
     await manager.shutdown();
     await rm(root, { recursive: true, force: true });
@@ -185,6 +187,64 @@ test("agent HTTP endpoints accept events and return run timeline", async () => {
     const eventItems = asObject(runEvents.body).items as Array<Record<string, unknown>>;
     assert.ok(eventItems.length >= 2);
     assert.ok(eventItems.every((item) => String(item.kind).startsWith("agent.")));
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("agent.run_created validates trigger context contract", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-agent-trigger-validation-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"));
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const bad = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_created",
+        message: "Missing trigger context",
+        runId: "run-trigger-bad",
+        agent: "planner",
+        data: {
+          trigger: "api",
+          route: "/api/agents/start"
+        }
+      })
+    });
+    assert.equal(bad.status, 400);
+
+    const good = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_created",
+        message: "Valid trigger context",
+        runId: "run-trigger-good",
+        agent: "planner",
+        data: {
+          trigger: "api",
+          route: "/api/agents/start",
+          method: "POST",
+          requestId: "req-1",
+          caller: "ui"
+        }
+      })
+    });
+    assert.equal(good.status, 200);
+
+    const runs = await jsonRequest(runtime.baseUrl, "/api/agents/runs?limit=20");
+    assert.equal(runs.status, 200);
+    const runItems = asObject(runs.body).items as Array<Record<string, unknown>>;
+    const found = runItems.find((item) => String(item.runId) === "run-trigger-good");
+    assert.ok(found);
+    assert.equal(String(found?.trigger), "api");
   } finally {
     await manager.shutdown();
     await runtime.close();

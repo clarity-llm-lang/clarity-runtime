@@ -142,6 +142,56 @@ function parseLimit(value: string | null, fallback: number, min = 1, max = 2000)
   return Math.min(max, Math.max(min, Math.floor(parsed)));
 }
 
+function asObject(input: unknown): Record<string, unknown> {
+  if (!input || typeof input !== "object") {
+    return {};
+  }
+  return input as Record<string, unknown>;
+}
+
+function nonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function getField(data: Record<string, unknown>, key: string): unknown {
+  if (data[key] !== undefined) {
+    return data[key];
+  }
+  const snake = key.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`);
+  return data[snake];
+}
+
+function validateAgentRunCreatedPayload(payload: Record<string, unknown>): string | null {
+  const triggerRaw = nonEmptyString(getField(payload, "trigger") ?? getField(payload, "triggerType") ?? getField(payload, "source"));
+  if (!triggerRaw) {
+    return null;
+  }
+  const trigger = triggerRaw.toLowerCase();
+  const allowed = new Set(["timer", "event", "call", "api", "a2a"]);
+  if (!allowed.has(trigger)) {
+    return "invalid trigger: expected one of timer|event|call|api|a2a";
+  }
+  const triggerContext = asObject(payload.triggerContext ?? payload.trigger_context);
+  const hasField = (key: string): boolean => {
+    const value = getField(triggerContext, key) ?? getField(payload, key);
+    return nonEmptyString(value) !== null;
+  };
+  const requiredByTrigger: Record<string, string[]> = {
+    timer: ["scheduleId", "scheduleExpr", "firedAt"],
+    event: ["eventType", "eventId", "correlationId", "producer"],
+    call: ["callerType", "callerId"],
+    api: ["route", "method", "requestId", "caller"],
+    a2a: ["parentRunId", "fromAgentId", "handoffReason"]
+  };
+  const missing = requiredByTrigger[trigger].filter((key) => !hasField(key));
+  if (missing.length > 0) {
+    return `missing trigger context for ${trigger}: ${missing.join(", ")}`;
+  }
+  return null;
+}
+
 export async function handleHttp(
   manager: ServiceManager,
   req: IncomingMessage,
@@ -363,6 +413,13 @@ export async function handleHttp(
         ...(stepId ? { stepId } : {}),
         ...(agent ? { agent } : {})
       };
+      if (kind === "agent.run_created") {
+        const validationError = validateAgentRunCreatedPayload(data);
+        if (validationError) {
+          json(res, 400, { error: validationError });
+          return;
+        }
+      }
       const message = typeof body.message === "string" && body.message.trim().length > 0
         ? body.message
         : `${kind}${runId ? ` (${runId})` : ""}`;

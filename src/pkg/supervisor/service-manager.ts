@@ -101,10 +101,18 @@ export interface AuditEvent {
 }
 
 export type AgentRunStatus = "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled";
+export type AgentTriggerType = "timer" | "event" | "call" | "api" | "a2a" | "unknown";
 
 export interface AgentRunSummary {
   runId: string;
   agent: string;
+  serviceId?: string;
+  trigger: AgentTriggerType;
+  triggerContext?: Record<string, unknown>;
+  causationId?: string;
+  correlationId?: string;
+  parentRunId?: string;
+  fromAgentId?: string;
   status: AgentRunStatus;
   startedAt?: string;
   updatedAt: string;
@@ -124,6 +132,45 @@ export interface AgentRunSummary {
 interface WorkerValue {
   kind: "undefined" | "string" | "number" | "boolean" | "bigint";
   value?: string | number | boolean;
+}
+
+function asNonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeTrigger(value: unknown): AgentTriggerType {
+  const trigger = String(value ?? "").trim().toLowerCase();
+  if (trigger === "timer" || trigger === "event" || trigger === "call" || trigger === "api" || trigger === "a2a") {
+    return trigger;
+  }
+  return "unknown";
+}
+
+function pickTriggerContext(trigger: AgentTriggerType, payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  const base = asObject(payload.triggerContext ?? payload.trigger_context);
+  const out: Record<string, unknown> = { ...base };
+  const keysets: Record<Exclude<AgentTriggerType, "unknown">, string[]> = {
+    timer: ["scheduleId", "scheduleExpr", "firedAt"],
+    event: ["eventType", "eventId", "correlationId", "producer"],
+    api: ["route", "method", "requestId", "caller"],
+    a2a: ["parentRunId", "fromAgentId", "handoffReason"],
+    call: ["callerType", "callerId"]
+  };
+  const keys = trigger === "unknown" ? [] : keysets[trigger];
+  for (const key of keys) {
+    const camel = payload[key];
+    const snake = payload[key.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`) as keyof typeof payload];
+    if (camel !== undefined && out[key] === undefined) {
+      out[key] = camel;
+    } else if (snake !== undefined && out[key] === undefined) {
+      out[key] = snake;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 type WorkerResponse =
@@ -669,6 +716,13 @@ export class ServiceManager {
       const current = runs.get(runId) ?? {
         runId,
         agent,
+        serviceId: event.serviceId,
+        trigger: "unknown" as AgentRunSummary["trigger"],
+        triggerContext: undefined,
+        causationId: undefined,
+        correlationId: undefined,
+        parentRunId: undefined,
+        fromAgentId: undefined,
         status: "queued" as AgentRunStatus,
         startedAt: undefined,
         updatedAt: event.at,
@@ -686,12 +740,26 @@ export class ServiceManager {
         seenStepIds: new Set<string>()
       };
       current.agent = agent;
+      current.causationId = asNonEmptyString(payload.causationId ?? payload.causation_id) ?? current.causationId;
+      current.correlationId = asNonEmptyString(payload.correlationId ?? payload.correlation_id) ?? current.correlationId;
+      current.parentRunId = asNonEmptyString(payload.parentRunId ?? payload.parent_run_id) ?? current.parentRunId;
+      current.fromAgentId = asNonEmptyString(payload.fromAgentId ?? payload.from_agent_id ?? payload.from) ?? current.fromAgentId;
+      if (event.serviceId && event.serviceId.trim().length > 0) {
+        current.serviceId = event.serviceId.trim();
+      } else {
+        const payloadServiceId = String(payload.serviceId ?? payload.service_id ?? "").trim();
+        if (payloadServiceId) {
+          current.serviceId = payloadServiceId;
+        }
+      }
       current.updatedAt = event.at;
       current.eventCount += 1;
       current.lastEventKind = event.kind;
       current.lastEventMessage = event.message;
 
       if (event.kind === "agent.run_created") {
+        current.trigger = normalizeTrigger(payload.trigger ?? payload.triggerType ?? payload.trigger_type ?? payload.source);
+        current.triggerContext = pickTriggerContext(current.trigger, payload) ?? current.triggerContext;
         current.status = "queued";
       } else if (event.kind === "agent.run_started") {
         current.status = "running";
@@ -719,10 +787,25 @@ export class ServiceManager {
           current.currentStepId = undefined;
         }
       } else if (event.kind === "agent.handoff") {
+        if (current.trigger === "unknown") {
+          current.trigger = "a2a";
+        }
+        if (!current.parentRunId) {
+          current.parentRunId = asNonEmptyString(payload.parentRunId ?? payload.parent_run_id) ?? current.parentRunId;
+        }
+        if (!current.fromAgentId) {
+          current.fromAgentId = asNonEmptyString(payload.fromAgentId ?? payload.from_agent_id ?? payload.from) ?? current.fromAgentId;
+        }
         current.handoffCount += 1;
       } else if (event.kind === "agent.tool_called") {
+        if (current.trigger === "unknown") {
+          current.trigger = "call";
+        }
         current.toolCallCount += 1;
       } else if (event.kind === "agent.llm_called") {
+        if (current.trigger === "unknown") {
+          current.trigger = "call";
+        }
         current.llmCallCount += 1;
       } else if (event.kind === "agent.run_completed") {
         current.status = "completed";
@@ -749,6 +832,13 @@ export class ServiceManager {
       .map((run) => ({
         runId: run.runId,
         agent: run.agent,
+        serviceId: run.serviceId,
+        trigger: run.trigger,
+        triggerContext: run.triggerContext,
+        causationId: run.causationId,
+        correlationId: run.correlationId,
+        parentRunId: run.parentRunId,
+        fromAgentId: run.fromAgentId,
         status: run.status,
         startedAt: run.startedAt,
         updatedAt: run.updatedAt,
