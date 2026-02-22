@@ -38,6 +38,16 @@ function validateAgentDescriptor(value: unknown): void {
       throw new Error(`invalid manifest: metadata.agent.${key} must be a non-empty string`);
     }
   }
+  const allowedTriggers = new Set(["timer", "event", "api", "a2a"]);
+  const triggers = obj.triggers;
+  if (!Array.isArray(triggers) || triggers.length === 0) {
+    throw new Error("invalid manifest: metadata.agent.triggers must be a non-empty array");
+  }
+  for (const trigger of triggers) {
+    if (typeof trigger !== "string" || !allowedTriggers.has(trigger)) {
+      throw new Error("invalid manifest: metadata.agent.triggers must only include timer|event|api|a2a");
+    }
+  }
   for (const key of ["inputs", "outputs", "allowedMcpTools", "allowedLlmProviders", "handoffTargets", "dependsOn"] as const) {
     if (obj[key] !== undefined && !asStringArray(obj[key])) {
       throw new Error(`invalid manifest: metadata.agent.${key} must be an array of strings when provided`);

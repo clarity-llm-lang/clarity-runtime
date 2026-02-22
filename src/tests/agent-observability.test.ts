@@ -98,6 +98,12 @@ test("ServiceManager summarizes agent runs from durable events", async () => {
       data: { runId: "run-1", agent: "planner", to: "writer" }
     });
     manager.recordRuntimeEvent({
+      kind: "agent.waiting",
+      level: "info",
+      message: "Waiting for approval",
+      data: { runId: "run-1", agent: "planner", reason: "needs human approval" }
+    });
+    manager.recordRuntimeEvent({
       kind: "agent.run_completed",
       level: "info",
       message: "Run completed",
@@ -128,11 +134,14 @@ test("ServiceManager summarizes agent runs from durable events", async () => {
     assert.equal(run1?.stepCount, 1);
     assert.equal(run1?.toolCallCount, 1);
     assert.equal(run1?.handoffCount, 1);
+    assert.equal(run1?.trigger, "a2a");
+    assert.equal(run1?.waitingReason, undefined);
 
     const run2 = runs.find((run) => run.runId === "run-2");
     assert.ok(run2);
     assert.equal(run2?.status, "failed");
     assert.equal(run2?.failureReason, "timeout");
+    assert.equal(run2?.trigger, "unknown");
   } finally {
     await manager.shutdown();
     await rm(root, { recursive: true, force: true });
@@ -185,7 +194,180 @@ test("agent HTTP endpoints accept events and return run timeline", async () => {
     const eventItems = asObject(runEvents.body).items as Array<Record<string, unknown>>;
     assert.ok(eventItems.length >= 2);
     assert.ok(eventItems.every((item) => String(item.kind).startsWith("agent.")));
+
+    const hitl = await jsonRequest(runtime.baseUrl, "/api/agents/runs/run-http-1/hitl", {
+      method: "POST",
+      body: JSON.stringify({
+        message: `token=abc123 bearer sk-abcdef1234567890 ${"x".repeat(2600)}`
+      })
+    });
+    assert.equal(hitl.status, 200);
+    const hitlBody = asObject(hitl.body);
+    assert.equal(Boolean(hitlBody.ok), true);
+    assert.equal(Boolean(hitlBody.message_truncated), true);
+    assert.equal(Boolean(hitlBody.message_redacted), true);
+
+    const runEventsAfterHitl = await jsonRequest(runtime.baseUrl, "/api/agents/runs/run-http-1/events?limit=30");
+    assert.equal(runEventsAfterHitl.status, 200);
+    const hitlItems = asObject(runEventsAfterHitl.body).items as Array<Record<string, unknown>>;
+    const latestHitl = hitlItems.find((item) => String(item.kind) === "agent.hitl_input");
+    assert.ok(latestHitl);
+    const latestHitlData = asObject(latestHitl?.data);
+    assert.equal(typeof latestHitlData.message, "string");
+    assert.ok(String(latestHitlData.message).length <= 2000);
+    assert.match(String(latestHitlData.message), /\[REDACTED\]/);
+    assert.equal(Boolean(latestHitlData.messageTruncated), true);
+    assert.equal(Boolean(latestHitlData.messageRedacted), true);
+
+    const completeRun = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_completed",
+        message: "Run completed",
+        runId: "run-http-1",
+        agent: "coordinator"
+      })
+    });
+    assert.equal(completeRun.status, 200);
+
+    const hitlAfterCompletion = await jsonRequest(runtime.baseUrl, "/api/agents/runs/run-http-1/hitl", {
+      method: "POST",
+      body: JSON.stringify({
+        message: "approve after completion"
+      })
+    });
+    assert.equal(hitlAfterCompletion.status, 409);
+    assert.equal(String(asObject(hitlAfterCompletion.body).status), "completed");
   } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("agent.run_created validates trigger context contract", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-agent-trigger-validation-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"));
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const bad = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_created",
+        message: "Missing trigger context",
+        runId: "run-trigger-bad",
+        agent: "planner",
+        data: {
+          trigger: "api",
+          route: "/api/agents/start"
+        }
+      })
+    });
+    assert.equal(bad.status, 400);
+
+    const good = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_created",
+        message: "Valid trigger context",
+        runId: "run-trigger-good",
+        agent: "planner",
+        data: {
+          trigger: "api",
+          route: "/api/agents/start",
+          method: "POST",
+          requestId: "req-1",
+          caller: "ui"
+        }
+      })
+    });
+    assert.equal(good.status, 200);
+
+    const runs = await jsonRequest(runtime.baseUrl, "/api/agents/runs?limit=20");
+    assert.equal(runs.status, 200);
+    const runItems = asObject(runs.body).items as Array<Record<string, unknown>>;
+    const found = runItems.find((item) => String(item.runId) === "run-trigger-good");
+    assert.ok(found);
+    assert.equal(String(found?.trigger), "api");
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("HITL broker endpoints support question-answer lifecycle", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-hitl-broker-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"));
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const prevHitlDir = process.env.CLARITY_HITL_DIR;
+  process.env.CLARITY_HITL_DIR = path.join(root, "hitl");
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const create = await jsonRequest(runtime.baseUrl, "/questions", {
+      method: "POST",
+      body: JSON.stringify({
+        key: "review-step-3",
+        question: "Does this summary look correct?",
+        timestamp: Date.now()
+      })
+    });
+    assert.equal(create.status, 200);
+
+    const listPending = await jsonRequest(runtime.baseUrl, "/questions");
+    assert.equal(listPending.status, 200);
+    const pending = listPending.body as Array<Record<string, unknown>>;
+    assert.ok(Array.isArray(pending));
+    assert.ok(pending.some((row) => String(row.key) === "review-step-3"));
+
+    const pendingState = await jsonRequest(runtime.baseUrl, "/questions/review-step-3");
+    assert.equal(pendingState.status, 200);
+    assert.equal(String(asObject(pendingState.body).status), "pending");
+
+    const answer = await jsonRequest(runtime.baseUrl, "/answer", {
+      method: "POST",
+      body: JSON.stringify({
+        key: "review-step-3",
+        response: "Looks good, proceed"
+      })
+    });
+    assert.equal(answer.status, 200);
+
+    const answeredState = await jsonRequest(runtime.baseUrl, "/questions/review-step-3");
+    assert.equal(answeredState.status, 200);
+    assert.equal(String(asObject(answeredState.body).status), "answered");
+    assert.equal(String(asObject(answeredState.body).response), "Looks good, proceed");
+
+    const cancel = await jsonRequest(runtime.baseUrl, "/cancel", {
+      method: "POST",
+      body: JSON.stringify({
+        key: "review-step-3"
+      })
+    });
+    assert.equal(cancel.status, 200);
+
+    const missingState = await jsonRequest(runtime.baseUrl, "/questions/review-step-3");
+    assert.equal(missingState.status, 200);
+    assert.equal(String(asObject(missingState.body).status), "missing");
+  } finally {
+    if (prevHitlDir === undefined) {
+      delete process.env.CLARITY_HITL_DIR;
+    } else {
+      process.env.CLARITY_HITL_DIR = prevHitlDir;
+    }
     await manager.shutdown();
     await runtime.close();
     await rm(root, { recursive: true, force: true });

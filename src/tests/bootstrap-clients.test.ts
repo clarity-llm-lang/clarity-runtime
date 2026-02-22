@@ -3,7 +3,13 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { bootstrapCodex, codexBootstrapStatus, unbootstrapClaude, unbootstrapCodex } from "../pkg/bootstrap/clients.js";
+import {
+  bootstrapCodex,
+  codexBootstrapStatus,
+  unbootstrapClaude,
+  unbootstrapCodex,
+  upsertWorkspaceAgentsDefaults
+} from "../pkg/bootstrap/clients.js";
 
 test("bootstrapCodex replaces existing clarity_gateway blocks with a single updated block", async () => {
   const originalHome = process.env.HOME;
@@ -147,5 +153,32 @@ test("codexBootstrapStatus uses the latest clarity_gateway block and accepts end
       process.env.HOME = originalHome;
     }
     await rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test("upsertWorkspaceAgentsDefaults is idempotent and preserves non-managed AGENTS.md content", async () => {
+  const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "clarity-agents-md-"));
+  const agentsPath = path.join(tmpRoot, "AGENTS.md");
+  try {
+    await writeFile(
+      agentsPath,
+      ["# Team Instructions", "", "- Keep existing conventions.", "", "## Notes", "- Do not remove."].join("\n"),
+      "utf8"
+    );
+
+    const first = await upsertWorkspaceAgentsDefaults(tmpRoot);
+    assert.equal(first.updated, true);
+    const afterFirst = await readFile(agentsPath, "utf8");
+    assert.match(afterFirst, /# Team Instructions/);
+    assert.match(afterFirst, /Keep existing conventions/);
+    assert.match(afterFirst, /clarity-runtime:managed:clarity-defaults:start/);
+    assert.match(afterFirst, /Default language for this workspace: Clarity/);
+
+    const second = await upsertWorkspaceAgentsDefaults(tmpRoot);
+    assert.equal(second.updated, false);
+    const afterSecond = await readFile(agentsPath, "utf8");
+    assert.equal(afterSecond, afterFirst);
+  } finally {
+    await rm(tmpRoot, { recursive: true, force: true });
   }
 });
