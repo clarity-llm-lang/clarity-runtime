@@ -763,6 +763,8 @@ export class ServiceManager {
       } else if (event.kind === "agent.run_started") {
         current.status = "running";
         current.startedAt ??= event.at;
+        current.waitingReason = undefined;
+        current.failureReason = undefined;
       } else if (event.kind === "agent.waiting") {
         current.status = "waiting";
         const reason = String(payload.reason ?? payload.waitingReason ?? "").trim();
@@ -804,16 +806,21 @@ export class ServiceManager {
         current.status = "completed";
         current.completedAt = event.at;
         current.currentStepId = undefined;
+        current.waitingReason = undefined;
+        current.failureReason = undefined;
       } else if (event.kind === "agent.run_failed") {
         current.status = "failed";
         current.completedAt = event.at;
         current.currentStepId = undefined;
+        current.waitingReason = undefined;
         const failure = String(payload.error ?? payload.reason ?? "").trim();
         current.failureReason = failure || event.message;
       } else if (event.kind === "agent.run_cancelled") {
         current.status = "cancelled";
         current.completedAt = event.at;
         current.currentStepId = undefined;
+        current.waitingReason = undefined;
+        current.failureReason = undefined;
       }
 
       runs.set(runId, current);

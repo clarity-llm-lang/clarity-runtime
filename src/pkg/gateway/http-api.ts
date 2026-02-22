@@ -16,6 +16,15 @@ import {
   upsertRemoteAuthSecret,
   validateRemoteAuthRef
 } from "../security/remote-auth.js";
+import {
+  answerQuestion,
+  cancelQuestion,
+  getQuestionByKey,
+  listBrokerState,
+  listQuestions,
+  readQuestionState,
+  submitQuestion
+} from "../hitl/broker.js";
 
 const CLARITY_SYSTEM_TOOLS = [
   { name: "clarity__help", description: "Clarity-first guidance and workflow hints for LLM usage." },
@@ -59,6 +68,8 @@ const FAVICON_PNG_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../../assets/clarity-github-avatar.png"
 );
+const DEFAULT_HITL_EVENT_KIND = "agent.hitl_input";
+const HITL_MAX_MESSAGE_CHARS = parsePositiveIntegerEnv(process.env.CLARITY_HITL_MAX_MESSAGE_CHARS, 2000);
 
 function json(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -142,6 +153,14 @@ function parseLimit(value: string | null, fallback: number, min = 1, max = 2000)
   return Math.min(max, Math.max(min, Math.floor(parsed)));
 }
 
+function parsePositiveIntegerEnv(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
 function asObject(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object") {
     return {};
@@ -161,6 +180,63 @@ function getField(data: Record<string, unknown>, key: string): unknown {
   }
   const snake = key.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`);
   return data[snake];
+}
+
+function findAgentRun(manager: ServiceManager, runId: string): ReturnType<ServiceManager["getAgentRuns"]>[number] | null {
+  const target = runId.trim();
+  if (!target) {
+    return null;
+  }
+  const runs = manager.getAgentRuns(2000);
+  for (const run of runs) {
+    if (run.runId === target) {
+      return run;
+    }
+  }
+  return null;
+}
+
+function isTerminalAgentRunStatus(status: unknown): boolean {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  return normalized === "completed" || normalized === "failed" || normalized === "cancelled";
+}
+
+function sanitizeHitlMessage(input: string, maxChars: number): {
+  message: string;
+  originalLength: number;
+  storedLength: number;
+  truncated: boolean;
+  redacted: boolean;
+} {
+  const originalLength = input.length;
+  let next = input;
+
+  const redactRules: Array<{ pattern: RegExp; replace: string }> = [
+    { pattern: /\b(bearer)\s+[A-Za-z0-9._-]+/gi, replace: "$1 [REDACTED]" },
+    { pattern: /\b(api[_-]?key|token|password|secret)\s*[:=]\s*([^\s,;]+)/gi, replace: "$1=[REDACTED]" },
+    { pattern: /\bsk-[A-Za-z0-9]{8,}\b/g, replace: "sk-[REDACTED]" }
+  ];
+  let redacted = false;
+  for (const rule of redactRules) {
+    const replaced = next.replace(rule.pattern, rule.replace);
+    if (replaced !== next) {
+      redacted = true;
+      next = replaced;
+    }
+  }
+
+  const truncated = next.length > maxChars;
+  if (truncated) {
+    next = next.slice(0, maxChars);
+  }
+
+  return {
+    message: next,
+    originalLength,
+    storedLength: next.length,
+    truncated,
+    redacted
+  };
 }
 
 function validateAgentRunCreatedPayload(payload: Record<string, unknown>): string | null {
@@ -251,7 +327,15 @@ export async function handleHttp(
       return;
     }
 
-    if (url.pathname.startsWith("/api/") || url.pathname === "/mcp") {
+    if (
+      url.pathname.startsWith("/api/")
+      || url.pathname === "/mcp"
+      || url.pathname === "/questions"
+      || url.pathname.startsWith("/questions/")
+      || url.pathname === "/answer"
+      || url.pathname === "/cancel"
+      || url.pathname === "/events"
+    ) {
       const auth = authorizeRequest(req, url, authConfig);
       if (!auth.ok) {
         if (auth.status === 401) {
@@ -287,6 +371,179 @@ export async function handleHttp(
       req.on("close", () => {
         clearInterval(keepAlive);
         unsubscribe();
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/questions") {
+      const items = await listQuestions({
+        env: process.env,
+        cwd: process.cwd()
+      });
+      json(res, 200, items
+        .filter((item) => !item.answered)
+        .map((item) => ({
+          key: item.key,
+          question: item.question,
+          timestamp: item.timestamp,
+          ...(item.pid !== undefined ? { pid: item.pid } : {}),
+          ageSeconds: item.ageSeconds
+        })));
+      return;
+    }
+
+    const questionByKeyMatch = url.pathname.match(/^\/questions\/([^/]+)$/);
+    if (method === "GET" && questionByKeyMatch) {
+      const key = decodeURIComponent(questionByKeyMatch[1]);
+      json(res, 200, await readQuestionState(key, {
+        env: process.env,
+        cwd: process.cwd()
+      }));
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/questions") {
+      const body = await readJsonBody(req) as {
+        key?: unknown;
+        question?: unknown;
+        timestamp?: unknown;
+        pid?: unknown;
+      };
+      const key = nonEmptyString(body.key);
+      const question = nonEmptyString(body.question);
+      if (!key || !question) {
+        json(res, 400, { error: "expected { key, question }" });
+        return;
+      }
+      const out = await submitQuestion({
+        key,
+        question,
+        ...(typeof body.timestamp === "number" && Number.isFinite(body.timestamp) ? { timestamp: body.timestamp } : {}),
+        ...(typeof body.pid === "number" && Number.isFinite(body.pid) ? { pid: body.pid } : {})
+      }, {
+        env: process.env,
+        cwd: process.cwd()
+      });
+      json(res, 200, out);
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/answer") {
+      const body = await readJsonBody(req) as {
+        key?: unknown;
+        response?: unknown;
+      };
+      const key = nonEmptyString(body.key);
+      if (!key || typeof body.response !== "string") {
+        json(res, 400, { error: "expected { key, response }" });
+        return;
+      }
+      const exists = await getQuestionByKey(key, {
+        env: process.env,
+        cwd: process.cwd()
+      });
+      if (!exists) {
+        json(res, 404, { error: `question not found: ${key}` });
+        return;
+      }
+      const out = await answerQuestion(key, body.response, {
+        env: process.env,
+        cwd: process.cwd()
+      });
+      json(res, 200, out);
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/cancel") {
+      const body = await readJsonBody(req) as {
+        key?: unknown;
+      };
+      const key = nonEmptyString(body.key);
+      if (!key) {
+        json(res, 400, { error: "expected { key }" });
+        return;
+      }
+      json(res, 200, await cancelQuestion(key, {
+        env: process.env,
+        cwd: process.cwd()
+      }));
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/events") {
+      res.statusCode = 200;
+      res.setHeader("content-type", "text/event-stream; charset=utf-8");
+      res.setHeader("cache-control", "no-cache");
+      res.setHeader("connection", "keep-alive");
+
+      const writeEvent = (event: unknown): void => {
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+      };
+
+      let previous = await listBrokerState({
+        env: process.env,
+        cwd: process.cwd()
+      });
+
+      const initial = await listQuestions({
+        env: process.env,
+        cwd: process.cwd()
+      });
+      for (const question of initial.filter((item) => !item.answered)) {
+        writeEvent({
+          type: "new_question",
+          key: question.key,
+          timestamp: question.timestamp
+        });
+      }
+
+      const interval = setInterval(async () => {
+        try {
+          const current = await listBrokerState({
+            env: process.env,
+            cwd: process.cwd()
+          });
+          for (const [safeKey, row] of current.entries()) {
+            const prev = previous.get(safeKey);
+            if (!prev) {
+              writeEvent({
+                type: "new_question",
+                key: row.key
+              });
+              if (row.answered) {
+                writeEvent({
+                  type: "answered",
+                  key: row.key
+                });
+              }
+              continue;
+            }
+            if (!prev.answered && row.answered) {
+              writeEvent({
+                type: "answered",
+                key: row.key
+              });
+            }
+            if (row.questionMtimeMs > prev.questionMtimeMs) {
+              writeEvent({
+                type: "new_question",
+                key: row.key
+              });
+            }
+          }
+          previous = current;
+        } catch {
+          // Keep SSE stream alive even if one poll iteration fails.
+        }
+      }, 1000);
+
+      const keepAlive = setInterval(() => {
+        res.write(": ping\n\n");
+      }, 15000);
+
+      req.on("close", () => {
+        clearInterval(interval);
+        clearInterval(keepAlive);
       });
       return;
     }
@@ -401,6 +658,76 @@ export async function handleHttp(
       json(res, 200, {
         runId,
         items: manager.getAgentRunEvents(runId, limit)
+      });
+      return;
+    }
+
+    const agentRunHitlMatch = url.pathname.match(/^\/api\/agents\/runs\/([^/]+)\/hitl$/);
+    if (method === "POST" && agentRunHitlMatch) {
+      const runId = decodeURIComponent(agentRunHitlMatch[1]).trim();
+      if (!runId) {
+        json(res, 400, { error: "runId is required" });
+        return;
+      }
+      const body = await readJsonBody(req) as {
+        message?: unknown;
+        text?: unknown;
+        input?: unknown;
+        service_id?: unknown;
+        serviceId?: unknown;
+        agent?: unknown;
+        kind?: unknown;
+      };
+      const message = nonEmptyString(body.message) ?? nonEmptyString(body.text) ?? nonEmptyString(body.input);
+      if (!message) {
+        json(res, 400, { error: "expected non-empty message (or text/input)" });
+        return;
+      }
+      const kind = nonEmptyString(body.kind) ?? DEFAULT_HITL_EVENT_KIND;
+      if (!kind.startsWith("agent.")) {
+        json(res, 400, { error: "expected kind to start with 'agent.'" });
+        return;
+      }
+      const run = findAgentRun(manager, runId);
+      if (run && isTerminalAgentRunStatus(run.status)) {
+        json(res, 409, {
+          error: `run is terminal and no longer accepts HITL input: ${runId}`,
+          runId,
+          status: run.status
+        });
+        return;
+      }
+
+      const sanitized = sanitizeHitlMessage(message, HITL_MAX_MESSAGE_CHARS);
+      const serviceId = nonEmptyString(body.serviceId) ?? nonEmptyString(body.service_id) ?? run?.serviceId;
+      const agent = nonEmptyString(body.agent) ?? run?.agent;
+      manager.recordRuntimeEvent({
+        kind,
+        level: "info",
+        message: `HITL input received (${runId})`,
+        serviceId,
+        data: {
+          runId,
+          ...(serviceId ? { serviceId } : {}),
+          ...(agent ? { agent } : {}),
+          message: sanitized.message,
+          messageOriginalLength: sanitized.originalLength,
+          messageStoredLength: sanitized.storedLength,
+          messageTruncated: sanitized.truncated,
+          messageRedacted: sanitized.redacted,
+          source: "gateway_ui",
+          channel: "virtual_cli",
+          submittedAt: new Date().toISOString()
+        }
+      });
+      json(res, 200, {
+        ok: true,
+        runId,
+        kind,
+        message_truncated: sanitized.truncated,
+        message_redacted: sanitized.redacted,
+        ...(serviceId ? { serviceId } : {}),
+        ...(agent ? { agent } : {})
       });
       return;
     }
