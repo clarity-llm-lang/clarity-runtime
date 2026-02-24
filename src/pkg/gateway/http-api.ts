@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { ServiceManager } from "../supervisor/service-manager.js";
 import { renderStatusPage } from "../../web/status-page.js";
 import { isJsonRpcRequest, failure, type JsonRpcRequest } from "./mcp-jsonrpc.js";
-import { McpRouter, type McpRequestContext } from "./mcp-router.js";
+import { McpRouter } from "./mcp-router.js";
 import { HttpBodyError, readJsonBody } from "../http/body.js";
 import { validateManifest } from "../rpc/manifest.js";
 import { authorizeRequest, type AuthConfig } from "../security/auth.js";
@@ -137,6 +137,15 @@ interface A2AEnvelope {
   payload: Record<string, unknown>;
 }
 
+interface McpRequestContext {
+  sessionId?: string;
+  traceId?: string;
+  runId?: string;
+  requestId: string;
+  remoteAddress?: string;
+  userAgent?: string;
+}
+
 function getMcpRouter(manager: ServiceManager): McpRouter {
   const existing = MCP_ROUTERS.get(manager);
   if (existing) {
@@ -263,6 +272,16 @@ function summarizeAgentRegistryRecord(record: Awaited<ReturnType<ServiceManager[
     triggers: [],
     a2a: undefined
   };
+  const descriptorRecord = asObject(descriptor as unknown);
+  const listField = (key: string): string[] => {
+    const value = descriptorRecord[key];
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value
+      .map((item) => nonEmptyString(item))
+      .filter((item): item is string => item !== null);
+  };
   const a2a = summarizeAgentA2AProfile(descriptor);
   return {
     serviceId: record.manifest.metadata.serviceId,
@@ -297,13 +316,13 @@ function summarizeAgentRegistryRecord(record: Awaited<ReturnType<ServiceManager[
       role: descriptor.role,
       objective: descriptor.objective,
       triggers: Array.isArray(descriptor.triggers) ? descriptor.triggers : [],
-      inputs: Array.isArray(descriptor.inputs) ? descriptor.inputs : [],
-      outputs: Array.isArray(descriptor.outputs) ? descriptor.outputs : [],
-      dependsOn: Array.isArray(descriptor.dependsOn) ? descriptor.dependsOn : [],
-      handoffTargets: Array.isArray(descriptor.handoffTargets) ? descriptor.handoffTargets : [],
-      allowedMcpTools: Array.isArray(descriptor.allowedMcpTools) ? descriptor.allowedMcpTools : [],
-      allowedLlmProviders: Array.isArray(descriptor.allowedLlmProviders) ? descriptor.allowedLlmProviders : [],
-      version: descriptor.version,
+      inputs: listField("inputs"),
+      outputs: listField("outputs"),
+      dependsOn: listField("dependsOn"),
+      handoffTargets: listField("handoffTargets"),
+      allowedMcpTools: listField("allowedMcpTools"),
+      allowedLlmProviders: listField("allowedLlmProviders"),
+      version: nonEmptyString(descriptorRecord.version) ?? undefined,
       a2a
     }
   };
