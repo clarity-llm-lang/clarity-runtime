@@ -143,10 +143,7 @@ async function collectSseEvents(
     }
   } catch (error) {
     const isAbortError =
-      error &&
-      typeof error === "object" &&
-      "name" in error &&
-      (error as { name?: unknown }).name === "AbortError";
+      error && typeof error === "object" && "name" in error && (error as { name?: unknown }).name === "AbortError";
     if (!(isAbortError && controller.signal.aborted)) {
       throw error;
     }
@@ -430,6 +427,442 @@ test("run-scoped agent events stream replays history and streams live updates", 
     const secondData = asObject(streamEvents[1]?.data);
     assert.equal(String(firstData.runId), "run-stream-1");
     assert.equal(String(secondData.runId), "run-stream-1");
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("run-scoped agent events stream replays history and streams live updates", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-agent-run-stream-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"));
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const startRun = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_started",
+        message: "Run started",
+        runId: "run-stream-1",
+        agent: "coordinator"
+      })
+    });
+    assert.equal(startRun.status, 200);
+
+    const streamEvents = await collectSseEvents(
+      runtime.baseUrl,
+      "/api/agents/runs/run-stream-1/events/stream?limit=20",
+      2,
+      {
+        onOpen: async () => {
+          const wrongRunEvent = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+            method: "POST",
+            body: JSON.stringify({
+              kind: "agent.step_started",
+              message: "Other run step",
+              runId: "run-other-1",
+              stepId: "x",
+              agent: "coordinator"
+            })
+          });
+          assert.equal(wrongRunEvent.status, 200);
+
+          const sameRunEvent = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+            method: "POST",
+            body: JSON.stringify({
+              kind: "agent.step_started",
+              message: "Current run step",
+              runId: "run-stream-1",
+              stepId: "a",
+              agent: "coordinator"
+            })
+          });
+          assert.equal(sameRunEvent.status, 200);
+        }
+      }
+    );
+
+    assert.equal(streamEvents.length, 2);
+    assert.equal(String(streamEvents[0]?.kind), "agent.run_started");
+    assert.equal(String(streamEvents[1]?.kind), "agent.step_started");
+
+    const firstData = asObject(streamEvents[0]?.data);
+    const secondData = asObject(streamEvents[1]?.data);
+    assert.equal(String(firstData.runId), "run-stream-1");
+    assert.equal(String(secondData.runId), "run-stream-1");
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("agent registry endpoint returns only registered agent services", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-agent-registry-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"));
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const applyMcp = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        manifest: {
+          apiVersion: "clarity.runtime/v1",
+          kind: "MCPService",
+          metadata: {
+            sourceFile: path.join(root, "mcp-source.clarity"),
+            module: "McpSource",
+            serviceType: "mcp"
+          },
+          spec: {
+            origin: {
+              type: "local_wasm",
+              wasmPath: path.join(root, "mcp.wasm"),
+              entry: "main"
+            },
+            enabled: true,
+            autostart: false,
+            restartPolicy: {
+              mode: "never",
+              maxRestarts: 0,
+              windowSeconds: 60
+            },
+            policyRef: "default"
+          }
+        }
+      })
+    });
+    assert.equal(applyMcp.status, 200);
+
+    const applyAgent = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        manifest: {
+          apiVersion: "clarity.runtime/v1",
+          kind: "MCPService",
+          metadata: {
+            sourceFile: path.join(root, "agent-source.clarity"),
+            module: "AgentSource",
+            serviceType: "agent",
+            agent: {
+              agentId: "planner_agent",
+              name: "Planner Agent",
+              role: "planner",
+              objective: "Plan and hand off tasks",
+              triggers: ["timer", "a2a"],
+              a2a: {
+                protocol: "clarity.a2a.v1",
+                acceptedMessageKinds: ["handoff.request", "handoff.accepted", "handoff.rejected", "handoff.completed"],
+                emitsMessageKinds: ["handoff.request", "handoff.accepted", "handoff.rejected", "handoff.completed"]
+              },
+              handoffTargets: ["writer_agent"]
+            }
+          },
+          spec: {
+            origin: {
+              type: "local_wasm",
+              wasmPath: path.join(root, "agent.wasm"),
+              entry: "main"
+            },
+            enabled: true,
+            autostart: false,
+            restartPolicy: {
+              mode: "never",
+              maxRestarts: 0,
+              windowSeconds: 60
+            },
+            policyRef: "default"
+          }
+        }
+      })
+    });
+    assert.equal(applyAgent.status, 200);
+
+    const registryRes = await jsonRequest(runtime.baseUrl, "/api/agents/registry");
+    assert.equal(registryRes.status, 200);
+    const body = asObject(registryRes.body);
+    const items = body.items as Array<Record<string, unknown>>;
+    assert.ok(Array.isArray(items));
+    assert.equal(Number(body.count), 1);
+    assert.equal(items.length, 1);
+    assert.equal(String(items[0]?.serviceType), "agent");
+    assert.equal(String(asObject(items[0]?.agent).agentId), "planner_agent");
+    assert.deepEqual(asObject(items[0]?.agent).triggers, ["timer", "a2a"]);
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a2a capabilities endpoint lists only compliant a2a-enabled agents", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-a2a-capabilities-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"));
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const applyAgent = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        manifest: {
+          apiVersion: "clarity.runtime/v1",
+          kind: "MCPService",
+          metadata: {
+            sourceFile: path.join(root, "a2a-agent-source.clarity"),
+            module: "A2AAgentSource",
+            serviceType: "agent",
+            agent: {
+              agentId: "writer_agent",
+              name: "Writer Agent",
+              role: "writer",
+              objective: "Receive handoff and produce outputs",
+              triggers: ["a2a"],
+              a2a: {
+                protocol: "clarity.a2a.v1",
+                acceptedMessageKinds: ["handoff.request", "handoff.accepted", "handoff.rejected", "handoff.completed"],
+                emitsMessageKinds: ["handoff.request", "handoff.accepted", "handoff.rejected", "handoff.completed"]
+              }
+            }
+          },
+          spec: {
+            origin: {
+              type: "local_wasm",
+              wasmPath: path.join(root, "a2a-agent.wasm"),
+              entry: "main"
+            },
+            enabled: true,
+            autostart: false,
+            restartPolicy: {
+              mode: "never",
+              maxRestarts: 0,
+              windowSeconds: 60
+            },
+            policyRef: "default"
+          }
+        }
+      })
+    });
+    assert.equal(applyAgent.status, 200);
+
+    const caps = await jsonRequest(runtime.baseUrl, "/api/a2a/capabilities");
+    assert.equal(caps.status, 200);
+    const body = asObject(caps.body);
+    assert.equal(String(body.protocol), "clarity.a2a.v1");
+    assert.equal(String(body.ingestPath), "/api/a2a/messages");
+    assert.equal(Number(body.count), 1);
+    const items = body.items as Array<Record<string, unknown>>;
+    assert.ok(Array.isArray(items));
+    assert.equal(items.length, 1);
+    assert.equal(String(items[0]?.agentId), "writer_agent");
+    assert.equal(Boolean(items[0]?.compliant), true);
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a2a messages endpoint validates envelope and emits canonical agent events", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-a2a-messages-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"));
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const applySource = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        manifest: {
+          apiVersion: "clarity.runtime/v1",
+          kind: "MCPService",
+          metadata: {
+            sourceFile: path.join(root, "source-agent-source.clarity"),
+            module: "SourceAgent",
+            serviceType: "agent",
+            agent: {
+              agentId: "planner_agent",
+              name: "Planner Agent",
+              role: "planner",
+              objective: "Create handoff requests",
+              triggers: ["a2a"],
+              a2a: {
+                protocol: "clarity.a2a.v1",
+                acceptedMessageKinds: ["handoff.request", "handoff.accepted", "handoff.rejected", "handoff.completed"],
+                emitsMessageKinds: ["handoff.request", "handoff.accepted", "handoff.rejected", "handoff.completed"]
+              }
+            }
+          },
+          spec: {
+            origin: {
+              type: "local_wasm",
+              wasmPath: path.join(root, "source-agent.wasm"),
+              entry: "main"
+            },
+            enabled: true,
+            autostart: false,
+            restartPolicy: {
+              mode: "never",
+              maxRestarts: 0,
+              windowSeconds: 60
+            },
+            policyRef: "default"
+          }
+        }
+      })
+    });
+    assert.equal(applySource.status, 200);
+    const sourceServiceId = String(
+      asObject(
+        asObject(
+          asObject(asObject(applySource.body).service).manifest
+        ).metadata
+      ).serviceId || ""
+    );
+    assert.ok(sourceServiceId.length > 0);
+
+    const applyTarget = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        manifest: {
+          apiVersion: "clarity.runtime/v1",
+          kind: "MCPService",
+          metadata: {
+            sourceFile: path.join(root, "target-agent-source.clarity"),
+            module: "TargetAgent",
+            serviceType: "agent",
+            agent: {
+              agentId: "writer_agent",
+              name: "Writer Agent",
+              role: "writer",
+              objective: "Receive handoff",
+              triggers: ["a2a"],
+              a2a: {
+                protocol: "clarity.a2a.v1",
+                acceptedMessageKinds: ["handoff.request", "handoff.accepted", "handoff.rejected", "handoff.completed"],
+                emitsMessageKinds: ["handoff.request", "handoff.accepted", "handoff.rejected", "handoff.completed"]
+              }
+            }
+          },
+          spec: {
+            origin: {
+              type: "local_wasm",
+              wasmPath: path.join(root, "target-agent.wasm"),
+              entry: "main"
+            },
+            enabled: true,
+            autostart: false,
+            restartPolicy: {
+              mode: "never",
+              maxRestarts: 0,
+              windowSeconds: 60
+            },
+            policyRef: "default"
+          }
+        }
+      })
+    });
+    assert.equal(applyTarget.status, 200);
+    const targetServiceId = String(
+      asObject(
+        asObject(
+          asObject(asObject(applyTarget.body).service).manifest
+        ).metadata
+      ).serviceId || ""
+    );
+    assert.ok(targetServiceId.length > 0);
+
+    const postA2A = await jsonRequest(runtime.baseUrl, "/api/a2a/messages", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "clarity.a2a.v1",
+        kind: "handoff.request",
+        messageId: "msg-1",
+        sentAt: "2026-02-24T12:00:00.000Z",
+        from: {
+          agentId: "planner_agent",
+          serviceId: sourceServiceId
+        },
+        to: {
+          agentId: "writer_agent",
+          serviceId: targetServiceId
+        },
+        context: {
+          runId: "run-a2a-1",
+          parentRunId: "run-parent-1",
+          handoffReason: "compose-release-notes",
+          correlationId: "corr-1"
+        },
+        payload: {
+          ticket: "REL-1"
+        }
+      })
+    });
+    assert.equal(postA2A.status, 202);
+    assert.equal(Boolean(asObject(postA2A.body).ok), true);
+
+    const runs = await jsonRequest(runtime.baseUrl, "/api/agents/runs?limit=30");
+    assert.equal(runs.status, 200);
+    const runItems = asObject(runs.body).items as Array<Record<string, unknown>>;
+    const run = runItems.find((item) => String(item.runId) === "run-a2a-1");
+    assert.ok(run);
+    assert.equal(String(run?.trigger), "a2a");
+    assert.equal(String(run?.parentRunId), "run-parent-1");
+    assert.equal(String(run?.fromAgentId), "planner_agent");
+
+    const runEvents = await jsonRequest(runtime.baseUrl, "/api/agents/runs/run-a2a-1/events?limit=40");
+    assert.equal(runEvents.status, 200);
+    const eventItems = asObject(runEvents.body).items as Array<Record<string, unknown>>;
+    assert.ok(eventItems.some((item) => String(item.kind) === "agent.run_created"));
+    assert.ok(eventItems.some((item) => String(item.kind) === "agent.handoff"));
+
+    const duplicateA2A = await jsonRequest(runtime.baseUrl, "/api/a2a/messages", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "clarity.a2a.v1",
+        kind: "handoff.request",
+        messageId: "msg-1",
+        sentAt: "2026-02-24T12:00:01.000Z",
+        from: {
+          agentId: "planner_agent",
+          serviceId: sourceServiceId
+        },
+        to: {
+          agentId: "writer_agent",
+          serviceId: targetServiceId
+        },
+        context: {
+          runId: "run-a2a-1",
+          parentRunId: "run-parent-1",
+          handoffReason: "compose-release-notes"
+        }
+      })
+    });
+    assert.equal(duplicateA2A.status, 409);
   } finally {
     await manager.shutdown();
     await runtime.close();

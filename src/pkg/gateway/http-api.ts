@@ -2,10 +2,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import type { ServiceManager } from "../supervisor/service-manager.js";
 import { renderStatusPage } from "../../web/status-page.js";
 import { isJsonRpcRequest, failure, type JsonRpcRequest } from "./mcp-jsonrpc.js";
-import { McpRouter } from "./mcp-router.js";
+import { McpRouter, type McpRequestContext } from "./mcp-router.js";
 import { HttpBodyError, readJsonBody } from "../http/body.js";
 import { validateManifest } from "../rpc/manifest.js";
 import { authorizeRequest, type AuthConfig } from "../security/auth.js";
@@ -70,26 +71,13 @@ const RUNTIME_SYSTEM_TOOLS = [
     description: "Deprovision service with optional artifact cleanup."
   },
   { name: "runtime__get_audit", description: "Read recent runtime audit events." },
-  {
-    name: "runtime__get_agent_runs",
-    description: "List recent agent runs with status/timing counters."
-  },
-  {
-    name: "runtime__get_agent_events",
-    description: "Read recent agent orchestration timeline events."
-  },
-  {
-    name: "runtime__validate_auth_ref",
-    description: "Validate authRef and return redacted diagnostics."
-  },
-  {
-    name: "runtime__auth_provider_health",
-    description: "Report remote auth provider/file-root health."
-  },
-  {
-    name: "runtime__list_auth_secrets",
-    description: "List file-backed secret handles (no secret values)."
-  },
+  { name: "runtime__get_agent_runs", description: "List recent agent runs with status/timing counters." },
+  { name: "runtime__get_agent_events", description: "Read recent agent orchestration timeline events." },
+  { name: "runtime__get_traces", description: "Read recent MCP gateway trace spans with run/trace filters." },
+  { name: "runtime__get_cost_ledger", description: "Read per-run cost and budget ledger summaries." },
+  { name: "runtime__validate_auth_ref", description: "Validate authRef and return redacted diagnostics." },
+  { name: "runtime__auth_provider_health", description: "Report remote auth provider/file-root health." },
+  { name: "runtime__list_auth_secrets", description: "List file-backed secret handles (no secret values)." },
   { name: "runtime__set_auth_secret", description: "Create/rotate file-backed auth secret." },
   { name: "runtime__delete_auth_secret", description: "Delete file-backed auth secret." },
   { name: "runtime__register_local", description: "Register local wasm service via MCP." },
@@ -111,10 +99,92 @@ const FAVICON_PNG_PATH = path.resolve(
   "../../../assets/clarity-github-avatar.png"
 );
 const DEFAULT_HITL_EVENT_KIND = "agent.hitl_input";
-const HITL_MAX_MESSAGE_CHARS = parsePositiveIntegerEnv(
-  process.env.CLARITY_HITL_MAX_MESSAGE_CHARS,
-  2000
-);
+const HITL_MAX_MESSAGE_CHARS = parsePositiveIntegerEnv(process.env.CLARITY_HITL_MAX_MESSAGE_CHARS, 2000);
+const FORMAL_A2A_PROTOCOL = "clarity.a2a.v1";
+const FORMAL_A2A_MESSAGE_KINDS = [
+  "handoff.request",
+  "handoff.accepted",
+  "handoff.rejected",
+  "handoff.completed"
+] as const;
+const A2A_MAX_MESSAGE_BYTES = parsePositiveIntegerEnv(process.env.CLARITY_A2A_MAX_MESSAGE_BYTES, 65_536);
+const MCP_ROUTERS = new WeakMap<ServiceManager, McpRouter>();
+
+type FormalA2AMessageKind = typeof FORMAL_A2A_MESSAGE_KINDS[number];
+
+interface A2AAgentRef {
+  agentId: string;
+  serviceId?: string;
+  runId?: string;
+}
+
+interface A2AContextRef {
+  runId: string;
+  parentRunId: string;
+  handoffReason: string;
+  correlationId?: string;
+  causationId?: string;
+}
+
+interface A2AEnvelope {
+  protocol: typeof FORMAL_A2A_PROTOCOL;
+  kind: FormalA2AMessageKind;
+  messageId: string;
+  sentAt: string;
+  from: A2AAgentRef;
+  to: A2AAgentRef;
+  context: A2AContextRef;
+  payload: Record<string, unknown>;
+}
+
+function getMcpRouter(manager: ServiceManager): McpRouter {
+  const existing = MCP_ROUTERS.get(manager);
+  if (existing) {
+    return existing;
+  }
+  const created = new McpRouter(manager);
+  MCP_ROUTERS.set(manager, created);
+  return created;
+}
+
+function readHeaderString(req: IncomingMessage, key: string): string | undefined {
+  const value = req.headers[key.toLowerCase()];
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  if (Array.isArray(value) && value.length > 0 && typeof value[0] === "string" && value[0].trim().length > 0) {
+    return value[0].trim();
+  }
+  return undefined;
+}
+
+function buildMcpRequestContext(req: IncomingMessage, url: URL, message: JsonRpcRequest): McpRequestContext {
+  const rawParams = message.params && typeof message.params === "object" ? message.params as Record<string, unknown> : {};
+  const runId = typeof rawParams.run_id === "string"
+    ? rawParams.run_id
+    : (typeof rawParams.runId === "string" ? rawParams.runId : undefined);
+  const traceId = readHeaderString(req, "x-clarity-trace-id")
+    ?? url.searchParams.get("trace_id")
+    ?? (typeof rawParams.trace_id === "string" ? rawParams.trace_id : undefined)
+    ?? (typeof rawParams.traceId === "string" ? rawParams.traceId : undefined)
+    ?? undefined;
+  const sessionId = readHeaderString(req, "x-clarity-session-id")
+    ?? url.searchParams.get("session_id")
+    ?? (typeof rawParams.session_id === "string" ? rawParams.session_id : undefined)
+    ?? (typeof rawParams.sessionId === "string" ? rawParams.sessionId : undefined)
+    ?? undefined;
+  const requestId = typeof message.id === "string" || typeof message.id === "number"
+    ? String(message.id)
+    : `req_${randomUUID()}`;
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(traceId ? { traceId } : {}),
+    ...(runId ? { runId } : {}),
+    requestId,
+    remoteAddress: req.socket.remoteAddress,
+    userAgent: readHeaderString(req, "user-agent")
+  };
+}
 
 function json(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
@@ -180,9 +250,66 @@ function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) 
   };
 }
 
-function inferServiceType(
-  record: Awaited<ReturnType<ServiceManager["list"]>>[number]
-): "mcp" | "agent" {
+function summarizeAgentRegistryRecord(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) {
+  const inferredType = inferServiceType(record);
+  if (inferredType !== "agent") {
+    return null;
+  }
+  const descriptor = record.manifest.metadata.agent ?? {
+    agentId: "",
+    name: "",
+    role: "",
+    objective: "",
+    triggers: [],
+    a2a: undefined
+  };
+  const a2a = summarizeAgentA2AProfile(descriptor);
+  return {
+    serviceId: record.manifest.metadata.serviceId,
+    displayName: record.manifest.metadata.displayName,
+    sourceFile: record.manifest.metadata.sourceFile,
+    module: record.manifest.metadata.module,
+    serviceType: "agent" as const,
+    originType: record.manifest.spec.origin.type,
+    lifecycle: record.runtime.lifecycle,
+    health: record.runtime.health,
+    enabled: record.runtime.enabled,
+    autostart: record.runtime.autostart,
+    uptimeSeconds: record.runtime.uptimeSeconds,
+    restartCount: record.runtime.restartCount,
+    createdAt: record.manifest.metadata.createdAt,
+    updatedAt: record.manifest.metadata.updatedAt,
+    policy: {
+      restart: record.manifest.spec.restartPolicy
+    },
+    interface: record.interfaceSnapshot
+      ? {
+          interfaceRevision: record.interfaceSnapshot.interfaceRevision,
+          introspectedAt: record.interfaceSnapshot.introspectedAt,
+          tools: record.interfaceSnapshot.tools.length,
+          resources: record.interfaceSnapshot.resources.length,
+          prompts: record.interfaceSnapshot.prompts.length
+        }
+      : null,
+    agent: {
+      agentId: descriptor.agentId,
+      name: descriptor.name,
+      role: descriptor.role,
+      objective: descriptor.objective,
+      triggers: Array.isArray(descriptor.triggers) ? descriptor.triggers : [],
+      inputs: Array.isArray(descriptor.inputs) ? descriptor.inputs : [],
+      outputs: Array.isArray(descriptor.outputs) ? descriptor.outputs : [],
+      dependsOn: Array.isArray(descriptor.dependsOn) ? descriptor.dependsOn : [],
+      handoffTargets: Array.isArray(descriptor.handoffTargets) ? descriptor.handoffTargets : [],
+      allowedMcpTools: Array.isArray(descriptor.allowedMcpTools) ? descriptor.allowedMcpTools : [],
+      allowedLlmProviders: Array.isArray(descriptor.allowedLlmProviders) ? descriptor.allowedLlmProviders : [],
+      version: descriptor.version,
+      a2a
+    }
+  };
+}
+
+function inferServiceType(record: Awaited<ReturnType<ServiceManager["list"]>>[number]): "mcp" | "agent" {
   const explicit = record.manifest.metadata.serviceType;
   return explicit === "agent" ? "agent" : "mcp";
 }
@@ -238,10 +365,239 @@ function getField(data: Record<string, unknown>, key: string): unknown {
   return data[snake];
 }
 
-function findAgentRun(
-  manager: ServiceManager,
-  runId: string
-): ReturnType<ServiceManager["getAgentRuns"]>[number] | null {
+function normalizeA2AKindList(value: unknown): FormalA2AMessageKind[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return [...FORMAL_A2A_MESSAGE_KINDS];
+  }
+  const out = value
+    .map((item) => nonEmptyString(item)?.toLowerCase())
+    .filter((item): item is string => !!item)
+    .filter((item): item is FormalA2AMessageKind => (FORMAL_A2A_MESSAGE_KINDS as readonly string[]).includes(item));
+  return out.length > 0 ? out : [...FORMAL_A2A_MESSAGE_KINDS];
+}
+
+function summarizeAgentA2AProfile(agentDescriptor: unknown): {
+  enabled: boolean;
+  compliant: boolean;
+  protocol?: string;
+  ingestPath?: string;
+  acceptedMessageKinds?: FormalA2AMessageKind[];
+  emitsMessageKinds?: FormalA2AMessageKind[];
+  maxPayloadBytes?: number;
+} {
+  const descriptor = asObject(agentDescriptor);
+  const triggerValues = Array.isArray(descriptor.triggers)
+    ? descriptor.triggers.filter((item): item is string => typeof item === "string")
+    : [];
+  const hasA2ATrigger = triggerValues.includes("a2a");
+  if (!hasA2ATrigger) {
+    return { enabled: false, compliant: false };
+  }
+  const rawA2A = asObject(descriptor.a2a);
+  const protocol = nonEmptyString(getField(rawA2A, "protocol")) ?? FORMAL_A2A_PROTOCOL;
+  const maxPayloadBytesRaw = Number(getField(rawA2A, "maxPayloadBytes"));
+  const maxPayloadBytes = Number.isInteger(maxPayloadBytesRaw) && maxPayloadBytesRaw > 0
+    ? maxPayloadBytesRaw
+    : undefined;
+  return {
+    enabled: true,
+    compliant: protocol === FORMAL_A2A_PROTOCOL,
+    protocol,
+    ingestPath: "/api/a2a/messages",
+    acceptedMessageKinds: normalizeA2AKindList(getField(rawA2A, "acceptedMessageKinds")),
+    emitsMessageKinds: normalizeA2AKindList(getField(rawA2A, "emitsMessageKinds")),
+    ...(maxPayloadBytes ? { maxPayloadBytes } : {})
+  };
+}
+
+function normalizeA2AAgentRef(value: unknown, label: "from" | "to"): { value?: A2AAgentRef; error?: string } {
+  const ref = asObject(value);
+  const agentId = nonEmptyString(getField(ref, "agentId"));
+  if (!agentId) {
+    return { error: `invalid a2a.${label}: expected non-empty ${label}.agentId` };
+  }
+  const serviceId = nonEmptyString(getField(ref, "serviceId")) ?? undefined;
+  const runId = nonEmptyString(getField(ref, "runId")) ?? undefined;
+  return {
+    value: {
+      agentId,
+      ...(serviceId ? { serviceId } : {}),
+      ...(runId ? { runId } : {})
+    }
+  };
+}
+
+function normalizeA2AContext(value: unknown): { value?: A2AContextRef; error?: string } {
+  const context = asObject(value);
+  const runId = nonEmptyString(getField(context, "runId"));
+  const parentRunId = nonEmptyString(getField(context, "parentRunId"));
+  const handoffReason = nonEmptyString(getField(context, "handoffReason"));
+  if (!runId || !parentRunId || !handoffReason) {
+    return { error: "invalid a2a.context: expected non-empty runId, parentRunId, and handoffReason" };
+  }
+  const correlationId = nonEmptyString(getField(context, "correlationId")) ?? undefined;
+  const causationId = nonEmptyString(getField(context, "causationId")) ?? undefined;
+  return {
+    value: {
+      runId,
+      parentRunId,
+      handoffReason,
+      ...(correlationId ? { correlationId } : {}),
+      ...(causationId ? { causationId } : {})
+    }
+  };
+}
+
+function normalizeA2AEnvelope(value: unknown): { value?: A2AEnvelope; error?: string } {
+  const payload = asObject(value);
+  const protocol = nonEmptyString(getField(payload, "protocol"));
+  if (protocol !== FORMAL_A2A_PROTOCOL) {
+    return { error: `invalid a2a.protocol: expected '${FORMAL_A2A_PROTOCOL}'` };
+  }
+  const kindRaw = nonEmptyString(getField(payload, "kind"))?.toLowerCase();
+  if (!kindRaw || !(FORMAL_A2A_MESSAGE_KINDS as readonly string[]).includes(kindRaw)) {
+    return { error: "invalid a2a.kind: expected handoff.request|handoff.accepted|handoff.rejected|handoff.completed" };
+  }
+  const messageId = nonEmptyString(getField(payload, "messageId"));
+  if (!messageId) {
+    return { error: "invalid a2a.messageId: expected non-empty string" };
+  }
+  const sentAtRaw = nonEmptyString(getField(payload, "sentAt") ?? getField(payload, "timestamp"));
+  if (!sentAtRaw) {
+    return { error: "invalid a2a.sentAt: expected RFC3339 timestamp" };
+  }
+  const sentAtMs = Date.parse(sentAtRaw);
+  if (!Number.isFinite(sentAtMs)) {
+    return { error: "invalid a2a.sentAt: expected RFC3339 timestamp" };
+  }
+  const from = normalizeA2AAgentRef(getField(payload, "from"), "from");
+  if (!from.value) {
+    return { error: from.error ?? "invalid a2a.from" };
+  }
+  const to = normalizeA2AAgentRef(getField(payload, "to"), "to");
+  if (!to.value) {
+    return { error: to.error ?? "invalid a2a.to" };
+  }
+  const context = normalizeA2AContext(getField(payload, "context"));
+  if (!context.value) {
+    return { error: context.error ?? "invalid a2a.context" };
+  }
+  return {
+    value: {
+      protocol: FORMAL_A2A_PROTOCOL,
+      kind: kindRaw as FormalA2AMessageKind,
+      messageId,
+      sentAt: new Date(sentAtMs).toISOString(),
+      from: from.value,
+      to: to.value,
+      context: context.value,
+      payload: asObject(getField(payload, "payload"))
+    }
+  };
+}
+
+async function resolveA2ATargetService(manager: ServiceManager, target: A2AAgentRef): Promise<{ serviceId?: string; agentId?: string; status?: number; error?: string }> {
+  if (target.serviceId) {
+    const service = await manager.get(target.serviceId);
+    if (!service) {
+      return { status: 404, error: `target service not found: ${target.serviceId}` };
+    }
+    if (inferServiceType(service) !== "agent") {
+      return { status: 400, error: `target service is not an agent: ${target.serviceId}` };
+    }
+    const descriptor = service.manifest.metadata.agent;
+    const triggers = Array.isArray(descriptor?.triggers) ? descriptor.triggers : [];
+    if (!triggers.includes("a2a")) {
+      return { status: 400, error: `target service does not declare trigger 'a2a': ${target.serviceId}` };
+    }
+    const agentId = nonEmptyString(descriptor?.agentId) ?? target.agentId;
+    if (!agentId) {
+      return { status: 400, error: `target agent id missing on service: ${target.serviceId}` };
+    }
+    if (target.agentId && target.agentId !== agentId) {
+      return {
+        status: 400,
+        error: `target agent mismatch: envelope to.agentId='${target.agentId}' does not match service agentId='${agentId}'`
+      };
+    }
+    return {
+      serviceId: target.serviceId,
+      agentId
+    };
+  }
+
+  const services = await manager.list();
+  const candidates = services.filter((record) => {
+    if (inferServiceType(record) !== "agent") {
+      return false;
+    }
+    const descriptor = record.manifest.metadata.agent;
+    if (!descriptor || descriptor.agentId !== target.agentId) {
+      return false;
+    }
+    return Array.isArray(descriptor.triggers) && descriptor.triggers.includes("a2a");
+  });
+  if (candidates.length === 0) {
+    return { status: 404, error: `target agent not found (or not a2a-enabled): ${target.agentId}` };
+  }
+  if (candidates.length > 1) {
+    return { status: 409, error: `ambiguous target agent id: ${target.agentId} (multiple services registered)` };
+  }
+  const serviceId = candidates[0].manifest.metadata.serviceId;
+  if (!serviceId) {
+    return { status: 500, error: "target service missing serviceId" };
+  }
+  return {
+    serviceId,
+    agentId: target.agentId
+  };
+}
+
+async function validateA2ASourceService(manager: ServiceManager, source: A2AAgentRef): Promise<string | null> {
+  if (!source.serviceId) {
+    return null;
+  }
+  const service = await manager.get(source.serviceId);
+  if (!service) {
+    return `source service not found: ${source.serviceId}`;
+  }
+  if (inferServiceType(service) !== "agent") {
+    return `source service is not an agent: ${source.serviceId}`;
+  }
+  const descriptor = service.manifest.metadata.agent;
+  const declaredAgentId = nonEmptyString(descriptor?.agentId);
+  if (declaredAgentId && declaredAgentId !== source.agentId) {
+    return `source agent mismatch: envelope from.agentId='${source.agentId}' does not match service agentId='${declaredAgentId}'`;
+  }
+  const triggers = Array.isArray(descriptor?.triggers) ? descriptor.triggers : [];
+  if (!triggers.includes("a2a")) {
+    return `source service does not declare trigger 'a2a': ${source.serviceId}`;
+  }
+  return null;
+}
+
+function hasA2AMessageId(manager: ServiceManager, messageId: string): boolean {
+  const target = messageId.trim();
+  if (!target) {
+    return false;
+  }
+  const events = manager.getRecentAgentEvents(5000);
+  for (const event of events) {
+    const data = asObject(event.data);
+    const direct = nonEmptyString(getField(data, "messageId"));
+    if (direct === target) {
+      return true;
+    }
+    const nested = asObject(getField(data, "a2a"));
+    const nestedId = nonEmptyString(getField(nested, "messageId"));
+    if (nestedId === target) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function findAgentRun(manager: ServiceManager, runId: string): ReturnType<ServiceManager["getAgentRuns"]>[number] | null {
   const target = runId.trim();
   if (!target) {
     return null;
@@ -262,7 +618,10 @@ function isTerminalAgentRunStatus(status: unknown): boolean {
   return normalized === "completed" || normalized === "failed" || normalized === "cancelled";
 }
 
-function isAgentEventForRunId(event: { kind: string; data?: unknown }, runId: string): boolean {
+function isAgentEventForRunId(
+  event: { kind: string; data?: unknown },
+  runId: string
+): boolean {
   if (!event.kind.startsWith("agent.")) {
     return false;
   }
@@ -271,10 +630,7 @@ function isAgentEventForRunId(event: { kind: string; data?: unknown }, runId: st
   return eventRunId === runId;
 }
 
-function sanitizeHitlMessage(
-  input: string,
-  maxChars: number
-): {
+function sanitizeHitlMessage(input: string, maxChars: number): {
   message: string;
   originalLength: number;
   storedLength: number;
@@ -387,7 +743,7 @@ export async function handleHttp(
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const method = req.method ?? "GET";
-  const mcpRouter = new McpRouter(manager);
+  const mcpRouter = getMcpRouter(manager);
 
   try {
     if (method === "GET" && url.pathname === "/favicon.svg") {
@@ -673,11 +1029,18 @@ export async function handleHttp(
         return;
       }
 
-      const response = await mcpRouter.handle(message as JsonRpcRequest);
+      const context = buildMcpRequestContext(req, url, message as JsonRpcRequest);
+      const response = await mcpRouter.handle(message as JsonRpcRequest, context);
       if (!response) {
         res.statusCode = 202;
         res.end();
         return;
+      }
+      if (context.traceId) {
+        res.setHeader("x-clarity-trace-id", context.traceId);
+      }
+      if (context.sessionId) {
+        res.setHeader("x-clarity-session-id", context.sessionId);
       }
 
       json(res, 200, response);
@@ -752,6 +1115,55 @@ export async function handleHttp(
       return;
     }
 
+    if (method === "GET" && url.pathname === "/api/agents/registry") {
+      const items = (await manager.list())
+        .map((record) => summarizeAgentRegistryRecord(record))
+        .filter((item): item is NonNullable<ReturnType<typeof summarizeAgentRegistryRecord>> => item !== null);
+      json(res, 200, {
+        count: items.length,
+        items,
+        lastUpdated: new Date().toISOString()
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/a2a/capabilities") {
+      const agents = (await manager.list())
+        .map((record) => summarizeAgentRegistryRecord(record))
+        .filter((item): item is NonNullable<ReturnType<typeof summarizeAgentRegistryRecord>> => item !== null);
+      const items = agents
+        .map((item) => {
+          const agent = asObject(item.agent);
+          const a2a = asObject(agent.a2a);
+          if (!a2a.enabled) {
+            return null;
+          }
+          return {
+            serviceId: item.serviceId,
+            displayName: item.displayName,
+            lifecycle: item.lifecycle,
+            health: item.health,
+            agentId: nonEmptyString(agent.agentId) ?? "",
+            name: nonEmptyString(agent.name) ?? "",
+            role: nonEmptyString(agent.role) ?? "",
+            protocol: nonEmptyString(a2a.protocol) ?? FORMAL_A2A_PROTOCOL,
+            compliant: Boolean(a2a.compliant),
+            ingestPath: nonEmptyString(a2a.ingestPath) ?? "/api/a2a/messages",
+            acceptedMessageKinds: normalizeA2AKindList(a2a.acceptedMessageKinds),
+            emitsMessageKinds: normalizeA2AKindList(a2a.emitsMessageKinds)
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== null);
+      json(res, 200, {
+        protocol: FORMAL_A2A_PROTOCOL,
+        ingestPath: "/api/a2a/messages",
+        count: items.length,
+        items,
+        lastUpdated: new Date().toISOString()
+      });
+      return;
+    }
+
     if (method === "GET" && url.pathname === "/api/audit") {
       const limit = parseLimit(url.searchParams.get("limit"), 200);
       json(res, 200, {
@@ -760,9 +1172,159 @@ export async function handleHttp(
       return;
     }
 
+    if (method === "GET" && url.pathname === "/api/traces") {
+      const limit = parseLimit(url.searchParams.get("limit"), 200, 1, 5000);
+      const runId = nonEmptyString(url.searchParams.get("run_id"));
+      const traceId = nonEmptyString(url.searchParams.get("trace_id"));
+      json(res, 200, {
+        items: mcpRouter.getTraceSpans(limit, {
+          ...(runId ? { runId } : {}),
+          ...(traceId ? { traceId } : {})
+        })
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/costs/runs") {
+      const limit = parseLimit(url.searchParams.get("limit"), 200, 1, 2000);
+      const runId = nonEmptyString(url.searchParams.get("run_id")) ?? undefined;
+      json(res, 200, {
+        items: mcpRouter.getRunCostLedgers(limit, runId)
+      });
+      return;
+    }
+
     if (method === "GET" && url.pathname === "/api/agents/events") {
       const limit = parseLimit(url.searchParams.get("limit"), 200);
       json(res, 200, { items: manager.getRecentAgentEvents(limit) });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/a2a/messages") {
+      const body = await readJsonBody(req) as unknown;
+      const bodyBytes = Buffer.byteLength(JSON.stringify(body ?? {}), "utf8");
+      if (bodyBytes > A2A_MAX_MESSAGE_BYTES) {
+        json(res, 413, {
+          error: `a2a payload too large (${bodyBytes} > ${A2A_MAX_MESSAGE_BYTES} bytes)`
+        });
+        return;
+      }
+      const envelopeResult = normalizeA2AEnvelope(body);
+      if (!envelopeResult.value) {
+        json(res, 400, { error: envelopeResult.error ?? "invalid a2a envelope" });
+        return;
+      }
+      const envelope = envelopeResult.value;
+      if (hasA2AMessageId(manager, envelope.messageId)) {
+        json(res, 409, { error: `duplicate a2a.messageId: ${envelope.messageId}` });
+        return;
+      }
+      const target = await resolveA2ATargetService(manager, envelope.to);
+      if (!target.serviceId || !target.agentId) {
+        json(res, target.status ?? 400, { error: target.error ?? "failed to resolve a2a target service" });
+        return;
+      }
+      const sourceServiceError = await validateA2ASourceService(manager, envelope.from);
+      if (sourceServiceError) {
+        json(res, 400, { error: sourceServiceError });
+        return;
+      }
+      const existingRun = findAgentRun(manager, envelope.context.runId);
+      if (existingRun && isTerminalAgentRunStatus(existingRun.status)) {
+        json(res, 409, {
+          error: `run is terminal and no longer accepts A2A messages: ${envelope.context.runId}`,
+          runId: envelope.context.runId,
+          status: existingRun.status
+        });
+        return;
+      }
+
+      const triggerContext = {
+        parentRunId: envelope.context.parentRunId,
+        fromAgentId: envelope.from.agentId,
+        handoffReason: envelope.context.handoffReason,
+        protocol: envelope.protocol,
+        messageId: envelope.messageId,
+        kind: envelope.kind,
+        sentAt: envelope.sentAt
+      };
+      const recordedKinds: string[] = [];
+
+      if (!existingRun) {
+        manager.recordRuntimeEvent({
+          kind: "agent.run_created",
+          level: "info",
+          message: `A2A run created (${envelope.context.runId})`,
+          serviceId: target.serviceId,
+          data: {
+            runId: envelope.context.runId,
+            agent: target.agentId,
+            trigger: "a2a",
+            triggerContext,
+            parentRunId: envelope.context.parentRunId,
+            fromAgentId: envelope.from.agentId,
+            ...(envelope.context.correlationId ? { correlationId: envelope.context.correlationId } : {}),
+            ...(envelope.context.causationId ? { causationId: envelope.context.causationId } : {}),
+            messageId: envelope.messageId,
+            a2a: envelope
+          }
+        });
+        recordedKinds.push("agent.run_created");
+      }
+
+      manager.recordRuntimeEvent({
+        kind: "agent.handoff",
+        level: "info",
+        message: `A2A handoff ${envelope.from.agentId} -> ${target.agentId}`,
+        serviceId: target.serviceId,
+        data: {
+          runId: envelope.context.runId,
+          agent: target.agentId,
+          parentRunId: envelope.context.parentRunId,
+          fromAgentId: envelope.from.agentId,
+          handoffReason: envelope.context.handoffReason,
+          trigger: "a2a",
+          from: envelope.from.agentId,
+          to: target.agentId,
+          ...(envelope.context.correlationId ? { correlationId: envelope.context.correlationId } : {}),
+          ...(envelope.context.causationId ? { causationId: envelope.context.causationId } : {}),
+          messageId: envelope.messageId,
+          messageKind: envelope.kind,
+          a2a: envelope
+        }
+      });
+      recordedKinds.push("agent.handoff");
+
+      if (envelope.kind === "handoff.request" && (!existingRun || existingRun.status === "queued")) {
+        manager.recordRuntimeEvent({
+          kind: "agent.run_started",
+          level: "info",
+          message: `A2A run started (${envelope.context.runId})`,
+          serviceId: target.serviceId,
+          data: {
+            runId: envelope.context.runId,
+            agent: target.agentId,
+            trigger: "a2a",
+            parentRunId: envelope.context.parentRunId,
+            fromAgentId: envelope.from.agentId,
+            messageId: envelope.messageId,
+            a2a: envelope
+          }
+        });
+        recordedKinds.push("agent.run_started");
+      }
+
+      json(res, 202, {
+        ok: true,
+        accepted: true,
+        protocol: envelope.protocol,
+        messageId: envelope.messageId,
+        kind: envelope.kind,
+        runId: envelope.context.runId,
+        serviceId: target.serviceId,
+        agentId: target.agentId,
+        recordedKinds
+      });
       return;
     }
 
@@ -777,9 +1339,7 @@ export async function handleHttp(
       return;
     }
 
-    const agentRunEventsStreamMatch = url.pathname.match(
-      /^\/api\/agents\/runs\/([^/]+)\/events\/stream$/
-    );
+    const agentRunEventsStreamMatch = url.pathname.match(/^\/api\/agents\/runs\/([^/]+)\/events\/stream$/);
     if (method === "GET" && agentRunEventsStreamMatch) {
       const runId = decodeURIComponent(agentRunEventsStreamMatch[1]).trim();
       if (!runId) {
