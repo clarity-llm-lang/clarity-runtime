@@ -22,11 +22,17 @@
 - `GET /api/status`: full runtime summary.
 - `GET /api/services`: service summaries.
 - `GET /api/audit?limit=200`: recent audit/event records.
+- `GET /api/agents/registry`: registered agent services (agent metadata + runtime state only).
+- `GET /api/a2a/capabilities`: compliant A2A-enabled agent services and protocol profile.
 - `GET /api/agents/runs?limit=100`: summarized agent runs (status/counters/timestamps).
 - `GET /api/agents/events?limit=200`: recent `agent.*` timeline events.
 - `GET /api/agents/runs/:runId/events?limit=200`: events for one agent run.
+- `GET /api/agents/runs/:runId/events/stream?limit=200`: server-sent events stream for one run (initial replay + live `agent.*` updates for matching `runId`).
+- `POST /api/a2a/messages`: ingest one formal A2A envelope (`clarity.a2a.v1`) and normalize into canonical `agent.*` events.
 - `POST /api/agents/runs/:runId/hitl`: append human input as `agent.hitl_input` for non-terminal runs (`409` when run is completed/failed/cancelled). Input is sanitized/redacted and bounded by `CLARITY_HITL_MAX_MESSAGE_CHARS` (default `2000`).
 - `POST /api/agents/events`: ingest one `agent.*` event from orchestration clients.
+- `GET /api/traces?limit=200&run_id=&trace_id=`: recent gateway trace spans (`agent_turn -> mcp.tools/call -> service.execute -> result`).
+- `GET /api/costs/runs?limit=200&run_id=`: per-run cost ledger and budget status.
 - `GET /api/events`: server-sent events stream for live audit updates.
 - `GET /api/services/:id`: full service record.
 - `GET /api/services/:id/interface`: interface snapshot.
@@ -53,6 +59,8 @@
 - `runtime__get_audit`
 - `runtime__get_agent_runs`
 - `runtime__get_agent_events`
+- `runtime__get_traces`
+- `runtime__get_cost_ledger`
 - `runtime__validate_auth_ref`
 - `runtime__auth_provider_health`
 - `runtime__list_auth_secrets`
@@ -96,6 +104,54 @@
 - Legacy compatibility: `clarityctl add-local ...`, `clarityctl start-source ...`
 - `clarityctl list|status|start|stop|restart|introspect|details|logs|bootstrap|bootstrap-remove|doctor` (`bootstrap` supports stdio/http client config plus optional `--update-agents-md`; `bootstrap-remove` removes client registrations; `doctor` checks daemon, compiler, workspace)
 - `clarityctl gateway serve --stdio`
+
+## Tracing, Cost, and Budgets
+- Gateway assigns/propagates `session_id`, `trace_id`, and `run_id` for MCP `tools/call`.
+- Span phases recorded per tool call:
+  - `agent_turn`
+  - `mcp.tools/call`
+  - `service.execute`
+  - `result`
+- Cost ledger tracks per run:
+  - bytes/tokens in/out (tokens optional when unavailable)
+  - provider/model (when present in payload/result)
+  - computed USD cost via local pricing table
+  - latency and retries
+- Pricing table sources:
+  - `CLARITY_PRICING_TABLE_PATH` (JSON file)
+  - `CLARITY_PRICING_TABLE_JSON` (inline JSON)
+  - fallback default byte-cost table
+- Budget controls:
+  - `CLARITY_BUDGET_MAX_TOOL_CALLS_PER_RUN` (default `64`)
+  - `CLARITY_BUDGET_MAX_TOTAL_TOKENS_PER_RUN` (default `200000`)
+  - `CLARITY_BUDGET_MAX_TOTAL_COST_USD` (default `20`)
+- Remote retry controls:
+  - `CLARITY_REMOTE_RETRY_MAX` (default `0`)
+  - `CLARITY_REMOTE_RETRY_BACKOFF_MS` (default `150`)
+- Service circuit-breaker controls (tool error-rate quarantine):
+  - `CLARITY_TOOL_CIRCUIT_WINDOW_SECONDS` (default `60`)
+  - `CLARITY_TOOL_CIRCUIT_MIN_CALLS` (default `8`)
+  - `CLARITY_TOOL_CIRCUIT_ERROR_RATE` (default `0.6`)
+
+## Formal A2A Contract
+- Protocol id: `clarity.a2a.v1`.
+- Agents that declare trigger `a2a` must declare `metadata.agent.a2a` in manifest.
+- Envelope requirements for `POST /api/a2a/messages`:
+  - `protocol`, `kind`, `messageId`, `sentAt`
+  - `from.agentId`, `to.agentId`
+  - `context.runId`, `context.parentRunId`, `context.handoffReason`
+- Accepted `kind` values:
+  - `handoff.request`
+  - `handoff.accepted`
+  - `handoff.rejected`
+  - `handoff.completed`
+- Runtime behavior:
+  - target agent service is resolved and validated as `a2a`-enabled
+  - duplicate `messageId` is rejected (`409`)
+  - envelope is normalized into canonical `agent.run_created` (when run is new), `agent.handoff`, and optional `agent.run_started`
+  - terminal runs reject new A2A envelopes (`409`)
+- Size control:
+  - `CLARITY_A2A_MAX_MESSAGE_BYTES` (default `65536`)
 
 ## Planned Next
 - Add stricter auth isolation controls for remote services.
