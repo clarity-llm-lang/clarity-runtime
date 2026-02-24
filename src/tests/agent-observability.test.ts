@@ -16,7 +16,9 @@ async function startServer(
     Promise.resolve(handler(req, res)).catch((error) => {
       res.statusCode = 500;
       res.setHeader("content-type", "application/json; charset=utf-8");
-      res.end(`${JSON.stringify({ error: error instanceof Error ? error.message : String(error) })}\n`);
+      res.end(
+        `${JSON.stringify({ error: error instanceof Error ? error.message : String(error) })}\n`
+      );
     });
   });
 
@@ -39,7 +41,11 @@ async function startServer(
   };
 }
 
-async function jsonRequest(baseUrl: string, pathname: string, init?: RequestInit): Promise<{ status: number; body: unknown }> {
+async function jsonRequest(
+  baseUrl: string,
+  pathname: string,
+  init?: RequestInit
+): Promise<{ status: number; body: unknown }> {
   const res = await fetch(`${baseUrl}${pathname}`, {
     ...init,
     headers: {
@@ -50,6 +56,111 @@ async function jsonRequest(baseUrl: string, pathname: string, init?: RequestInit
   const text = await res.text();
   const body = text ? (JSON.parse(text) as unknown) : {};
   return { status: res.status, body };
+}
+
+async function collectSseEvents(
+  baseUrl: string,
+  pathname: string,
+  targetCount: number,
+  options: {
+    timeoutMs?: number;
+    onOpen?: () => Promise<void>;
+  } = {}
+): Promise<Array<Record<string, unknown>>> {
+  const controller = new AbortController();
+  const timeoutMs = Math.max(200, options.timeoutMs ?? 2000);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    headers: {
+      accept: "text/event-stream"
+    },
+    signal: controller.signal
+  });
+  assert.equal(response.status, 200);
+  const body = response.body;
+  if (!body) {
+    throw new Error("missing SSE response body");
+  }
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const out: Array<Record<string, unknown>> = [];
+  let buffer = "";
+  let dataLines: string[] = [];
+
+  const flush = (): void => {
+    if (dataLines.length === 0) {
+      return;
+    }
+    const payload = dataLines.join("\n");
+    dataLines = [];
+    try {
+      const event = JSON.parse(payload) as unknown;
+      if (event && typeof event === "object") {
+        out.push(event as Record<string, unknown>);
+      }
+    } catch {
+      // Ignore malformed JSON events.
+    }
+  };
+
+  try {
+    if (options.onOpen) {
+      await options.onOpen();
+    }
+    while (out.length < targetCount) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      while (true) {
+        const newlineIndex = buffer.indexOf("\n");
+        if (newlineIndex < 0) {
+          break;
+        }
+        const line = buffer.slice(0, newlineIndex).replace(/\r$/, "");
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line.length === 0) {
+          flush();
+          if (out.length >= targetCount) {
+            controller.abort();
+            break;
+          }
+          continue;
+        }
+        if (line.startsWith(":")) {
+          continue;
+        }
+        if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trimStart());
+        }
+      }
+    }
+  } catch (error) {
+    const isAbortError =
+      error &&
+      typeof error === "object" &&
+      "name" in error &&
+      (error as { name?: unknown }).name === "AbortError";
+    if (!(isAbortError && controller.signal.aborted)) {
+      throw error;
+    }
+  } finally {
+    clearTimeout(timeout);
+    controller.abort();
+    reader.releaseLock();
+  }
+
+  if (timedOut && out.length < targetCount) {
+    assert.fail(`timed out waiting for ${targetCount} SSE events (received ${out.length})`);
+  }
+
+  return out;
 }
 
 function asObject(input: unknown): Record<string, unknown> {
@@ -189,7 +300,10 @@ test("agent HTTP endpoints accept events and return run timeline", async () => {
     const runItems = asObject(runs.body).items as Array<Record<string, unknown>>;
     assert.ok(runItems.some((item) => String(item.runId) === "run-http-1"));
 
-    const runEvents = await jsonRequest(runtime.baseUrl, "/api/agents/runs/run-http-1/events?limit=20");
+    const runEvents = await jsonRequest(
+      runtime.baseUrl,
+      "/api/agents/runs/run-http-1/events?limit=20"
+    );
     assert.equal(runEvents.status, 200);
     const eventItems = asObject(runEvents.body).items as Array<Record<string, unknown>>;
     assert.ok(eventItems.length >= 2);
@@ -207,7 +321,10 @@ test("agent HTTP endpoints accept events and return run timeline", async () => {
     assert.equal(Boolean(hitlBody.message_truncated), true);
     assert.equal(Boolean(hitlBody.message_redacted), true);
 
-    const runEventsAfterHitl = await jsonRequest(runtime.baseUrl, "/api/agents/runs/run-http-1/events?limit=30");
+    const runEventsAfterHitl = await jsonRequest(
+      runtime.baseUrl,
+      "/api/agents/runs/run-http-1/events?limit=30"
+    );
     assert.equal(runEventsAfterHitl.status, 200);
     const hitlItems = asObject(runEventsAfterHitl.body).items as Array<Record<string, unknown>>;
     const latestHitl = hitlItems.find((item) => String(item.kind) === "agent.hitl_input");
@@ -230,14 +347,89 @@ test("agent HTTP endpoints accept events and return run timeline", async () => {
     });
     assert.equal(completeRun.status, 200);
 
-    const hitlAfterCompletion = await jsonRequest(runtime.baseUrl, "/api/agents/runs/run-http-1/hitl", {
-      method: "POST",
-      body: JSON.stringify({
-        message: "approve after completion"
-      })
-    });
+    const hitlAfterCompletion = await jsonRequest(
+      runtime.baseUrl,
+      "/api/agents/runs/run-http-1/hitl",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          message: "approve after completion"
+        })
+      }
+    );
     assert.equal(hitlAfterCompletion.status, 409);
     assert.equal(String(asObject(hitlAfterCompletion.body).status), "completed");
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("run-scoped agent events stream replays history and streams live updates", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-agent-run-stream-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"));
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const startRun = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_started",
+        message: "Run started",
+        runId: "run-stream-1",
+        agent: "coordinator"
+      })
+    });
+    assert.equal(startRun.status, 200);
+
+    const streamEvents = await collectSseEvents(
+      runtime.baseUrl,
+      "/api/agents/runs/run-stream-1/events/stream?limit=20",
+      2,
+      {
+        onOpen: async () => {
+          const wrongRunEvent = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+            method: "POST",
+            body: JSON.stringify({
+              kind: "agent.step_started",
+              message: "Other run step",
+              runId: "run-other-1",
+              stepId: "x",
+              agent: "coordinator"
+            })
+          });
+          assert.equal(wrongRunEvent.status, 200);
+
+          const sameRunEvent = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+            method: "POST",
+            body: JSON.stringify({
+              kind: "agent.step_started",
+              message: "Current run step",
+              runId: "run-stream-1",
+              stepId: "a",
+              agent: "coordinator"
+            })
+          });
+          assert.equal(sameRunEvent.status, 200);
+        }
+      }
+    );
+
+    assert.equal(streamEvents.length, 2);
+    assert.equal(String(streamEvents[0]?.kind), "agent.run_started");
+    assert.equal(String(streamEvents[1]?.kind), "agent.step_started");
+
+    const firstData = asObject(streamEvents[0]?.data);
+    const secondData = asObject(streamEvents[1]?.data);
+    assert.equal(String(firstData.runId), "run-stream-1");
+    assert.equal(String(secondData.runId), "run-stream-1");
   } finally {
     await manager.shutdown();
     await runtime.close();
