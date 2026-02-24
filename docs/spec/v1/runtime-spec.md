@@ -25,6 +25,7 @@
 - `GET /api/agents/runs?limit=100`: summarized agent runs (status/counters/timestamps).
 - `GET /api/agents/events?limit=200`: recent `agent.*` timeline events.
 - `GET /api/agents/runs/:runId/events?limit=200`: events for one agent run.
+- `POST /api/agents/runs/:runId/hitl`: append human input as `agent.hitl_input` for non-terminal runs (`409` when run is completed/failed/cancelled). Input is sanitized/redacted and bounded by `CLARITY_HITL_MAX_MESSAGE_CHARS` (default `2000`).
 - `POST /api/agents/events`: ingest one `agent.*` event from orchestration clients.
 - `GET /api/events`: server-sent events stream for live audit updates.
 - `GET /api/services/:id`: full service record.
@@ -34,7 +35,7 @@
 - `GET /api/services/:id/details?log_limit=50&event_limit=100&call_limit=20`: aggregated service details (summary, interface, logs, events, recent calls).
 - `POST /api/services/apply`: apply manifest.
 - `POST /api/services/:id/start|stop|restart|introspect|unquarantine`.
-- `POST /api/bootstrap`: write Codex/Claude client registration (`transport=stdio|http`; `endpoint` required for http).
+- `POST /api/bootstrap`: write Codex/Claude client registration (`transport=stdio|http`; `endpoint` required for http). Optional `update_agents_md=true` upserts an idempotent managed Clarity-defaults block in workspace `AGENTS.md`.
 - `DELETE /api/bootstrap`: remove Codex/Claude `clarity_gateway` registration.
 - `GET /api/bootstrap/status`: read Codex/Claude bootstrap configuration status and file paths.
 
@@ -93,7 +94,7 @@
 - `clarityctl add-all [dir] [--recursive]`
 - `clarityctl add-remote --endpoint ... --module ... [--timeout-ms ...] [--allow-tools ...] [--max-payload-bytes ...] [--max-concurrency ...]`
 - Legacy compatibility: `clarityctl add-local ...`, `clarityctl start-source ...`
-- `clarityctl list|status|start|stop|restart|introspect|details|logs|bootstrap|bootstrap-remove|doctor` (`bootstrap` supports stdio/http client config; `bootstrap-remove` removes client registrations; `doctor` checks daemon, compiler, workspace)
+- `clarityctl list|status|start|stop|restart|introspect|details|logs|bootstrap|bootstrap-remove|doctor` (`bootstrap` supports stdio/http client config plus optional `--update-agents-md`; `bootstrap-remove` removes client registrations; `doctor` checks daemon, compiler, workspace)
 - `clarityctl gateway serve --stdio`
 
 ## Planned Next

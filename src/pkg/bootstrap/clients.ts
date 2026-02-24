@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -46,12 +46,7 @@ function upsertManagedAgentsBlock(content: string): string {
 
 export async function upsertWorkspaceAgentsDefaults(workspaceRoot = process.cwd()): Promise<{ updated: boolean; path: string }> {
   const agentsPath = path.join(workspaceRoot, "AGENTS.md");
-  let content = "";
-  try {
-    content = await readFile(agentsPath, "utf8");
-  } catch {
-    content = "";
-  }
+  const content = await readFile(agentsPath, "utf8").catch(() => "");
   const next = upsertManagedAgentsBlock(content);
   if (next === content) {
     return { updated: false, path: agentsPath };
@@ -188,6 +183,7 @@ export async function unbootstrapClaude(): Promise<{ updated: boolean; path: str
 export interface BootstrapClientStatus {
   client: "codex" | "claude";
   path: string;
+  present?: boolean;
   configured: boolean;
   transport?: BootstrapTransport;
   endpoint?: string;
@@ -216,6 +212,7 @@ export async function codexBootstrapStatus(): Promise<BootstrapClientStatus> {
     return {
       client: "codex",
       path: configPath,
+      present: true,
       configured: block.length > 0,
       ...(transport ? { transport } : {}),
       ...(endpoint ? { endpoint } : {}),
@@ -223,9 +220,11 @@ export async function codexBootstrapStatus(): Promise<BootstrapClientStatus> {
       ...(args.length > 0 ? { args } : {})
     };
   } catch {
+    const present = await access(configPath).then(() => true).catch(() => false);
     return {
       client: "codex",
       path: configPath,
+      present,
       configured: false
     };
   }
@@ -249,6 +248,7 @@ export async function claudeBootstrapStatus(): Promise<BootstrapClientStatus> {
     return {
       client: "claude",
       path: configPath,
+      present: true,
       configured: !!entry,
       ...(transport ? { transport } : {}),
       ...(endpoint ? { endpoint } : {}),
@@ -256,9 +256,11 @@ export async function claudeBootstrapStatus(): Promise<BootstrapClientStatus> {
       ...(args.length > 0 ? { args } : {})
     };
   } catch {
+    const present = await access(configPath).then(() => true).catch(() => false);
     return {
       client: "claude",
       path: configPath,
+      present,
       configured: false
     };
   }
