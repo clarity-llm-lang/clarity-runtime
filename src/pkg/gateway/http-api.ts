@@ -1049,7 +1049,10 @@ export async function handleHttp(
       }
 
       const context = buildMcpRequestContext(req, url, message as JsonRpcRequest);
-      const response = await mcpRouter.handle(message as JsonRpcRequest, context);
+      const routerHandle = (mcpRouter as unknown as {
+        handle: (request: JsonRpcRequest, requestContext?: unknown) => Promise<unknown>;
+      }).handle;
+      const response = await routerHandle.call(mcpRouter, message as JsonRpcRequest, context);
       if (!response) {
         res.statusCode = 202;
         res.end();
@@ -1195,11 +1198,16 @@ export async function handleHttp(
       const limit = parseLimit(url.searchParams.get("limit"), 200, 1, 5000);
       const runId = nonEmptyString(url.searchParams.get("run_id"));
       const traceId = nonEmptyString(url.searchParams.get("trace_id"));
+      const getTraceSpans = (mcpRouter as unknown as {
+        getTraceSpans?: (maxItems: number, filter?: { runId?: string; traceId?: string }) => unknown[];
+      }).getTraceSpans;
       json(res, 200, {
-        items: mcpRouter.getTraceSpans(limit, {
-          ...(runId ? { runId } : {}),
-          ...(traceId ? { traceId } : {})
-        })
+        items: getTraceSpans
+          ? getTraceSpans(limit, {
+            ...(runId ? { runId } : {}),
+            ...(traceId ? { traceId } : {})
+          })
+          : []
       });
       return;
     }
@@ -1207,8 +1215,11 @@ export async function handleHttp(
     if (method === "GET" && url.pathname === "/api/costs/runs") {
       const limit = parseLimit(url.searchParams.get("limit"), 200, 1, 2000);
       const runId = nonEmptyString(url.searchParams.get("run_id")) ?? undefined;
+      const getRunCostLedgers = (mcpRouter as unknown as {
+        getRunCostLedgers?: (maxItems: number, runId?: string) => unknown[];
+      }).getRunCostLedgers;
       json(res, 200, {
-        items: mcpRouter.getRunCostLedgers(limit, runId)
+        items: getRunCostLedgers ? getRunCostLedgers(limit, runId) : []
       });
       return;
     }
