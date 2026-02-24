@@ -28,11 +28,26 @@ import {
 } from "../hitl/broker.js";
 
 const CLARITY_SYSTEM_TOOLS = [
-  { name: "clarity__help", description: "Clarity-first guidance and workflow hints for LLM usage." },
-  { name: "clarity__sources", description: "List .clarity files in workspace and optionally include excerpts." },
-  { name: "clarity__project_structure", description: "Return recommended Clarity app structure with templates." },
-  { name: "clarity__ensure_compiler", description: "Check/install clarityc with install-policy gates." },
-  { name: "clarity__bootstrap_app", description: "Scaffold/build/register a Clarity app with rollback semantics." }
+  {
+    name: "clarity__help",
+    description: "Clarity-first guidance and workflow hints for LLM usage."
+  },
+  {
+    name: "clarity__sources",
+    description: "List .clarity files in workspace and optionally include excerpts."
+  },
+  {
+    name: "clarity__project_structure",
+    description: "Return recommended Clarity app structure with templates."
+  },
+  {
+    name: "clarity__ensure_compiler",
+    description: "Check/install clarityc with install-policy gates."
+  },
+  {
+    name: "clarity__bootstrap_app",
+    description: "Scaffold/build/register a Clarity app with rollback semantics."
+  }
 ] as const;
 
 const RUNTIME_SYSTEM_TOOLS = [
@@ -43,9 +58,18 @@ const RUNTIME_SYSTEM_TOOLS = [
   { name: "runtime__start_service", description: "Start a stopped service." },
   { name: "runtime__stop_service", description: "Stop a running service." },
   { name: "runtime__restart_service", description: "Restart a service." },
-  { name: "runtime__refresh_interface", description: "Refresh tool/resource/prompt snapshot for service." },
-  { name: "runtime__unquarantine_service", description: "Clear quarantine so a service can start again." },
-  { name: "runtime__remove_service", description: "Deprovision service with optional artifact cleanup." },
+  {
+    name: "runtime__refresh_interface",
+    description: "Refresh tool/resource/prompt snapshot for service."
+  },
+  {
+    name: "runtime__unquarantine_service",
+    description: "Clear quarantine so a service can start again."
+  },
+  {
+    name: "runtime__remove_service",
+    description: "Deprovision service with optional artifact cleanup."
+  },
   { name: "runtime__get_audit", description: "Read recent runtime audit events." },
   { name: "runtime__get_agent_runs", description: "List recent agent runs with status/timing counters." },
   { name: "runtime__get_agent_events", description: "Read recent agent orchestration timeline events." },
@@ -58,7 +82,10 @@ const RUNTIME_SYSTEM_TOOLS = [
   { name: "runtime__delete_auth_secret", description: "Delete file-backed auth secret." },
   { name: "runtime__register_local", description: "Register local wasm service via MCP." },
   { name: "runtime__register_remote", description: "Register remote MCP service via MCP." },
-  { name: "runtime__register_via_url", description: "Quick-register remote service from URL via MCP." },
+  {
+    name: "runtime__register_via_url",
+    description: "Quick-register remote service from URL via MCP."
+  },
   { name: "runtime__apply_manifest", description: "Apply full service manifest via MCP." }
 ] as const;
 
@@ -165,7 +192,12 @@ function json(res: ServerResponse, status: number, data: unknown): void {
   res.end(`${JSON.stringify(data, null, 2)}\n`);
 }
 
-function text(res: ServerResponse, status: number, body: string, type = "text/plain; charset=utf-8"): void {
+function text(
+  res: ServerResponse,
+  status: number,
+  body: string,
+  type = "text/plain; charset=utf-8"
+): void {
   res.statusCode = status;
   res.setHeader("content-type", type);
   res.end(body);
@@ -180,14 +212,15 @@ function bytes(res: ServerResponse, status: number, body: Buffer, type: string):
 function summarize(record: Awaited<ReturnType<ServiceManager["list"]>>[number]) {
   const inferredType = inferServiceType(record);
   const origin = record.manifest.spec.origin;
-  const remotePolicy = origin.type === "remote_mcp"
-    ? {
-        timeoutMs: origin.timeoutMs,
-        allowedTools: origin.allowedTools ?? [],
-        maxPayloadBytes: origin.maxPayloadBytes,
-        maxConcurrency: origin.maxConcurrency
-      }
-    : null;
+  const remotePolicy =
+    origin.type === "remote_mcp"
+      ? {
+          timeoutMs: origin.timeoutMs,
+          allowedTools: origin.allowedTools ?? [],
+          maxPayloadBytes: origin.maxPayloadBytes,
+          maxConcurrency: origin.maxConcurrency
+        }
+      : null;
 
   return {
     serviceId: record.manifest.metadata.serviceId,
@@ -281,7 +314,10 @@ function inferServiceType(record: Awaited<ReturnType<ServiceManager["list"]>>[nu
   return explicit === "agent" ? "agent" : "mcp";
 }
 
-function extractRecentCalls(events: Array<{ kind: string; at: string; message: string; data?: unknown }>, limit: number): Array<{ at: string; message: string; data?: unknown }> {
+function extractRecentCalls(
+  events: Array<{ kind: string; at: string; message: string; data?: unknown }>,
+  limit: number
+): Array<{ at: string; message: string; data?: unknown }> {
   const calls = events
     .filter((event) => event.kind === "mcp.tool_called")
     .map((event) => ({
@@ -576,7 +612,9 @@ function findAgentRun(manager: ServiceManager, runId: string): ReturnType<Servic
 }
 
 function isTerminalAgentRunStatus(status: unknown): boolean {
-  const normalized = String(status ?? "").trim().toLowerCase();
+  const normalized = String(status ?? "")
+    .trim()
+    .toLowerCase();
   return normalized === "completed" || normalized === "failed" || normalized === "cancelled";
 }
 
@@ -604,7 +642,10 @@ function sanitizeHitlMessage(input: string, maxChars: number): {
 
   const redactRules: Array<{ pattern: RegExp; replace: string }> = [
     { pattern: /\b(bearer)\s+[A-Za-z0-9._-]+/gi, replace: "$1 [REDACTED]" },
-    { pattern: /\b(api[_-]?key|token|password|secret)\s*[:=]\s*([^\s,;]+)/gi, replace: "$1=[REDACTED]" },
+    {
+      pattern: /\b(api[_-]?key|token|password|secret)\s*[:=]\s*([^\s,;]+)/gi,
+      replace: "$1=[REDACTED]"
+    },
     { pattern: /\bsk-[A-Za-z0-9]{8,}\b/g, replace: "sk-[REDACTED]" }
   ];
   let redacted = false;
@@ -631,7 +672,9 @@ function sanitizeHitlMessage(input: string, maxChars: number): {
 }
 
 function validateAgentRunCreatedPayload(payload: Record<string, unknown>): string | null {
-  const triggerRaw = nonEmptyString(getField(payload, "trigger") ?? getField(payload, "triggerType") ?? getField(payload, "source"));
+  const triggerRaw = nonEmptyString(
+    getField(payload, "trigger") ?? getField(payload, "triggerType") ?? getField(payload, "source")
+  );
   if (!triggerRaw) {
     return null;
   }
@@ -679,7 +722,9 @@ async function validateDeclaredServiceTrigger(
   if (!Array.isArray(declared) || declared.length === 0) {
     return `agent service has no declared triggers: ${sid}`;
   }
-  const triggerRaw = nonEmptyString(getField(payload, "trigger") ?? getField(payload, "triggerType") ?? getField(payload, "source"));
+  const triggerRaw = nonEmptyString(
+    getField(payload, "trigger") ?? getField(payload, "triggerType") ?? getField(payload, "source")
+  );
   if (!triggerRaw) {
     return `trigger is required for agent.run_created when service_id is set (${sid})`;
   }
@@ -707,7 +752,12 @@ export async function handleHttp(
       return;
     }
 
-    if (method === "GET" && (url.pathname === "/favicon.ico" || url.pathname === "/favicon.png" || url.pathname === "/apple-touch-icon.png")) {
+    if (
+      method === "GET" &&
+      (url.pathname === "/favicon.ico" ||
+        url.pathname === "/favicon.png" ||
+        url.pathname === "/apple-touch-icon.png")
+    ) {
       const favicon = await readFile(FAVICON_PNG_PATH);
       bytes(res, 200, favicon, "image/png");
       return;
@@ -719,13 +769,13 @@ export async function handleHttp(
     }
 
     if (
-      url.pathname.startsWith("/api/")
-      || url.pathname === "/mcp"
-      || url.pathname === "/questions"
-      || url.pathname.startsWith("/questions/")
-      || url.pathname === "/answer"
-      || url.pathname === "/cancel"
-      || url.pathname === "/events"
+      url.pathname.startsWith("/api/") ||
+      url.pathname === "/mcp" ||
+      url.pathname === "/questions" ||
+      url.pathname.startsWith("/questions/") ||
+      url.pathname === "/answer" ||
+      url.pathname === "/cancel" ||
+      url.pathname === "/events"
     ) {
       const auth = authorizeRequest(req, url, authConfig);
       if (!auth.ok) {
@@ -771,30 +821,38 @@ export async function handleHttp(
         env: process.env,
         cwd: process.cwd()
       });
-      json(res, 200, items
-        .filter((item) => !item.answered)
-        .map((item) => ({
-          key: item.key,
-          question: item.question,
-          timestamp: item.timestamp,
-          ...(item.pid !== undefined ? { pid: item.pid } : {}),
-          ageSeconds: item.ageSeconds
-        })));
+      json(
+        res,
+        200,
+        items
+          .filter((item) => !item.answered)
+          .map((item) => ({
+            key: item.key,
+            question: item.question,
+            timestamp: item.timestamp,
+            ...(item.pid !== undefined ? { pid: item.pid } : {}),
+            ageSeconds: item.ageSeconds
+          }))
+      );
       return;
     }
 
     const questionByKeyMatch = url.pathname.match(/^\/questions\/([^/]+)$/);
     if (method === "GET" && questionByKeyMatch) {
       const key = decodeURIComponent(questionByKeyMatch[1]);
-      json(res, 200, await readQuestionState(key, {
-        env: process.env,
-        cwd: process.cwd()
-      }));
+      json(
+        res,
+        200,
+        await readQuestionState(key, {
+          env: process.env,
+          cwd: process.cwd()
+        })
+      );
       return;
     }
 
     if (method === "POST" && url.pathname === "/questions") {
-      const body = await readJsonBody(req) as {
+      const body = (await readJsonBody(req)) as {
         key?: unknown;
         question?: unknown;
         timestamp?: unknown;
@@ -806,21 +864,26 @@ export async function handleHttp(
         json(res, 400, { error: "expected { key, question }" });
         return;
       }
-      const out = await submitQuestion({
-        key,
-        question,
-        ...(typeof body.timestamp === "number" && Number.isFinite(body.timestamp) ? { timestamp: body.timestamp } : {}),
-        ...(typeof body.pid === "number" && Number.isFinite(body.pid) ? { pid: body.pid } : {})
-      }, {
-        env: process.env,
-        cwd: process.cwd()
-      });
+      const out = await submitQuestion(
+        {
+          key,
+          question,
+          ...(typeof body.timestamp === "number" && Number.isFinite(body.timestamp)
+            ? { timestamp: body.timestamp }
+            : {}),
+          ...(typeof body.pid === "number" && Number.isFinite(body.pid) ? { pid: body.pid } : {})
+        },
+        {
+          env: process.env,
+          cwd: process.cwd()
+        }
+      );
       json(res, 200, out);
       return;
     }
 
     if (method === "POST" && url.pathname === "/answer") {
-      const body = await readJsonBody(req) as {
+      const body = (await readJsonBody(req)) as {
         key?: unknown;
         response?: unknown;
       };
@@ -846,7 +909,7 @@ export async function handleHttp(
     }
 
     if (method === "POST" && url.pathname === "/cancel") {
-      const body = await readJsonBody(req) as {
+      const body = (await readJsonBody(req)) as {
         key?: unknown;
       };
       const key = nonEmptyString(body.key);
@@ -854,10 +917,14 @@ export async function handleHttp(
         json(res, 400, { error: "expected { key }" });
         return;
       }
-      json(res, 200, await cancelQuestion(key, {
-        env: process.env,
-        cwd: process.cwd()
-      }));
+      json(
+        res,
+        200,
+        await cancelQuestion(key, {
+          env: process.env,
+          cwd: process.cwd()
+        })
+      );
       return;
     }
 
@@ -943,7 +1010,14 @@ export async function handleHttp(
       json(res, 200, {
         name: "clarity-runtime gateway",
         protocol: "jsonrpc-2.0",
-        supportedMethods: ["initialize", "ping", "tools/list", "tools/call", "resources/list", "prompts/list"]
+        supportedMethods: [
+          "initialize",
+          "ping",
+          "tools/list",
+          "tools/call",
+          "resources/list",
+          "prompts/list"
+        ]
       });
       return;
     }
@@ -976,19 +1050,25 @@ export async function handleHttp(
     if (method === "GET" && url.pathname === "/api/status") {
       const services = (await manager.list()).map(summarize);
       const agentRuns = manager.getAgentRuns(500);
-      const listen = req.headers.host && req.headers.host.length > 0 ? req.headers.host : "localhost:4707";
+      const listen =
+        req.headers.host && req.headers.host.length > 0 ? req.headers.host : "localhost:4707";
       const summary = {
         total: services.length,
         mcpServices: services.filter((s) => s.serviceType === "mcp").length,
         agentServices: services.filter((s) => s.serviceType === "agent").length,
         running: services.filter((s) => s.lifecycle === "RUNNING").length,
-        runningMcp: services.filter((s) => s.lifecycle === "RUNNING" && s.serviceType === "mcp").length,
-        runningAgent: services.filter((s) => s.lifecycle === "RUNNING" && s.serviceType === "agent").length,
+        runningMcp: services.filter((s) => s.lifecycle === "RUNNING" && s.serviceType === "mcp")
+          .length,
+        runningAgent: services.filter((s) => s.lifecycle === "RUNNING" && s.serviceType === "agent")
+          .length,
         degraded: services.filter((s) => s.health === "DEGRADED").length,
-        stopped: services.filter((s) => s.lifecycle === "STOPPED" || s.lifecycle === "REGISTERED").length,
+        stopped: services.filter((s) => s.lifecycle === "STOPPED" || s.lifecycle === "REGISTERED")
+          .length,
         quarantined: services.filter((s) => s.lifecycle === "QUARANTINED").length,
-        local: services.filter((s) => s.originType === "local_wasm" && s.serviceType === "mcp").length,
-        remote: services.filter((s) => s.originType === "remote_mcp" && s.serviceType === "mcp").length
+        local: services.filter((s) => s.originType === "local_wasm" && s.serviceType === "mcp")
+          .length,
+        remote: services.filter((s) => s.originType === "remote_mcp" && s.serviceType === "mcp")
+          .length
       };
       const agentSummary = {
         totalRuns: agentRuns.length,
@@ -1306,7 +1386,7 @@ export async function handleHttp(
         json(res, 400, { error: "runId is required" });
         return;
       }
-      const body = await readJsonBody(req) as {
+      const body = (await readJsonBody(req)) as {
         message?: unknown;
         text?: unknown;
         input?: unknown;
@@ -1315,7 +1395,8 @@ export async function handleHttp(
         agent?: unknown;
         kind?: unknown;
       };
-      const message = nonEmptyString(body.message) ?? nonEmptyString(body.text) ?? nonEmptyString(body.input);
+      const message =
+        nonEmptyString(body.message) ?? nonEmptyString(body.text) ?? nonEmptyString(body.input);
       if (!message) {
         json(res, 400, { error: "expected non-empty message (or text/input)" });
         return;
@@ -1336,7 +1417,8 @@ export async function handleHttp(
       }
 
       const sanitized = sanitizeHitlMessage(message, HITL_MAX_MESSAGE_CHARS);
-      const serviceId = nonEmptyString(body.serviceId) ?? nonEmptyString(body.service_id) ?? run?.serviceId;
+      const serviceId =
+        nonEmptyString(body.serviceId) ?? nonEmptyString(body.service_id) ?? run?.serviceId;
       const agent = nonEmptyString(body.agent) ?? run?.agent;
       manager.recordRuntimeEvent({
         kind,
@@ -1376,7 +1458,7 @@ export async function handleHttp(
     }
 
     if (method === "POST" && url.pathname === "/api/agents/events") {
-      const body = await readJsonBody(req) as {
+      const body = (await readJsonBody(req)) as {
         kind?: unknown;
         level?: unknown;
         message?: unknown;
@@ -1394,13 +1476,20 @@ export async function handleHttp(
         return;
       }
       const level = body.level === "warn" || body.level === "error" ? body.level : "info";
-      const payload = typeof body.data === "object" && body.data ? body.data as Record<string, unknown> : {};
-      const runId = typeof body.runId === "string"
-        ? body.runId
-        : (typeof body.run_id === "string" ? body.run_id : undefined);
-      const stepId = typeof body.stepId === "string"
-        ? body.stepId
-        : (typeof body.step_id === "string" ? body.step_id : undefined);
+      const payload =
+        typeof body.data === "object" && body.data ? (body.data as Record<string, unknown>) : {};
+      const runId =
+        typeof body.runId === "string"
+          ? body.runId
+          : typeof body.run_id === "string"
+            ? body.run_id
+            : undefined;
+      const stepId =
+        typeof body.stepId === "string"
+          ? body.stepId
+          : typeof body.step_id === "string"
+            ? body.step_id
+            : undefined;
       const agent = typeof body.agent === "string" ? body.agent : undefined;
       const data = {
         ...payload,
@@ -1415,18 +1504,24 @@ export async function handleHttp(
           return;
         }
       }
-      const message = typeof body.message === "string" && body.message.trim().length > 0
-        ? body.message
-        : `${kind}${runId ? ` (${runId})` : ""}`;
-      const serviceId = typeof body.service_id === "string"
-        ? body.service_id
-        : (typeof (data as { serviceId?: unknown }).serviceId === "string"
-          ? String((data as { serviceId: unknown }).serviceId)
-          : (typeof (data as { service_id?: unknown }).service_id === "string"
-            ? String((data as { service_id: unknown }).service_id)
-            : undefined));
+      const message =
+        typeof body.message === "string" && body.message.trim().length > 0
+          ? body.message
+          : `${kind}${runId ? ` (${runId})` : ""}`;
+      const serviceId =
+        typeof body.service_id === "string"
+          ? body.service_id
+          : typeof (data as { serviceId?: unknown }).serviceId === "string"
+            ? String((data as { serviceId: unknown }).serviceId)
+            : typeof (data as { service_id?: unknown }).service_id === "string"
+              ? String((data as { service_id: unknown }).service_id)
+              : undefined;
       if (kind === "agent.run_created") {
-        const triggerDeclarationError = await validateDeclaredServiceTrigger(manager, serviceId, data);
+        const triggerDeclarationError = await validateDeclaredServiceTrigger(
+          manager,
+          serviceId,
+          data
+        );
         if (triggerDeclarationError) {
           json(res, 400, { error: triggerDeclarationError });
           return;
@@ -1444,10 +1539,14 @@ export async function handleHttp(
     }
 
     if (method === "GET" && url.pathname === "/api/security/auth/providers") {
-      json(res, 200, await getRemoteAuthProviderHealth({
-        env: process.env,
-        cwd: process.cwd()
-      }));
+      json(
+        res,
+        200,
+        await getRemoteAuthProviderHealth({
+          env: process.env,
+          cwd: process.cwd()
+        })
+      );
       return;
     }
 
@@ -1462,16 +1561,20 @@ export async function handleHttp(
 
     if (method === "POST" && url.pathname === "/api/security/auth/secrets") {
       if ((process.env.CLARITY_ENABLE_MCP_PROVISIONING ?? "").trim() !== "1") {
-        json(res, 403, { error: "auth secret writes are disabled (set CLARITY_ENABLE_MCP_PROVISIONING=1)" });
+        json(res, 403, {
+          error: "auth secret writes are disabled (set CLARITY_ENABLE_MCP_PROVISIONING=1)"
+        });
         return;
       }
       const body = await readJsonBody(req);
-      const authRef = typeof (body as { auth_ref?: unknown }).auth_ref === "string"
-        ? ((body as { auth_ref: string }).auth_ref)
-        : "";
-      const secret = typeof (body as { secret?: unknown }).secret === "string"
-        ? ((body as { secret: string }).secret)
-        : "";
+      const authRef =
+        typeof (body as { auth_ref?: unknown }).auth_ref === "string"
+          ? (body as { auth_ref: string }).auth_ref
+          : "";
+      const secret =
+        typeof (body as { secret?: unknown }).secret === "string"
+          ? (body as { secret: string }).secret
+          : "";
       if (!authRef || !secret) {
         json(res, 400, { error: "expected { auth_ref, secret }" });
         return;
@@ -1486,13 +1589,16 @@ export async function handleHttp(
 
     if (method === "DELETE" && url.pathname === "/api/security/auth/secrets") {
       if ((process.env.CLARITY_ENABLE_MCP_PROVISIONING ?? "").trim() !== "1") {
-        json(res, 403, { error: "auth secret deletes are disabled (set CLARITY_ENABLE_MCP_PROVISIONING=1)" });
+        json(res, 403, {
+          error: "auth secret deletes are disabled (set CLARITY_ENABLE_MCP_PROVISIONING=1)"
+        });
         return;
       }
       const body = await readJsonBody(req);
-      const authRef = typeof (body as { auth_ref?: unknown }).auth_ref === "string"
-        ? ((body as { auth_ref: string }).auth_ref)
-        : "";
+      const authRef =
+        typeof (body as { auth_ref?: unknown }).auth_ref === "string"
+          ? (body as { auth_ref: string }).auth_ref
+          : "";
       if (!authRef) {
         json(res, 400, { error: "expected { auth_ref }" });
         return;
@@ -1521,9 +1627,10 @@ export async function handleHttp(
 
     if (method === "POST" && url.pathname === "/api/security/auth/validate") {
       const body = await readJsonBody(req);
-      const authRef = typeof (body as { auth_ref?: unknown }).auth_ref === "string"
-        ? ((body as { auth_ref: string }).auth_ref)
-        : "";
+      const authRef =
+        typeof (body as { auth_ref?: unknown }).auth_ref === "string"
+          ? (body as { auth_ref: string }).auth_ref
+          : "";
       if (!authRef) {
         json(res, 400, { error: "expected { auth_ref }" });
         return;
@@ -1628,9 +1735,10 @@ export async function handleHttp(
     if (method === "DELETE" && serviceMatch) {
       const id = decodeURIComponent(serviceMatch[1]);
       const body = await readJsonBody(req);
-      const cleanupArtifacts = typeof (body as { cleanup_artifacts?: unknown }).cleanup_artifacts === "boolean"
-        ? ((body as { cleanup_artifacts: boolean }).cleanup_artifacts)
-        : false;
+      const cleanupArtifacts =
+        typeof (body as { cleanup_artifacts?: unknown }).cleanup_artifacts === "boolean"
+          ? (body as { cleanup_artifacts: boolean }).cleanup_artifacts
+          : false;
       const out = await manager.remove(id, { cleanupArtifacts });
       if (!out.removed) {
         json(res, 404, { error: `service not found: ${id}` });
@@ -1640,7 +1748,9 @@ export async function handleHttp(
       return;
     }
 
-    const actionMatch = url.pathname.match(/^\/api\/services\/([^/]+)\/(start|stop|restart|introspect|unquarantine)$/);
+    const actionMatch = url.pathname.match(
+      /^\/api\/services\/([^/]+)\/(start|stop|restart|introspect|unquarantine)$/
+    );
     if (method === "POST" && actionMatch) {
       const id = decodeURIComponent(actionMatch[1]);
       const action = actionMatch[2];

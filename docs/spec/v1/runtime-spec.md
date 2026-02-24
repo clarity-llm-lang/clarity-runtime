@@ -1,21 +1,26 @@
 # Clarity Runtime v1 Spec
 
 ## Control Plane
+
 - `clarityd`: daemon with HTTP API and status UI.
 - `clarityctl`: operator CLI.
 - Single gateway endpoint intended for Codex/Claude bootstrap.
 
 ## Service Identity
+
 - `service_id` is deterministic: `svc_<12 hex chars from sha256(source|module|artifactOrEndpoint)>`.
 - `display_name` is optional UI metadata.
 
 ## Lifecycle States
+
 - `REGISTERED`, `STARTING`, `RUNNING`, `STOPPING`, `STOPPED`, `CRASHED`, `QUARANTINED`.
 
 ## Health States
+
 - `UNKNOWN`, `HEALTHY`, `DEGRADED`, `TIMEOUT`, `UNAUTHORIZED`, `UNREACHABLE`.
 
 ## HTTP API
+
 - `GET /status`: status page UI.
 - `GET /mcp`: gateway metadata.
 - `POST /mcp`: MCP JSON-RPC endpoint.
@@ -46,6 +51,7 @@
 - `GET /api/bootstrap/status`: read Codex/Claude bootstrap configuration status and file paths.
 
 ## Built-in MCP Control Tools
+
 - `runtime__status_summary`
 - `runtime__list_services`
 - `runtime__get_service`
@@ -77,12 +83,14 @@
 - `runtime__apply_manifest` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
 
 ## Local Service Tooling
+
 - Local services expose built-in tools: `health_check`, `describe_service`.
 - Local services also expose discovered function tools: `fn__<exported_function>`.
 - Gateway namespaced exposure format: `<toolNamespace>__fn__<exported_function>`.
 - Current execution path for `fn__*` tools is direct in-process wasm execution in `clarityd`.
 
 ## Manifest
+
 - JSON schema file: `schemas/mcp-service-v1.schema.json`.
 - `apiVersion`: `clarity.runtime/v1`.
 - `kind`: `MCPService`.
@@ -98,6 +106,7 @@
 - `remote_mcp.maxConcurrency`: optional per-service in-flight request limit.
 
 ## CLI
+
 - `clarityctl add <service>`
 - `clarityctl add-all [dir] [--recursive]`
 - `clarityctl add-remote --endpoint ... --module ... [--timeout-ms ...] [--allow-tools ...] [--max-payload-bytes ...] [--max-concurrency ...]`
@@ -154,5 +163,6 @@
   - `CLARITY_A2A_MAX_MESSAGE_BYTES` (default `65536`)
 
 ## Planned Next
+
 - Add stricter auth isolation controls for remote services.
 - Integrate language-side orchestration (`std/a2a`, `std/mcp`) with runtime agent event ingestion APIs.
