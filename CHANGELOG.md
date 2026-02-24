@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.6.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.5.0...v0.6.0) (2026-02-24)
+
+
+### Features
+
+* **agents:** enforce trigger context and unify runs in agent UX ([80a9552](https://github.com/clarity-llm-lang/clarity-runtime/commit/80a95525fd7b635451282d939b65f28e29fe2891))
+* **agents:** require declared triggers and enforce run trigger policy ([74aab63](https://github.com/clarity-llm-lang/clarity-runtime/commit/74aab63af1680686ddb1fe7f28143f6694fac0b2))
+* **runtime:** enforce explicit agent service descriptors ([6daeeb5](https://github.com/clarity-llm-lang/clarity-runtime/commit/6daeeb58ad72faf593eecd837316fc8100726609))
+* **runtime:** enforce explicit agent service descriptors ([5b677e0](https://github.com/clarity-llm-lang/clarity-runtime/commit/5b677e04d7d7babcf90d0ac609d4d530cfa4ff49))
+* separate agent services from mcp services ([16983c1](https://github.com/clarity-llm-lang/clarity-runtime/commit/16983c10344d331e4ee2a728c557f7144e2b6f79))
+* **ui:** clarify a2a box with agentId and orchestrator ids ([8286398](https://github.com/clarity-llm-lang/clarity-runtime/commit/82863987445e91fcac1e36c574852ced55df6439))
+* **ui:** generate agent-specific standard flow from metadata and runs ([bc976ce](https://github.com/clarity-llm-lang/clarity-runtime/commit/bc976ce71939135fc33ef7fda901382b76d18d49))
+* **ui:** render observed trigger interfaces and simplify agent runs column ([bbf44c1](https://github.com/clarity-llm-lang/clarity-runtime/commit/bbf44c19657f2ae5210c1a7aa18b3d969512ef7e))
+* **ui:** show agent dependencies and visual flow strip ([53a6fc5](https://github.com/clarity-llm-lang/clarity-runtime/commit/53a6fc56d8dd9ced344c8acb6dad74770030bf15))
+* **ui:** show dependency status and deep-link services ([29dfdfa](https://github.com/clarity-llm-lang/clarity-runtime/commit/29dfdfae6df1f23e37fe43cfc20318d3964f79bd))
+
+
+### Bug Fixes
+
+* **agents:** remove call trigger and enforce timer|event|api|a2a ([b28df47](https://github.com/clarity-llm-lang/clarity-runtime/commit/b28df47e6aa8705216ce4cdbaceb4a14b977048d))
+* **ui:** escape agent flow newline in embedded script ([dd61d84](https://github.com/clarity-llm-lang/clarity-runtime/commit/dd61d8480d021d9d78e26c5179f37b085d532d85))
+
 ## [0.5.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.4.0...v0.5.0) (2026-02-21)
 
 
