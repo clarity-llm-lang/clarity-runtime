@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.6.0...v0.7.0) (2026-02-25)
+
+
+### Features
+
+* add run-scoped agent events SSE stream ([9a0044c](https://github.com/clarity-llm-lang/clarity-runtime/commit/9a0044c53cd17209073ea8a8338a0c52f58e810b))
+* add run-scoped agent events SSE stream ([78f13ba](https://github.com/clarity-llm-lang/clarity-runtime/commit/78f13ba1efa3097540b0cebee64b5adfae93b42c))
+* add run-scoped agent events SSE stream ([ec7ad9d](https://github.com/clarity-llm-lang/clarity-runtime/commit/ec7ad9de12b35ca216bec557a1c421e7ec1fa90b))
+* add run-scoped agent events SSE stream ([7988d63](https://github.com/clarity-llm-lang/clarity-runtime/commit/7988d63eb278b753ecf9fcd62683d585faa74637))
+
+
+### Bug Fixes
+
+* make gateway compile against current mcp router api ([be99ec4](https://github.com/clarity-llm-lang/clarity-runtime/commit/be99ec49e8d81853342ea055a4e16ed593aa2659))
+* resolve runtime build type errors in gateway ([0e1cb90](https://github.com/clarity-llm-lang/clarity-runtime/commit/0e1cb90fb43bbb41c33caa54e2e9575191ecfd36))
+* restore snapshot build on main ([612aa15](https://github.com/clarity-llm-lang/clarity-runtime/commit/612aa155baabb5b1a15f6e61fd5afe7e763a6a86))
+
 ## [0.6.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.5.0...v0.6.0) (2026-02-24)
 
 
