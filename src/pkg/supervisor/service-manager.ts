@@ -61,6 +61,13 @@ function parsePositiveInteger(value: string | undefined): number | undefined {
   return parsed;
 }
 
+function parseRatio(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+    return undefined;
+  }
+  return parsed;
 function asStringList(input: unknown): string[] {
   if (!Array.isArray(input)) {
     return [];
@@ -111,7 +118,10 @@ interface TelemetryFile {
 }
 
 const AUDIT_EVENT_ALLOWLIST = new Set([
-  "mcp.tool_called"
+  "mcp.tool_called",
+  "mcp.trace_span",
+  "mcp.cost_ledger",
+  "mcp.budget_exceeded"
 ]);
 
 function includeLifecycleAudit(env = process.env): boolean {
@@ -127,6 +137,19 @@ export interface AuditEvent {
   level: "info" | "warn" | "error";
   message: string;
   data?: unknown;
+}
+
+export interface ToolCallContext {
+  traceId?: string;
+  runId?: string;
+  sessionId?: string;
+  spanId?: string;
+  retries?: number;
+  requestBytes?: number;
+  responseBytes?: number;
+  provider?: string;
+  model?: string;
+  latencyMs?: number;
 }
 
 export type AgentRunStatus = "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled";
@@ -228,6 +251,7 @@ export class ServiceManager {
   private readonly remoteInFlight = new Map<string, number>();
   private readonly localModuleCache = new Map<string, WebAssembly.Module>();
   private readonly startFailures = new Map<string, number[]>();
+  private readonly toolCallOutcomes = new Map<string, Array<{ at: number; ok: boolean }>>();
   private readonly events: AuditEvent[] = [];
   private readonly eventSubscribers = new Set<(event: AuditEvent) => void>();
   private readonly lifecycleAuditEnabled: boolean;
@@ -339,6 +363,7 @@ export class ServiceManager {
       }
     }));
     this.startFailures.delete(serviceId);
+    this.toolCallOutcomes.delete(serviceId);
     this.emitEvent({
       kind: "service.unquarantined",
       serviceId,
@@ -460,6 +485,7 @@ export class ServiceManager {
     }));
     this.starts.delete(serviceId);
     this.remoteInitialized.delete(serviceId);
+    this.toolCallOutcomes.delete(serviceId);
     this.appendLog(serviceId, "Service stopped");
     this.emitEvent({
       kind: "service.stopped",
@@ -512,6 +538,7 @@ export class ServiceManager {
     this.remoteInitialized.delete(serviceId);
     this.remoteInFlight.delete(serviceId);
     this.startFailures.delete(serviceId);
+    this.toolCallOutcomes.delete(serviceId);
     this.localModuleCache.delete(serviceId);
     const removed = await this.registry.remove(serviceId);
     if (removed) {
@@ -633,7 +660,7 @@ export class ServiceManager {
     return snapshot;
   }
 
-  async callTool(serviceId: string, toolName: string, args: unknown): Promise<unknown> {
+  async callTool(serviceId: string, toolName: string, args: unknown, context?: ToolCallContext): Promise<unknown> {
     await this.init();
     const service = await this.registry.get(serviceId);
     if (!service) {
@@ -644,91 +671,135 @@ export class ServiceManager {
       throw new Error(`service is not running: ${serviceId}`);
     }
 
-    if (service.manifest.spec.origin.type === "remote_mcp") {
-      this.enforceRemoteHostPolicy(service.manifest.spec.origin);
-      if (
-        Array.isArray(service.manifest.spec.origin.allowedTools)
-        && service.manifest.spec.origin.allowedTools.length > 0
-        && !service.manifest.spec.origin.allowedTools.includes(toolName)
-      ) {
-        throw new Error(`tool '${toolName}' is not allowed by remote policy`);
-      }
-      const result = await this.remoteRequest(
-        serviceId,
-        service.manifest.spec.origin,
-        "tools/call",
-        {
-          name: toolName,
-          arguments: args ?? {}
+    const startedAt = Date.now();
+    try {
+      if (service.manifest.spec.origin.type === "remote_mcp") {
+        this.enforceRemoteHostPolicy(service.manifest.spec.origin);
+        if (
+          Array.isArray(service.manifest.spec.origin.allowedTools)
+          && service.manifest.spec.origin.allowedTools.length > 0
+          && !service.manifest.spec.origin.allowedTools.includes(toolName)
+        ) {
+          throw new Error(`tool '${toolName}' is not allowed by remote policy`);
         }
-      );
-      this.appendLog(serviceId, `tools/call ${toolName}`);
-      this.emitEvent({
-        kind: "service.tool_called",
-        serviceId,
-        level: "info",
-        message: `Remote tool called: ${toolName}`,
-      });
-      return result;
-    }
-
-    if (toolName === "health_check") {
-      this.appendLog(serviceId, "tools/call health_check");
-      return {
-        content: [
+        const result = await this.remoteRequest(
+          serviceId,
+          service.manifest.spec.origin,
+          "tools/call",
           {
-            type: "text",
-            text: `Service ${serviceId} is running with health=${service.runtime.health}`
+            name: toolName,
+            arguments: args ?? {}
+          },
+          context
+        );
+        this.appendLog(serviceId, `tools/call ${toolName}`);
+        this.emitEvent({
+          kind: "service.tool_called",
+          serviceId,
+          level: "info",
+          message: `Remote tool called: ${toolName}`,
+        });
+        if (context) {
+          context.latencyMs = Math.max(0, Date.now() - startedAt);
+          if (context.retries === undefined) {
+            context.retries = 0;
           }
-        ]
-      };
-    }
+        }
+        this.recordToolCallOutcome(serviceId, true);
+        return result;
+      }
 
-    if (toolName === "describe_service") {
-      this.appendLog(serviceId, "tools/call describe_service");
-      return {
-        content: [
+      if (toolName === "health_check") {
+        this.appendLog(serviceId, "tools/call health_check");
+        if (context) {
+          context.requestBytes = byteLength(JSON.stringify(args ?? {}));
+          context.responseBytes = byteLength(JSON.stringify({ health: service.runtime.health }));
+          context.retries = 0;
+          context.latencyMs = Math.max(0, Date.now() - startedAt);
+        }
+        this.recordToolCallOutcome(serviceId, true);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Service ${serviceId} is running with health=${service.runtime.health}`
+            }
+          ]
+        };
+      }
+
+      if (toolName === "describe_service") {
+        this.appendLog(serviceId, "tools/call describe_service");
+        const text = JSON.stringify(
           {
-            type: "text",
-            text: JSON.stringify(
-              {
-                serviceId,
-                module: service.manifest.metadata.module,
-                sourceFile: service.manifest.metadata.sourceFile,
-                wasmPath: service.manifest.spec.origin.wasmPath,
-                entry: service.manifest.spec.origin.entry,
-                runtime: service.runtime
-              },
-              null,
-              2
-            )
-          }
-        ]
-      };
-    }
+            serviceId,
+            module: service.manifest.metadata.module,
+            sourceFile: service.manifest.metadata.sourceFile,
+            wasmPath: service.manifest.spec.origin.wasmPath,
+            entry: service.manifest.spec.origin.entry,
+            runtime: service.runtime
+          },
+          null,
+          2
+        );
+        if (context) {
+          context.requestBytes = byteLength(JSON.stringify(args ?? {}));
+          context.responseBytes = byteLength(text);
+          context.retries = 0;
+          context.latencyMs = Math.max(0, Date.now() - startedAt);
+        }
+        this.recordToolCallOutcome(serviceId, true);
+        return {
+          content: [
+            {
+              type: "text",
+              text
+            }
+          ]
+        };
+      }
 
-    if (toolName.startsWith("fn__")) {
-      const functionName = toolName.slice("fn__".length);
-      const argsList = parseFunctionArgs(args);
-      const output = await this.runLocalFunction(service, functionName, argsList);
-      this.appendLog(serviceId, `tools/call ${toolName}(${JSON.stringify(argsList)})`);
-      this.emitEvent({
-        kind: "service.tool_called",
-        serviceId,
-        level: "info",
-        message: `Local function tool called: ${toolName}`
-      });
-      return {
-        content: [
-          {
-            type: "text",
-            text: output
-          }
-        ]
-      };
-    }
+      if (toolName.startsWith("fn__")) {
+        const functionName = toolName.slice("fn__".length);
+        const argsList = parseFunctionArgs(args);
+        const output = await this.runLocalFunction(service, functionName, argsList);
+        this.appendLog(serviceId, `tools/call ${toolName}(${JSON.stringify(argsList)})`);
+        this.emitEvent({
+          kind: "service.tool_called",
+          serviceId,
+          level: "info",
+          message: `Local function tool called: ${toolName}`
+        });
+        if (context) {
+          context.requestBytes = byteLength(JSON.stringify(argsList));
+          context.responseBytes = byteLength(output);
+          context.retries = 0;
+          context.latencyMs = Math.max(0, Date.now() - startedAt);
+        }
+        this.recordToolCallOutcome(serviceId, true);
+        return {
+          content: [
+            {
+              type: "text",
+              text: output
+            }
+          ]
+        };
+      }
 
-    throw new Error(`unsupported local tool: ${toolName}`);
+      throw new Error(`unsupported local tool: ${toolName}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (context) {
+        context.latencyMs = Math.max(0, Date.now() - startedAt);
+        if (context.retries === undefined) {
+          context.retries = 0;
+        }
+      }
+      this.recordToolCallOutcome(serviceId, false);
+      await this.maybeQuarantineOnToolErrorRate(serviceId, message);
+      throw error;
+    }
   }
 
   async tailLogs(serviceId: string, limit = 200): Promise<string[]> {
@@ -1075,7 +1146,13 @@ export class ServiceManager {
     }
   }
 
-  private async remoteRequest(serviceId: string, origin: RemoteMcpOrigin | string, method: string, params: unknown): Promise<unknown> {
+  private async remoteRequest(
+    serviceId: string,
+    origin: RemoteMcpOrigin | string,
+    method: string,
+    params: unknown,
+    context?: ToolCallContext
+  ): Promise<unknown> {
     const endpoint = typeof origin === "string" ? origin : origin.endpoint;
     const timeoutMs =
       typeof origin === "string"
@@ -1089,10 +1166,9 @@ export class ServiceManager {
       typeof origin === "string"
         ? (parsePositiveInteger(process.env.CLARITY_REMOTE_MAX_CONCURRENCY) ?? 8)
         : (asPositiveInteger(origin.maxConcurrency) ?? parsePositiveInteger(process.env.CLARITY_REMOTE_MAX_CONCURRENCY) ?? 8);
+    const retryMax = parsePositiveInteger(process.env.CLARITY_REMOTE_RETRY_MAX) ?? 0;
+    const retryBackoffMs = parsePositiveInteger(process.env.CLARITY_REMOTE_RETRY_BACKOFF_MS) ?? 150;
     const requestId = `${serviceId}-${this.remoteRequestCounter++}`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) ? timeoutMs : 20_000);
-
     const headers = await this.resolveRemoteHeaders(typeof origin === "string" ? undefined : origin);
     const inFlight = this.remoteInFlight.get(serviceId) ?? 0;
     if (inFlight >= maxConcurrency) {
@@ -1112,42 +1188,78 @@ export class ServiceManager {
       throw new Error(`remote request payload too large (${requestBytes} > ${maxPayloadBytes} bytes)`);
     }
 
+    if (context) {
+      context.requestBytes = requestBytes;
+    }
+
+    const attemptHeaders = {
+      ...headers,
+      ...(context?.sessionId ? { "x-clarity-session-id": context.sessionId } : {}),
+      ...(context?.traceId ? { "x-clarity-trace-id": context.traceId } : {}),
+      ...(context?.runId ? { "x-clarity-run-id": context.runId } : {}),
+      ...(context?.spanId ? { "x-clarity-span-id": context.spanId } : {})
+    };
+
+    let attempt = 0;
+    let finalError: unknown = null;
     try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers,
-        body: requestBody,
-        signal: controller.signal
-      });
+      while (attempt <= retryMax) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) ? timeoutMs : 20_000);
+        try {
+          const response = await fetch(endpoint, {
+            method: "POST",
+            headers: attemptHeaders,
+            body: requestBody,
+            signal: controller.signal
+          });
 
-      const contentLength = Number(response.headers.get("content-length") ?? "");
-      if (Number.isFinite(contentLength) && contentLength > maxPayloadBytes) {
-        throw new Error(`remote response payload too large (${contentLength} > ${maxPayloadBytes} bytes)`);
+          const contentLength = Number(response.headers.get("content-length") ?? "");
+          if (Number.isFinite(contentLength) && contentLength > maxPayloadBytes) {
+            throw new Error(`remote response payload too large (${contentLength} > ${maxPayloadBytes} bytes)`);
+          }
+
+          const raw = await response.text();
+          const responseBytes = byteLength(raw);
+          if (responseBytes > maxPayloadBytes) {
+            throw new Error(`remote response payload too large (${responseBytes} > ${maxPayloadBytes} bytes)`);
+          }
+          if (!response.ok) {
+            throw new Error(`remote ${response.status}: ${raw.slice(0, 200)}`);
+          }
+
+          const parsed = raw ? JSON.parse(raw) : {};
+          const obj = asObject(parsed);
+          if (obj.error) {
+            const err = asObject(obj.error);
+            const message = typeof err.message === "string" ? err.message : "remote RPC error";
+            throw new Error(message);
+          }
+          if (context) {
+            context.responseBytes = responseBytes;
+            context.retries = attempt;
+          }
+          if (!("result" in obj)) {
+            return {};
+          }
+
+          return obj.result;
+        } catch (error) {
+          finalError = error;
+          const message = error instanceof Error ? error.message : String(error);
+          const retryable = attempt < retryMax && this.isRetryableRemoteError(message);
+          if (!retryable) {
+            break;
+          }
+          attempt += 1;
+          await new Promise<void>((resolve) => setTimeout(resolve, retryBackoffMs * attempt));
+          continue;
+        } finally {
+          clearTimeout(timeout);
+        }
       }
 
-      const raw = await response.text();
-      const responseBytes = byteLength(raw);
-      if (responseBytes > maxPayloadBytes) {
-        throw new Error(`remote response payload too large (${responseBytes} > ${maxPayloadBytes} bytes)`);
-      }
-      if (!response.ok) {
-        throw new Error(`remote ${response.status}: ${raw.slice(0, 200)}`);
-      }
-
-      const parsed = raw ? JSON.parse(raw) : {};
-      const obj = asObject(parsed);
-      if (obj.error) {
-        const err = asObject(obj.error);
-        const message = typeof err.message === "string" ? err.message : "remote RPC error";
-        throw new Error(message);
-      }
-      if (!("result" in obj)) {
-        return {};
-      }
-
-      return obj.result;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = finalError instanceof Error ? finalError.message : String(finalError);
       await this.registry.update(serviceId, (current) => ({
         ...current,
         runtime: {
@@ -1162,11 +1274,16 @@ export class ServiceManager {
         serviceId,
         level: "error",
         message: `Remote request failed: ${method}`,
-        data: { error: message }
+        data: {
+          error: message,
+          retries: attempt
+        }
       });
-      throw error;
+      if (context) {
+        context.retries = attempt;
+      }
+      throw (finalError ?? new Error("remote request failed"));
     } finally {
-      clearTimeout(timeout);
       const current = this.remoteInFlight.get(serviceId) ?? 1;
       if (current <= 1) {
         this.remoteInFlight.delete(serviceId);
@@ -1174,6 +1291,18 @@ export class ServiceManager {
         this.remoteInFlight.set(serviceId, current - 1);
       }
     }
+  }
+
+  private isRetryableRemoteError(message: string): boolean {
+    const normalized = message.toLowerCase();
+    return (
+      normalized.includes("abort")
+      || normalized.includes("timed out")
+      || normalized.includes("fetch failed")
+      || normalized.includes("econn")
+      || normalized.includes("enotfound")
+      || /^remote 5\d\d:/.test(normalized)
+    );
   }
 
   private enforceRemoteHostPolicy(origin: RemoteMcpOrigin): void {
@@ -1704,10 +1833,66 @@ export class ServiceManager {
     await rename(tempPath, this.telemetryPath);
   }
 
+  private recordToolCallOutcome(serviceId: string, ok: boolean): void {
+    const windowSeconds = parsePositiveInteger(process.env.CLARITY_TOOL_CIRCUIT_WINDOW_SECONDS) ?? 60;
+    const now = Date.now();
+    const windowStart = now - Math.max(1, windowSeconds) * 1000;
+    const history = (this.toolCallOutcomes.get(serviceId) ?? []).filter((item) => item.at >= windowStart);
+    history.push({ at: now, ok });
+    this.toolCallOutcomes.set(serviceId, history);
+  }
+
+  private async maybeQuarantineOnToolErrorRate(serviceId: string, reason: string): Promise<void> {
+    const minCalls = parsePositiveInteger(process.env.CLARITY_TOOL_CIRCUIT_MIN_CALLS) ?? 8;
+    const threshold = parseRatio(process.env.CLARITY_TOOL_CIRCUIT_ERROR_RATE) ?? 0.6;
+    const history = this.toolCallOutcomes.get(serviceId) ?? [];
+    if (history.length < minCalls) {
+      return;
+    }
+    const failures = history.filter((item) => !item.ok).length;
+    const failureRate = failures / history.length;
+    if (failureRate < threshold) {
+      return;
+    }
+    const current = await this.registry.get(serviceId);
+    if (!current || current.runtime.lifecycle === "QUARANTINED") {
+      return;
+    }
+    await this.registry.update(serviceId, (record) => ({
+      ...record,
+      runtime: {
+        ...record.runtime,
+        lifecycle: "QUARANTINED",
+        health: "DEGRADED",
+        lastError: `tool error-rate circuit breaker: ${reason}`,
+        pid: undefined
+      }
+    }));
+    this.starts.delete(serviceId);
+    this.remoteInitialized.delete(serviceId);
+    this.appendLog(
+      serviceId,
+      `Service quarantined by tool-call circuit breaker (error_rate=${failureRate.toFixed(2)}, failures=${failures}, calls=${history.length})`
+    );
+    this.emitEvent({
+      kind: "service.quarantined",
+      serviceId,
+      level: "error",
+      message: `Service quarantined: ${serviceId}`,
+      data: {
+        reason: "tool error-rate circuit breaker",
+        failureRate,
+        failures,
+        calls: history.length
+      }
+    });
+  }
+
   private async shouldQuarantine(service: ServiceRecord, failedStart: boolean): Promise<boolean> {
     const serviceId = service.manifest.metadata.serviceId!;
     if (!failedStart) {
       this.startFailures.delete(serviceId);
+      this.toolCallOutcomes.delete(serviceId);
       return false;
     }
 

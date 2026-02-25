@@ -1049,6 +1049,14 @@ export async function handleHttp(
       }
 
       const context = buildMcpRequestContext(req, url, message as JsonRpcRequest);
+      const response = await (
+        mcpRouter as unknown as {
+          handle: (
+            message: JsonRpcRequest,
+            context: McpRequestContext
+          ) => Promise<ReturnType<McpRouter["handle"]>>;
+        }
+      ).handle(message as JsonRpcRequest, context);
       const routerHandle = (mcpRouter as unknown as {
         handle: (request: JsonRpcRequest, requestContext?: unknown) => Promise<unknown>;
       }).handle;
@@ -1198,6 +1206,18 @@ export async function handleHttp(
       const limit = parseLimit(url.searchParams.get("limit"), 200, 1, 5000);
       const runId = nonEmptyString(url.searchParams.get("run_id"));
       const traceId = nonEmptyString(url.searchParams.get("trace_id"));
+      const traceReader = mcpRouter as unknown as {
+        getTraceSpans?: (
+          limit: number,
+          filters: { runId?: string; traceId?: string }
+        ) => unknown[];
+      };
+      json(res, 200, {
+        items: traceReader.getTraceSpans
+          ? traceReader.getTraceSpans(limit, {
+              ...(runId ? { runId } : {}),
+              ...(traceId ? { traceId } : {})
+            })
       const getTraceSpans = (mcpRouter as unknown as {
         getTraceSpans?: (maxItems: number, filter?: { runId?: string; traceId?: string }) => unknown[];
       }).getTraceSpans;
@@ -1215,6 +1235,11 @@ export async function handleHttp(
     if (method === "GET" && url.pathname === "/api/costs/runs") {
       const limit = parseLimit(url.searchParams.get("limit"), 200, 1, 2000);
       const runId = nonEmptyString(url.searchParams.get("run_id")) ?? undefined;
+      const costReader = mcpRouter as unknown as {
+        getRunCostLedgers?: (limit: number, runId?: string) => unknown[];
+      };
+      json(res, 200, {
+        items: costReader.getRunCostLedgers ? costReader.getRunCostLedgers(limit, runId) : []
       const getRunCostLedgers = (mcpRouter as unknown as {
         getRunCostLedgers?: (maxItems: number, runId?: string) => unknown[];
       }).getRunCostLedgers;

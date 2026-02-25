@@ -237,6 +237,7 @@ Not implemented yet:
 - `CLARITY_ENABLE_COMPILER_INSTALL=1`: allow `clarity__ensure_compiler` to execute install commands.
 - `CLARITY_COMPILER_INSTALL_ALLOWLIST=brew,apt-get`: optional installer command allowlist for `clarity__ensure_compiler`.
 - `CLARITY_AUDIT_INCLUDE_LIFECYCLE=1`: include service lifecycle events in audit (`service.*`). Set `0` to log only MCP tool calls.
+- `CLARITY_A2A_MAX_MESSAGE_BYTES=65536`: max accepted body size for formal A2A envelope ingestion at `POST /api/a2a/messages`.
 
 ## Security Defaults
 
@@ -247,9 +248,12 @@ Not implemented yet:
 ## Audit And Events
 
 - `GET /api/audit?limit=200`: latest runtime audit/events.
+- `GET /api/agents/registry`: registered agent services and declared capabilities.
 - `GET /api/agents/runs?limit=100`: agent run summaries.
 - `GET /api/agents/events?limit=200`: recent agent timeline events.
 - `GET /api/agents/runs/:runId/events?limit=200`: one-run agent timeline.
+- `GET /api/a2a/capabilities`: list A2A-enabled agents and protocol profile.
+- `POST /api/a2a/messages`: ingest one formal A2A envelope (`clarity.a2a.v1`) and normalize to canonical `agent.*` events.
 - `POST /api/agents/events`: ingest one `agent.*` orchestration event.
 - `GET /api/events`: SSE stream for live runtime events.
 - Status page now includes separate `MCP` and `Agents` tabs.

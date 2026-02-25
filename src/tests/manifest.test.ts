@@ -100,6 +100,48 @@ test("validateManifest accepts explicit metadata.serviceType=agent", () => {
   assert.equal(manifest.metadata.agent?.agentId, "agent-sample");
 });
 
+test("validateManifest accepts metadata.agent.a2a profile when trigger includes a2a", () => {
+  const manifest = validateManifest({
+    apiVersion: "clarity.runtime/v1",
+    kind: "MCPService",
+    metadata: {
+      sourceFile: "/tmp/agent-a2a.clarity",
+      module: "AgentA2A",
+      serviceType: "agent",
+      agent: {
+        agentId: "agent-a2a",
+        name: "Agent A2A",
+        role: "worker",
+        objective: "Receive A2A handoff",
+        triggers: ["a2a"],
+        a2a: {
+          protocol: "clarity.a2a.v1",
+          acceptedMessageKinds: ["handoff.request", "handoff.accepted", "handoff.rejected", "handoff.completed"],
+          emitsMessageKinds: ["handoff.request", "handoff.accepted", "handoff.rejected", "handoff.completed"]
+        }
+      }
+    },
+    spec: {
+      origin: {
+        type: "local_wasm",
+        wasmPath: "/tmp/agent-a2a.wasm",
+        entry: "mcp_main"
+      },
+      enabled: true,
+      autostart: true,
+      restartPolicy: {
+        mode: "on-failure",
+        maxRestarts: 5,
+        windowSeconds: 60
+      },
+      policyRef: "default"
+    }
+  });
+
+  assert.equal(manifest.metadata.serviceType, "agent");
+  assert.equal(manifest.metadata.agent?.a2a?.protocol, "clarity.a2a.v1");
+});
+
 test("validateManifest rejects metadata.serviceType=agent without metadata.agent", () => {
   assert.throws(
     () =>
@@ -165,6 +207,44 @@ test("validateManifest rejects metadata.serviceType=agent without metadata.agent
         }
       }),
     /metadata\.agent\.triggers/
+  );
+});
+
+test("validateManifest rejects a2a trigger without metadata.agent.a2a profile", () => {
+  assert.throws(
+    () =>
+      validateManifest({
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile: "/tmp/agent-a2a.clarity",
+          module: "AgentA2A",
+          serviceType: "agent",
+          agent: {
+            agentId: "agent-a2a",
+            name: "Agent A2A",
+            role: "worker",
+            objective: "Receive A2A handoff",
+            triggers: ["a2a"]
+          }
+        },
+        spec: {
+          origin: {
+            type: "local_wasm",
+            wasmPath: "/tmp/agent-a2a.wasm",
+            entry: "mcp_main"
+          },
+          enabled: true,
+          autostart: true,
+          restartPolicy: {
+            mode: "on-failure",
+            maxRestarts: 5,
+            windowSeconds: 60
+          },
+          policyRef: "default"
+        }
+      }),
+    /metadata\.agent\.a2a/
   );
 });
 

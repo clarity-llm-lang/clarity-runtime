@@ -31,6 +31,39 @@
               "minItems": 1,
               "items": { "enum": ["timer", "event", "api", "a2a"] }
             },
+            "a2a": {
+              "type": "object",
+              "required": ["protocol"],
+              "properties": {
+                "protocol": { "const": "clarity.a2a.v1" },
+                "acceptedMessageKinds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "enum": [
+                      "handoff.request",
+                      "handoff.accepted",
+                      "handoff.rejected",
+                      "handoff.completed"
+                    ]
+                  }
+                },
+                "emitsMessageKinds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "enum": [
+                      "handoff.request",
+                      "handoff.accepted",
+                      "handoff.rejected",
+                      "handoff.completed"
+                    ]
+                  }
+                },
+                "maxPayloadBytes": { "type": "integer", "minimum": 128, "maximum": 10485760 }
+              },
+              "additionalProperties": false
+            },
             "inputs": { "type": "array", "items": { "type": "string" } },
             "outputs": { "type": "array", "items": { "type": "string" } },
             "allowedMcpTools": { "type": "array", "items": { "type": "string" } },
@@ -39,7 +72,22 @@
             "dependsOn": { "type": "array", "items": { "type": "string" } },
             "version": { "type": "string" }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "triggers": {
+                    "contains": { "const": "a2a" }
+                  }
+                },
+                "required": ["triggers"]
+              },
+              "then": {
+                "required": ["a2a"]
+              }
+            }
+          ]
         },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
