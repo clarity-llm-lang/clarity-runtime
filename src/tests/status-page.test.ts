@@ -43,7 +43,6 @@ test("status page embedded script remains syntactically valid javascript", () =>
   const script = html.slice(start + "<script>".length, end);
   assert.doesNotThrow(() => {
     // Compile-only check to catch malformed inline script edits.
-    // eslint-disable-next-line no-new-func
     new Function(script);
   });
 });
