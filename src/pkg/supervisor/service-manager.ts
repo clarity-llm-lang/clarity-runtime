@@ -68,6 +68,33 @@ function parseRatio(value: string | undefined): number | undefined {
     return undefined;
   }
   return parsed;
+function asStringList(input: unknown): string[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return input
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+function extractOpenAiOutputText(payload: unknown): string | undefined {
+  const root = asObject(payload);
+  const direct = asNonEmptyString(root.output_text);
+  if (direct) {
+    return direct;
+  }
+  const output = Array.isArray(root.output) ? root.output : [];
+  for (const item of output) {
+    const content = Array.isArray(asObject(item).content) ? (asObject(item).content as unknown[]) : [];
+    for (const part of content) {
+      const text = asNonEmptyString(asObject(part).text);
+      if (text) {
+        return text;
+      }
+    }
+  }
+  return undefined;
 }
 
 function asPositiveInteger(value: unknown): number | undefined {
@@ -154,6 +181,13 @@ export interface AgentRunSummary {
   lastEventMessage?: string;
 }
 
+export interface ServiceManagerOptions {
+  hitlChatMode?: "auto" | "echo" | "disabled";
+  hitlOpenAiApiKey?: string;
+  hitlOpenAiModel?: string;
+  hitlOpenAiTimeoutMs?: number;
+}
+
 interface WorkerValue {
   kind: "undefined" | "string" | "number" | "boolean" | "bigint";
   value?: string | number | boolean;
@@ -221,16 +255,47 @@ export class ServiceManager {
   private readonly events: AuditEvent[] = [];
   private readonly eventSubscribers = new Set<(event: AuditEvent) => void>();
   private readonly lifecycleAuditEnabled: boolean;
+  private readonly hitlChatMode: "auto" | "echo" | "disabled";
+  private readonly hitlOpenAiApiKey: string;
+  private readonly hitlOpenAiModel: string;
+  private readonly hitlOpenAiTimeoutMs: number;
+  private readonly hitlRunChains = new Map<string, Promise<void>>();
   private telemetryWriteQueue: Promise<void> = Promise.resolve();
   private telemetryLoaded = false;
   private eventSeq = 1;
   private remoteRequestCounter = 1;
   private pidCounter = 49000;
 
-  constructor(registry: ServiceRegistry, telemetryPath = DEFAULT_TELEMETRY_PATH) {
+  constructor(
+    registry: ServiceRegistry,
+    telemetryPath = DEFAULT_TELEMETRY_PATH,
+    options: ServiceManagerOptions = {}
+  ) {
     this.registry = registry;
     this.telemetryPath = telemetryPath;
     this.lifecycleAuditEnabled = includeLifecycleAudit();
+    const modeRaw = (options.hitlChatMode ?? process.env.CLARITY_HITL_CHAT_MODE ?? "auto")
+      .trim()
+      .toLowerCase();
+    this.hitlChatMode = (modeRaw === "disabled" || modeRaw === "echo") ? modeRaw : "auto";
+    this.hitlOpenAiApiKey = (
+      options.hitlOpenAiApiKey
+      ?? process.env.OPENAI_API_KEY
+      ?? process.env.CLARITY_HITL_OPENAI_API_KEY
+      ?? ""
+    ).trim();
+    this.hitlOpenAiModel = (
+      options.hitlOpenAiModel
+      ?? process.env.CLARITY_HITL_OPENAI_MODEL
+      ?? process.env.OPENAI_MODEL
+      ?? "gpt-4.1-mini"
+    ).trim() || "gpt-4.1-mini";
+    this.hitlOpenAiTimeoutMs = Math.max(
+      1_000,
+      options.hitlOpenAiTimeoutMs
+      ?? parsePositiveInteger(process.env.CLARITY_HITL_OPENAI_TIMEOUT_MS)
+      ?? 20_000
+    );
   }
 
   async init(): Promise<void> {
@@ -946,6 +1011,51 @@ export class ServiceManager {
     this.emitEvent(input);
   }
 
+  queueRuntimeHitlInput(input: {
+    runId: string;
+    message: string;
+    serviceId?: string;
+    agent?: string;
+  }): void {
+    if (this.hitlChatMode === "disabled") {
+      return;
+    }
+    const runId = input.runId.trim();
+    if (!runId) {
+      return;
+    }
+    const previous = this.hitlRunChains.get(runId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => {
+        // Ignore previous failures for this run and continue processing new inputs.
+      })
+      .then(async () => {
+        await this.processRuntimeHitlInput(input);
+      })
+      .catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.emitEvent({
+          kind: "agent.waiting",
+          serviceId: input.serviceId,
+          level: "warn",
+          message: `Awaiting operator input after runtime chat error (${runId})`,
+          data: {
+            runId,
+            ...(input.serviceId ? { serviceId: input.serviceId } : {}),
+            ...(input.agent ? { agent: input.agent } : {}),
+            reason,
+            waitingReason: reason
+          }
+        });
+      });
+    this.hitlRunChains.set(runId, next);
+    void next.finally(() => {
+      if (this.hitlRunChains.get(runId) === next) {
+        this.hitlRunChains.delete(runId);
+      }
+    });
+  }
+
   async shutdown(): Promise<void> {
     await this.telemetryWriteQueue;
   }
@@ -1458,6 +1568,219 @@ export class ServiceManager {
       } catch {
         // Swallow subscriber errors.
       }
+    }
+  }
+
+  private async processRuntimeHitlInput(input: {
+    runId: string;
+    message: string;
+    serviceId?: string;
+    agent?: string;
+  }): Promise<void> {
+    await this.init();
+    const runId = input.runId.trim();
+    const operatorMessage = input.message.trim();
+    if (!runId || !operatorMessage) {
+      return;
+    }
+
+    const runSummary = this.getAgentRuns(2000).find((row) => row.runId === runId);
+    const serviceId = asNonEmptyString(input.serviceId) ?? runSummary?.serviceId;
+    const service = serviceId ? await this.registry.get(serviceId) : undefined;
+    const agentMetadata = asObject(service?.manifest.metadata.agent);
+    const agent =
+      asNonEmptyString(input.agent)
+      ?? asNonEmptyString(runSummary?.agent)
+      ?? asNonEmptyString(agentMetadata.agentId)
+      ?? asNonEmptyString(agentMetadata.name)
+      ?? "unknown-agent";
+    const stepId = `runtime_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    this.emitEvent({
+      kind: "agent.step_started",
+      serviceId,
+      level: "info",
+      message: `Runtime chat processing started (${runId})`,
+      data: {
+        runId,
+        ...(serviceId ? { serviceId } : {}),
+        agent,
+        stepId,
+        source: "runtime_hitl_executor",
+        inputLength: operatorMessage.length
+      }
+    });
+
+    try {
+      const provider = this.resolveRuntimeHitlProvider(service);
+      let reply = "";
+      let usage: Record<string, unknown> | undefined;
+
+      if (provider === "openai") {
+        this.emitEvent({
+          kind: "agent.llm_called",
+          serviceId,
+          level: "info",
+          message: `OpenAI Responses API request (${this.hitlOpenAiModel})`,
+          data: {
+            runId,
+            ...(serviceId ? { serviceId } : {}),
+            agent,
+            stepId,
+            provider: "openai",
+            model: this.hitlOpenAiModel,
+            inputLength: operatorMessage.length
+          }
+        });
+        const completion = await this.generateOpenAiReply(operatorMessage);
+        reply = completion.reply;
+        usage = completion.usage;
+      } else {
+        reply = `Echo: ${operatorMessage}`;
+      }
+
+      this.emitEvent({
+        kind: "agent.step_completed",
+        serviceId,
+        level: "info",
+        message: `Runtime chat response ready (${runId})`,
+        data: {
+          runId,
+          ...(serviceId ? { serviceId } : {}),
+          agent,
+          stepId,
+          provider,
+          ...(provider === "openai" ? { model: this.hitlOpenAiModel } : {}),
+          ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
+          message: reply
+        }
+      });
+
+      this.emitEvent({
+        kind: "agent.waiting",
+        serviceId,
+        level: "info",
+        message: `Awaiting next operator input (${runId})`,
+        data: {
+          runId,
+          ...(serviceId ? { serviceId } : {}),
+          agent,
+          reason: "awaiting operator input",
+          waitingReason: "awaiting operator input",
+          source: "runtime_hitl_executor"
+        }
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.emitEvent({
+        kind: "agent.step_completed",
+        serviceId,
+        level: "error",
+        message: `Runtime chat response failed (${runId})`,
+        data: {
+          runId,
+          ...(serviceId ? { serviceId } : {}),
+          agent,
+          stepId,
+          error: reason
+        }
+      });
+      this.emitEvent({
+        kind: "agent.waiting",
+        serviceId,
+        level: "warn",
+        message: `Awaiting operator input after response error (${runId})`,
+        data: {
+          runId,
+          ...(serviceId ? { serviceId } : {}),
+          agent,
+          reason,
+          waitingReason: reason,
+          source: "runtime_hitl_executor"
+        }
+      });
+    }
+  }
+
+  private resolveRuntimeHitlProvider(service?: ServiceRecord): "openai" | "echo" {
+    if (this.hitlChatMode === "echo" || this.hitlChatMode === "disabled") {
+      return "echo";
+    }
+    if (!this.hitlOpenAiApiKey) {
+      return "echo";
+    }
+    const agent = asObject(service?.manifest.metadata.agent);
+    const providers = [
+      ...asStringList(agent.allowedLlmProviders).map((item) => item.toLowerCase()),
+      ...asStringList((agent as { llmProviders?: unknown }).llmProviders).map((item) =>
+        item.toLowerCase()
+      )
+    ];
+    return providers.includes("openai") ? "openai" : "echo";
+  }
+
+  private async generateOpenAiReply(
+    operatorMessage: string
+  ): Promise<{ reply: string; usage?: Record<string, unknown> }> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, this.hitlOpenAiTimeoutMs);
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.hitlOpenAiApiKey}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          model: this.hitlOpenAiModel,
+          input: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: operatorMessage
+                }
+              ]
+            }
+          ]
+        }),
+        signal: controller.signal
+      });
+
+      const payloadText = await response.text();
+      let payload: unknown = {};
+      if (payloadText.trim().length > 0) {
+        try {
+          payload = JSON.parse(payloadText) as unknown;
+        } catch {
+          throw new Error("OpenAI response parsing failed");
+        }
+      }
+
+      if (!response.ok) {
+        const root = asObject(payload);
+        const errorMessage = asNonEmptyString(asObject(root.error).message) ?? payloadText.trim();
+        throw new Error(
+          errorMessage.length > 0
+            ? `OpenAI request failed (${response.status}): ${errorMessage}`
+            : `OpenAI request failed with status ${response.status}`
+        );
+      }
+
+      const reply = extractOpenAiOutputText(payload);
+      if (!reply) {
+        throw new Error("OpenAI response missing output text");
+      }
+      const usage = asObject(asObject(payload).usage);
+      return {
+        reply,
+        ...(Object.keys(usage).length > 0 ? { usage } : {})
+      };
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
