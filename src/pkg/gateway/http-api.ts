@@ -1469,10 +1469,17 @@ export async function handleHttp(
           submittedAt: new Date().toISOString()
         }
       });
+      manager.queueRuntimeHitlInput({
+        runId,
+        message: sanitized.message,
+        ...(serviceId ? { serviceId } : {}),
+        ...(agent ? { agent } : {})
+      });
       json(res, 200, {
         ok: true,
         runId,
         kind,
+        runtime_chat_execution_queued: true,
         message_truncated: sanitized.truncated,
         message_redacted: sanitized.redacted,
         ...(serviceId ? { serviceId } : {}),

@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { handleHttp } from "../pkg/gateway/http-api.js";
 import { ServiceRegistry } from "../pkg/registry/registry.js";
 import { ServiceManager } from "../pkg/supervisor/service-manager.js";
@@ -56,6 +56,30 @@ async function jsonRequest(
   const text = await res.text();
   const body = text ? (JSON.parse(text) as unknown) : {};
   return { status: res.status, body };
+}
+
+async function waitForRunEvent(
+  baseUrl: string,
+  runId: string,
+  predicate: (item: Record<string, unknown>) => boolean,
+  attempts = 30,
+  sleepMs = 25
+): Promise<Record<string, unknown> | null> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const events = await jsonRequest(
+      baseUrl,
+      `/api/agents/runs/${encodeURIComponent(runId)}/events?limit=200`
+    );
+    if (events.status === 200) {
+      const items = asObject(events.body).items as Array<Record<string, unknown>>;
+      const found = items.find(predicate);
+      if (found) {
+        return found;
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, sleepMs));
+  }
+  return null;
 }
 
 async function collectSseEvents(
@@ -356,6 +380,140 @@ test("agent HTTP endpoints accept events and return run timeline", async () => {
     );
     assert.equal(hitlAfterCompletion.status, 409);
     assert.equal(String(asObject(hitlAfterCompletion.body).status), "completed");
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("run HITL input queues runtime chat executor response events", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-hitl-chat-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"), {
+    hitlChatMode: "echo"
+  });
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const wasmPath = path.join(root, "chat-agent.wasm");
+    await writeFile(wasmPath, "", "utf8");
+    const applyAgent = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        manifest: {
+          apiVersion: "clarity.runtime/v1",
+          kind: "MCPService",
+          metadata: {
+            sourceFile: path.join(root, "chat-agent.clarity"),
+            module: "ChatAgent",
+            serviceType: "agent",
+            agent: {
+              agentId: "chat-agent",
+              name: "Chat Agent",
+              role: "assistant",
+              objective: "Respond to operator input",
+              triggers: ["api"],
+              allowedLlmProviders: ["openai"]
+            }
+          },
+          spec: {
+            origin: {
+              type: "local_wasm",
+              wasmPath,
+              entry: "main"
+            },
+            enabled: true,
+            autostart: false,
+            restartPolicy: {
+              mode: "never",
+              maxRestarts: 0,
+              windowSeconds: 60
+            },
+            policyRef: "default"
+          }
+        }
+      })
+    });
+    assert.equal(applyAgent.status, 200);
+    const serviceId = String(
+      asObject(asObject(asObject(asObject(applyAgent.body).service).manifest).metadata).serviceId ?? ""
+    );
+    assert.ok(serviceId.length > 0);
+
+    const started = await jsonRequest(runtime.baseUrl, `/api/services/${encodeURIComponent(serviceId)}/start`, {
+      method: "POST"
+    });
+    assert.equal(started.status, 200);
+
+    const runId = "run-chat-echo-1";
+    const runCreated = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_created",
+        message: "Run created",
+        service_id: serviceId,
+        run_id: runId,
+        agent: "chat-agent",
+        data: {
+          trigger: "api",
+          triggerContext: {
+            route: "/tests",
+            method: "POST",
+            requestId: "req-test-1",
+            caller: "agent-observability.test"
+          }
+        }
+      })
+    });
+    assert.equal(runCreated.status, 200);
+
+    const runStarted = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_started",
+        message: "Run started",
+        service_id: serviceId,
+        run_id: runId,
+        agent: "chat-agent"
+      })
+    });
+    assert.equal(runStarted.status, 200);
+
+    const hitl = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/hitl`, {
+      method: "POST",
+      body: JSON.stringify({
+        message: "hello runtime",
+        service_id: serviceId,
+        agent: "chat-agent"
+      })
+    });
+    assert.equal(hitl.status, 200);
+    assert.equal(Boolean(asObject(hitl.body).runtime_chat_execution_queued), true);
+
+    const stepCompleted = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) => String(item.kind) === "agent.step_completed" && asObject(item.data).stepId !== undefined
+    );
+    assert.ok(stepCompleted);
+    const stepCompletedData = asObject(stepCompleted?.data);
+    assert.equal(String(stepCompletedData.message), "Echo: hello runtime");
+    assert.equal(String(stepCompletedData.provider), "echo");
+
+    const waiting = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) =>
+        String(item.kind) === "agent.waiting"
+        && String(asObject(item.data).waitingReason) === "awaiting operator input"
+    );
+    assert.ok(waiting);
   } finally {
     await manager.shutdown();
     await runtime.close();
