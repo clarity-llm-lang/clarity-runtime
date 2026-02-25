@@ -1,5 +1,11 @@
 export type ServiceOriginType = "local_wasm" | "remote_mcp";
 export type ServiceType = "mcp" | "agent";
+export type AgentA2AProtocol = "clarity.a2a.v1";
+export type AgentA2AMessageKind =
+  | "handoff.request"
+  | "handoff.accepted"
+  | "handoff.rejected"
+  | "handoff.completed";
 
 export type LifecycleState =
   | "REGISTERED"
@@ -18,12 +24,20 @@ export type HealthState =
   | "UNAUTHORIZED"
   | "UNREACHABLE";
 
+export interface AgentA2AProfile {
+  protocol: AgentA2AProtocol;
+  acceptedMessageKinds?: AgentA2AMessageKind[];
+  emitsMessageKinds?: AgentA2AMessageKind[];
+  maxPayloadBytes?: number;
+}
+
 export interface AgentDescriptor {
   agentId: string;
   name: string;
   role: string;
   objective: string;
   triggers: Array<"timer" | "event" | "api" | "a2a">;
+  a2a?: AgentA2AProfile;
   inputs?: string[];
   outputs?: string[];
   allowedMcpTools?: string[];

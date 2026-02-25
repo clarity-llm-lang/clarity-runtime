@@ -10,6 +10,13 @@ import type { AgentDescriptor, MCPServiceManifest } from "../types/contracts.js"
 const program = new Command();
 
 const DEFAULT_DAEMON_URL = process.env.CLARITYD_URL ?? "http://localhost:4707";
+const FORMAL_A2A_PROTOCOL = "clarity.a2a.v1";
+const FORMAL_A2A_MESSAGE_KINDS = [
+  "handoff.request",
+  "handoff.accepted",
+  "handoff.rejected",
+  "handoff.completed"
+] as const;
 
 function requestHeaders(authToken: string | undefined, headers?: HeadersInit): Headers {
   const out = new Headers(headers);
@@ -320,12 +327,22 @@ function buildAgentDescriptorFromOpts(
       throw new Error(`invalid --agent-triggers value: ${trigger}`);
     }
   }
+  const hasA2ATrigger = normalizedTriggers.includes("a2a");
   return {
     agentId,
     name,
     role,
     objective,
     triggers: normalizedTriggers as Array<"timer" | "event" | "api" | "a2a">,
+    ...(hasA2ATrigger
+      ? {
+          a2a: {
+            protocol: FORMAL_A2A_PROTOCOL,
+            acceptedMessageKinds: [...FORMAL_A2A_MESSAGE_KINDS],
+            emitsMessageKinds: [...FORMAL_A2A_MESSAGE_KINDS]
+          }
+        }
+      : {}),
     ...(parseCsvList(opts.agentInputs) ? { inputs: parseCsvList(opts.agentInputs) } : {}),
     ...(parseCsvList(opts.agentOutputs) ? { outputs: parseCsvList(opts.agentOutputs) } : {}),
     ...(parseCsvList(opts.agentMcpTools) ? { allowedMcpTools: parseCsvList(opts.agentMcpTools) } : {}),

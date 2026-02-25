@@ -975,7 +975,14 @@ export async function handleHttp(
       }
 
       const context = buildMcpRequestContext(req, url, message as JsonRpcRequest);
-      const response = await mcpRouter.handle(message as JsonRpcRequest, context);
+      const response = await (
+        mcpRouter as unknown as {
+          handle: (
+            message: JsonRpcRequest,
+            context: McpRequestContext
+          ) => Promise<ReturnType<McpRouter["handle"]>>;
+        }
+      ).handle(message as JsonRpcRequest, context);
       if (!response) {
         res.statusCode = 202;
         res.end();
@@ -1115,11 +1122,19 @@ export async function handleHttp(
       const limit = parseLimit(url.searchParams.get("limit"), 200, 1, 5000);
       const runId = nonEmptyString(url.searchParams.get("run_id"));
       const traceId = nonEmptyString(url.searchParams.get("trace_id"));
+      const traceReader = mcpRouter as unknown as {
+        getTraceSpans?: (
+          limit: number,
+          filters: { runId?: string; traceId?: string }
+        ) => unknown[];
+      };
       json(res, 200, {
-        items: mcpRouter.getTraceSpans(limit, {
-          ...(runId ? { runId } : {}),
-          ...(traceId ? { traceId } : {})
-        })
+        items: traceReader.getTraceSpans
+          ? traceReader.getTraceSpans(limit, {
+              ...(runId ? { runId } : {}),
+              ...(traceId ? { traceId } : {})
+            })
+          : []
       });
       return;
     }
@@ -1127,8 +1142,11 @@ export async function handleHttp(
     if (method === "GET" && url.pathname === "/api/costs/runs") {
       const limit = parseLimit(url.searchParams.get("limit"), 200, 1, 2000);
       const runId = nonEmptyString(url.searchParams.get("run_id")) ?? undefined;
+      const costReader = mcpRouter as unknown as {
+        getRunCostLedgers?: (limit: number, runId?: string) => unknown[];
+      };
       json(res, 200, {
-        items: mcpRouter.getRunCostLedgers(limit, runId)
+        items: costReader.getRunCostLedgers ? costReader.getRunCostLedgers(limit, runId) : []
       });
       return;
     }

@@ -1085,6 +1085,8 @@ function renderGuideMcpSection(mcpServices, runtimeTools, clarityTools) {
     '<ul class="guide-list">' +
       '<li>Operate service lifecycle: start, stop, unquarantine, inspect details.</li>' +
       '<li>Inspect interface exposure (tools, resources, prompts) and remote policy.</li>' +
+      '<li>Trace MCP tool calls with per-span latency/retry/cost data (<span class="code">/api/traces</span>).</li>' +
+      '<li>Review run-level budget and cost ledger state (<span class="code">/api/costs/runs</span>).</li>' +
       '<li>Audit runtime operations in a single timeline.</li>' +
       '<li>Use built-in runtime tools (' + Number((runtimeTools || []).length) + ') and clarity tools (' + Number((clarityTools || []).length) + ').</li>' +
     '</ul>' +
@@ -1092,8 +1094,8 @@ function renderGuideMcpSection(mcpServices, runtimeTools, clarityTools) {
     empty;
 }
 
-function renderGuideAgentSection(agentServices, allRuns) {
-  const services = Array.isArray(agentServices) ? agentServices : [];
+function renderGuideAgentSection(agentRegistryItems, allRuns) {
+  const services = Array.isArray(agentRegistryItems) ? agentRegistryItems : [];
   const runs = Array.isArray(allRuns) ? allRuns : [];
   const list = services.slice(0, 14).map((svc) => {
     const matchedRuns = runs.filter((run) => runBelongsToService(run, svc));
@@ -1122,9 +1124,11 @@ function renderGuideAgentSection(agentServices, allRuns) {
     ? '<div class="guide-empty">No registered Agent services yet.</div>'
     : '<div class="guide-services">' + list + '</div>';
   return '<h2 class="guide-title">Agents: What You Can Do</h2>' +
+    '<div class="guide-meta">Registry source: <span class="code">GET /api/agents/registry</span></div>' +
     '<ul class="guide-list">' +
       '<li>Observe runs by trigger, status, and flow/event timeline.</li>' +
       '<li>Filter agent services by query, run status, trigger, and HITL support.</li>' +
+      '<li>Send formal A2A handoff envelopes through <span class="code">POST /api/a2a/messages</span> and inspect compliance via <span class="code">GET /api/a2a/capabilities</span>.</li>' +
       '<li>Use HITL workbench to inject run input or answer broker queue questions.</li>' +
       '<li>Control service lifecycle and inspect dependencies/handoff topology.</li>' +
     '</ul>' +
@@ -2042,11 +2046,12 @@ async function toggleAgentDetails(runId) {
 
 async function refresh() {
   try {
-    const [statusResult, auditResult, agentRunsResult, agentEventsResult] = await Promise.allSettled([
+    const [statusResult, auditResult, agentRunsResult, agentEventsResult, agentRegistryResult] = await Promise.allSettled([
       call('/api/status'),
       call('/api/audit?limit=25'),
       call('/api/agents/runs?limit=120'),
-      call('/api/agents/events?limit=120')
+      call('/api/agents/events?limit=120'),
+      call('/api/agents/registry')
     ]);
     const data = statusResult.status === 'fulfilled'
       ? statusResult.value
@@ -2069,6 +2074,9 @@ async function refresh() {
     const agentEventsBody = agentEventsResult.status === 'fulfilled'
       ? agentEventsResult.value
       : { items: [] };
+    const agentRegistryBody = agentRegistryResult.status === 'fulfilled'
+      ? agentRegistryResult.value
+      : { items: [] };
     const summarySafe = (data && data.summary) ? data.summary : { total: 0, mcpServices: 0, agentServices: 0, running: 0, runningMcp: 0, runningAgent: 0, degraded: 0, stopped: 0, local: 0, remote: 0 };
     const agentSummarySafe = {
       totalRuns: Number(data && data.agents && data.agents.totalRuns || 0),
@@ -2085,6 +2093,10 @@ async function refresh() {
     const agentServices = services.filter((svc) => classifyServiceType(svc) === 'agent');
     const agentRuns = Array.isArray(agentRunsBody && agentRunsBody.items) ? agentRunsBody.items : [];
     const filteredAgentRuns = agentRuns;
+    const agentRegistryItemsRaw = Array.isArray(agentRegistryBody && agentRegistryBody.items)
+      ? agentRegistryBody.items
+      : [];
+    const agentRegistryItems = agentRegistryItemsRaw.length > 0 ? agentRegistryItemsRaw : agentServices;
     readAgentFiltersFromDom();
     const agentEvents = Array.isArray(agentEventsBody && agentEventsBody.items) ? agentEventsBody.items : [];
     const runtimeTools = normalizeToolItems(data && data.systemTools && data.systemTools.runtime && data.systemTools.runtime.items);
@@ -2325,7 +2337,7 @@ async function refresh() {
     document.getElementById('guide-overview-grid').innerHTML = renderGuideOverviewCards(summarySafe, agentSummarySafe, mcpServices, agentServices, bootstrapClients);
     document.getElementById('guide-client-attachment').innerHTML = renderGuideClientAttachment(bootstrapClients, bootstrapStatusUnavailable);
     document.getElementById('guide-mcp-section').innerHTML = renderGuideMcpSection(mcpServices, runtimeTools, clarityTools);
-    document.getElementById('guide-agent-section').innerHTML = renderGuideAgentSection(agentServices, filteredAgentRuns);
+    document.getElementById('guide-agent-section').innerHTML = renderGuideAgentSection(agentRegistryItems, filteredAgentRuns);
 
     const auditItems = Array.isArray(audit && audit.items) ? audit.items : [];
     const auditRows = auditItems.slice().reverse().map((evt) => {

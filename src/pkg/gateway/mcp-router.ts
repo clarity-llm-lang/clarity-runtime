@@ -1,8 +1,10 @@
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import type { ServiceManager } from "../supervisor/service-manager.js";
-import type { MCPServiceManifest } from "../../types/contracts.js";
+import type { ServiceManager, ToolCallContext } from "../supervisor/service-manager.js";
+import type { AgentDescriptor, MCPServiceManifest } from "../../types/contracts.js";
 import { validateManifest } from "../rpc/manifest.js";
 import { normalizeNamespace } from "../security/namespace.js";
 import {
@@ -17,6 +19,89 @@ import { failure, success, type JsonRpcRequest, type JsonRpcResponse } from "./m
 interface RoutedTool {
   serviceId: string;
   remoteToolName: string;
+}
+
+export interface McpRequestContext {
+  sessionId?: string;
+  traceId?: string;
+  runId?: string;
+  requestId?: string;
+  remoteAddress?: string;
+  userAgent?: string;
+}
+
+type SpanKind = "agent_turn" | "mcp.tools/call" | "service.execute" | "result";
+
+interface TraceSpanRecord {
+  spanId: string;
+  parentSpanId?: string;
+  spanKind: SpanKind;
+  traceId: string;
+  sessionId: string;
+  runId: string;
+  tool: string;
+  serviceId?: string;
+  startedAt: string;
+  endedAt: string;
+  latencyMs: number;
+  retries: number;
+  success: boolean;
+  provider?: string;
+  model?: string;
+  bytesIn: number;
+  bytesOut: number;
+  tokensIn: number;
+  tokensOut: number;
+  computedCostUsd: number;
+  error?: string;
+}
+
+interface RunBudgetLedger {
+  runId: string;
+  traceId: string;
+  sessionId: string;
+  startedAt: string;
+  updatedAt: string;
+  totalToolCalls: number;
+  totalRetries: number;
+  totalLatencyMs: number;
+  totalBytesIn: number;
+  totalBytesOut: number;
+  totalTokensIn: number;
+  totalTokensOut: number;
+  totalCostUsd: number;
+  blockedReason?: string;
+  lastTool?: string;
+  lastServiceId?: string;
+  lastProvider?: string;
+  lastModel?: string;
+}
+
+interface UsageMetrics {
+  bytesIn: number;
+  bytesOut: number;
+  tokensIn: number;
+  tokensOut: number;
+  provider?: string;
+  model?: string;
+}
+
+interface PricingEntry {
+  inputTokenPer1kUsd?: number;
+  outputTokenPer1kUsd?: number;
+  inputMbUsd?: number;
+  outputMbUsd?: number;
+}
+
+interface ToolExecutionContext {
+  sessionId: string;
+  traceId: string;
+  runId: string;
+  requestId?: string;
+  turnSpanId: string;
+  callSpanId: string;
+  serviceSpanId: string;
+  resultSpanId: string;
 }
 
 interface RuntimeToolDef {
@@ -167,6 +252,31 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
   {
     name: "runtime__get_agent_events",
     description: "Return recent agent orchestration events, optionally scoped to run_id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 2000 },
+        run_id: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__get_traces",
+    description: "Return recent MCP gateway trace spans with optional run/trace filters.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 5000 },
+        run_id: { type: "string" },
+        trace_id: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "runtime__get_cost_ledger",
+    description: "Return per-run budget/cost ledger entries maintained by the MCP gateway.",
     inputSchema: {
       type: "object",
       properties: {
@@ -449,20 +559,52 @@ function asServiceType(input: unknown): "mcp" | "agent" | undefined {
   return undefined;
 }
 
-function asAgentDescriptor(input: unknown): {
-  agentId: string;
-  name: string;
-  role: string;
-  objective: string;
-  triggers: Array<"timer" | "event" | "api" | "a2a">;
-  inputs?: string[];
-  outputs?: string[];
-  allowedMcpTools?: string[];
-  allowedLlmProviders?: string[];
-  handoffTargets?: string[];
-  dependsOn?: string[];
-  version?: string;
-} | undefined {
+const FORMAL_A2A_PROTOCOL = "clarity.a2a.v1";
+const FORMAL_A2A_MESSAGE_KINDS = [
+  "handoff.request",
+  "handoff.accepted",
+  "handoff.rejected",
+  "handoff.completed"
+] as const;
+
+function asAgentA2AProfile(input: unknown): NonNullable<AgentDescriptor["a2a"]> | undefined {
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+  const obj = input as Record<string, unknown>;
+  const protocol = asString(obj.protocol);
+  if (protocol !== FORMAL_A2A_PROTOCOL) {
+    return undefined;
+  }
+  const normalizeKinds = (value: unknown): Array<"handoff.request" | "handoff.accepted" | "handoff.rejected" | "handoff.completed"> | undefined => {
+    const raw = asStringList(value)?.map((v) => v.trim().toLowerCase());
+    if (!raw || raw.length === 0) {
+      return undefined;
+    }
+    const out = raw.filter((item): item is "handoff.request" | "handoff.accepted" | "handoff.rejected" | "handoff.completed" => {
+      return (FORMAL_A2A_MESSAGE_KINDS as readonly string[]).includes(item);
+    });
+    return out.length > 0 ? out : undefined;
+  };
+  const maxPayloadBytesRaw = asIntegerMin(obj.maxPayloadBytes ?? obj.max_payload_bytes, 128);
+  const maxPayloadBytes = maxPayloadBytesRaw && maxPayloadBytesRaw <= 10_485_760 ? maxPayloadBytesRaw : undefined;
+  return {
+    protocol: FORMAL_A2A_PROTOCOL,
+    acceptedMessageKinds: normalizeKinds(obj.acceptedMessageKinds ?? obj.accepted_message_kinds) ?? [...FORMAL_A2A_MESSAGE_KINDS],
+    emitsMessageKinds: normalizeKinds(obj.emitsMessageKinds ?? obj.emits_message_kinds) ?? [...FORMAL_A2A_MESSAGE_KINDS],
+    ...(maxPayloadBytes ? { maxPayloadBytes } : {})
+  };
+}
+
+function defaultAgentA2AProfile(): NonNullable<AgentDescriptor["a2a"]> {
+  return {
+    protocol: FORMAL_A2A_PROTOCOL,
+    acceptedMessageKinds: [...FORMAL_A2A_MESSAGE_KINDS],
+    emitsMessageKinds: [...FORMAL_A2A_MESSAGE_KINDS]
+  };
+}
+
+function asAgentDescriptor(input: unknown): AgentDescriptor | undefined {
   if (!input || typeof input !== "object") {
     return undefined;
   }
@@ -477,12 +619,15 @@ function asAgentDescriptor(input: unknown): {
   if (!agentId || !name || !role || !objective || triggers.length === 0) {
     return undefined;
   }
+  const declaredA2A = asAgentA2AProfile(obj.a2a);
+  const hasA2ATrigger = triggers.includes("a2a");
   return {
     agentId,
     name,
     role,
     objective,
     triggers,
+    ...(hasA2ATrigger ? { a2a: declaredA2A ?? defaultAgentA2AProfile() } : {}),
     ...(asStringList(obj.inputs) ? { inputs: asStringList(obj.inputs)! } : {}),
     ...(asStringList(obj.outputs) ? { outputs: asStringList(obj.outputs)! } : {}),
     ...(asStringList(obj.allowed_mcp_tools ?? obj.allowedMcpTools) ? { allowedMcpTools: asStringList(obj.allowed_mcp_tools ?? obj.allowedMcpTools)! } : {}),
@@ -491,6 +636,112 @@ function asAgentDescriptor(input: unknown): {
     ...(asStringList(obj.depends_on ?? obj.dependsOn) ? { dependsOn: asStringList(obj.depends_on ?? obj.dependsOn)! } : {}),
     ...(asString(obj.version) ? { version: asString(obj.version)! } : {})
   };
+}
+
+const DEFAULT_PRICING_TABLE: Record<string, PricingEntry> = {
+  default: {
+    inputTokenPer1kUsd: 0,
+    outputTokenPer1kUsd: 0,
+    inputMbUsd: 0.0005,
+    outputMbUsd: 0.0005
+  }
+};
+
+function asFiniteNumber(input: unknown): number | undefined {
+  if (typeof input !== "number" || !Number.isFinite(input)) {
+    return undefined;
+  }
+  return input;
+}
+
+function parsePositiveFloat(input: string | undefined): number | undefined {
+  if (!input) return undefined;
+  const value = Number(input);
+  if (!Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return value;
+}
+
+function parsePositiveInteger(input: string | undefined): number | undefined {
+  if (!input) return undefined;
+  const value = Number(input);
+  if (!Number.isInteger(value) || value <= 0) {
+    return undefined;
+  }
+  return value;
+}
+
+function byteLengthUtf8(input: string): number {
+  return Buffer.byteLength(input, "utf8");
+}
+
+function encodedSize(value: unknown): number {
+  try {
+    return byteLengthUtf8(JSON.stringify(value ?? {}));
+  } catch {
+    return 0;
+  }
+}
+
+function parsePricingTableObject(input: unknown): Record<string, PricingEntry> | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+  const raw = input as Record<string, unknown>;
+  const out: Record<string, PricingEntry> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!value || typeof value !== "object") {
+      continue;
+    }
+    const row = value as Record<string, unknown>;
+    const entry: PricingEntry = {};
+    const inputTokenPer1kUsd = asFiniteNumber(row.inputTokenPer1kUsd ?? row.input_token_per_1k_usd);
+    const outputTokenPer1kUsd = asFiniteNumber(row.outputTokenPer1kUsd ?? row.output_token_per_1k_usd);
+    const inputMbUsd = asFiniteNumber(row.inputMbUsd ?? row.input_mb_usd);
+    const outputMbUsd = asFiniteNumber(row.outputMbUsd ?? row.output_mb_usd);
+    if (inputTokenPer1kUsd !== undefined) entry.inputTokenPer1kUsd = inputTokenPer1kUsd;
+    if (outputTokenPer1kUsd !== undefined) entry.outputTokenPer1kUsd = outputTokenPer1kUsd;
+    if (inputMbUsd !== undefined) entry.inputMbUsd = inputMbUsd;
+    if (outputMbUsd !== undefined) entry.outputMbUsd = outputMbUsd;
+    if (Object.keys(entry).length > 0) {
+      out[key.trim().toLowerCase()] = entry;
+    }
+  }
+  if (Object.keys(out).length === 0) {
+    return null;
+  }
+  if (!out.default) {
+    out.default = DEFAULT_PRICING_TABLE.default;
+  }
+  return out;
+}
+
+function loadPricingTable(): Record<string, PricingEntry> {
+  const fromPath = process.env.CLARITY_PRICING_TABLE_PATH;
+  if (fromPath) {
+    try {
+      const raw = readFileSync(path.resolve(fromPath), "utf8");
+      const parsed = parsePricingTableObject(JSON.parse(raw));
+      if (parsed) {
+        return parsed;
+      }
+    } catch {
+      // Fall through to env/default table.
+    }
+  }
+  const fromEnv = process.env.CLARITY_PRICING_TABLE_JSON;
+  if (fromEnv) {
+    try {
+      const parsed = parsePricingTableObject(JSON.parse(fromEnv));
+      if (parsed) {
+        return parsed;
+      }
+    } catch {
+      // Fall through to default table.
+    }
+  }
+  return DEFAULT_PRICING_TABLE;
 }
 
 function inferModuleFromPath(wasmPath: string): string {
@@ -740,9 +991,35 @@ function summarizeService(record: Awaited<ReturnType<ServiceManager["list"]>>[nu
 }
 
 export class McpRouter {
+  private readonly traceSpans: TraceSpanRecord[] = [];
+  private readonly runLedgers = new Map<string, RunBudgetLedger>();
+  private readonly pricingTable: Record<string, PricingEntry> = loadPricingTable();
+  private readonly maxTraceSpans: number = asIntegerMin(Number(process.env.CLARITY_TRACE_MAX_SPANS ?? 5000), 100) ?? 5000;
+
   constructor(private readonly manager: ServiceManager) {}
 
-  async handle(message: JsonRpcRequest): Promise<JsonRpcResponse | null> {
+  getTraceSpans(limit = 200, filter?: { runId?: string; traceId?: string }): TraceSpanRecord[] {
+    const bounded = Math.max(1, Math.min(5000, Math.floor(limit)));
+    const runId = filter?.runId?.trim();
+    const traceId = filter?.traceId?.trim();
+    const filtered = this.traceSpans.filter((span) => {
+      if (runId && span.runId !== runId) return false;
+      if (traceId && span.traceId !== traceId) return false;
+      return true;
+    });
+    return filtered.slice(Math.max(0, filtered.length - bounded));
+  }
+
+  getRunCostLedgers(limit = 200, runId?: string): RunBudgetLedger[] {
+    const bounded = Math.max(1, Math.min(2000, Math.floor(limit)));
+    const target = runId?.trim();
+    const rows = [...this.runLedgers.values()]
+      .filter((row) => !target || row.runId === target)
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+    return rows.slice(Math.max(0, rows.length - bounded));
+  }
+
+  async handle(message: JsonRpcRequest, requestContext?: McpRequestContext): Promise<JsonRpcResponse | null> {
     const id = message.id ?? null;
 
     if (message.method === "initialize") {
@@ -789,9 +1066,43 @@ export class McpRouter {
         return failure(id, -32602, "tools/call requires params.name");
       }
 
+      const execution = this.deriveToolExecutionContext(params.name, params.arguments, requestContext);
+      const callBudgetState = this.ensureRunLedger(execution.runId, execution.traceId, execution.sessionId);
+      const blockedByBudget = this.evaluateToolCallBudget(callBudgetState);
+      if (blockedByBudget) {
+        this.manager.recordRuntimeEvent({
+          kind: "mcp.budget_exceeded",
+          level: "warn",
+          message: `MCP budget exceeded for run ${execution.runId}`,
+          data: {
+            runId: execution.runId,
+            traceId: execution.traceId,
+            sessionId: execution.sessionId,
+            reason: blockedByBudget
+          }
+        });
+        return failure(id, -32002, blockedByBudget, {
+          run_id: execution.runId,
+          trace_id: execution.traceId
+        });
+      }
+
+      const turnStarted = Date.now();
+      let serviceId: string | undefined;
+      let result: unknown = {};
+      let successCall = false;
+      let retries = 0;
+      let provider: string | undefined;
+      let model: string | undefined;
+      let bytesIn = encodedSize(params.arguments ?? {});
+      let bytesOut = 0;
+      let tokensIn = 0;
+      let tokensOut = 0;
+      let callError: string | undefined;
+
       try {
         if (params.name.startsWith("runtime__") || params.name.startsWith("clarity__")) {
-          const result = await this.handleRuntimeToolCall(params.name, params.arguments ?? {});
+          result = await this.handleRuntimeToolCall(params.name, params.arguments ?? {});
           this.manager.recordRuntimeEvent({
             kind: "mcp.tool_called",
             level: "info",
@@ -802,6 +1113,14 @@ export class McpRouter {
               success: true
             }
           });
+          successCall = true;
+          const usage = this.extractUsageMetrics(params.arguments ?? {}, result, undefined);
+          bytesIn = usage.bytesIn;
+          bytesOut = usage.bytesOut;
+          tokensIn = usage.tokensIn;
+          tokensOut = usage.tokensOut;
+          provider = usage.provider;
+          model = usage.model;
           return success(id, result);
         }
 
@@ -809,8 +1128,15 @@ export class McpRouter {
         if (!routed) {
           return failure(id, -32602, `unknown tool: ${params.name}`);
         }
+        serviceId = routed.serviceId;
 
-        const result = await this.manager.callTool(routed.serviceId, routed.remoteToolName, params.arguments ?? {});
+        const toolContext: ToolCallContext = {
+          traceId: execution.traceId,
+          runId: execution.runId,
+          sessionId: execution.sessionId,
+          spanId: execution.serviceSpanId
+        };
+        result = await this.manager.callTool(routed.serviceId, routed.remoteToolName, params.arguments ?? {}, toolContext);
         this.manager.recordRuntimeEvent({
           kind: "mcp.tool_called",
           serviceId: routed.serviceId,
@@ -823,8 +1149,18 @@ export class McpRouter {
             success: true
           }
         });
+        successCall = true;
+        retries = toolContext.retries ?? 0;
+        const usage = this.extractUsageMetrics(params.arguments ?? {}, result, toolContext);
+        bytesIn = usage.bytesIn;
+        bytesOut = usage.bytesOut;
+        tokensIn = usage.tokensIn;
+        tokensOut = usage.tokensOut;
+        provider = usage.provider;
+        model = usage.model;
         return success(id, result);
       } catch (error) {
+        callError = error instanceof Error ? error.message : String(error);
         this.manager.recordRuntimeEvent({
           kind: "mcp.tool_called",
           level: "warn",
@@ -837,8 +1173,39 @@ export class McpRouter {
         return failure(
           id,
           -32000,
-          error instanceof Error ? error.message : String(error)
+          callError
         );
+      } finally {
+        const latencyMs = Math.max(0, Date.now() - turnStarted);
+        if (!successCall) {
+          bytesOut = 0;
+          tokensIn = 0;
+          tokensOut = 0;
+        }
+        const computedCostUsd = this.computeCostUsd({
+          provider,
+          model,
+          tokensIn,
+          tokensOut,
+          bytesIn,
+          bytesOut
+        });
+        this.recordTraceAndLedger({
+          ...execution,
+          tool: params.name,
+          serviceId,
+          retries,
+          bytesIn,
+          bytesOut,
+          tokensIn,
+          tokensOut,
+          latencyMs,
+          provider,
+          model,
+          computedCostUsd,
+          success: successCall,
+          error: callError
+        });
       }
     }
 
@@ -958,6 +1325,26 @@ export class McpRouter {
         items: runId
           ? this.manager.getAgentRunEvents(runId, limit)
           : this.manager.getRecentAgentEvents(limit)
+      });
+    }
+
+    if (name === "runtime__get_traces") {
+      const limit = asInteger(payload.limit) ?? 200;
+      const runId = asString(payload.run_id);
+      const traceId = asString(payload.trace_id);
+      return contentJson({
+        items: this.getTraceSpans(limit, {
+          ...(runId ? { runId } : {}),
+          ...(traceId ? { traceId } : {})
+        })
+      });
+    }
+
+    if (name === "runtime__get_cost_ledger") {
+      const limit = asInteger(payload.limit) ?? 200;
+      const runId = asString(payload.run_id);
+      return contentJson({
+        items: this.getRunCostLedgers(limit, runId)
       });
     }
 
@@ -1663,6 +2050,339 @@ export class McpRouter {
     }
 
     throw new Error(`unknown runtime tool: ${name}`);
+  }
+
+  private deriveToolExecutionContext(
+    _toolName: string,
+    args: unknown,
+    requestContext?: McpRequestContext
+  ): ToolExecutionContext {
+    const argObj = asObject(args);
+    const runId = (
+      asString(argObj.run_id ?? argObj.runId)
+      ?? asString(requestContext?.runId)
+      ?? asString(argObj.correlation_id ?? argObj.correlationId)
+      ?? `run_${randomUUID()}`
+    ).trim();
+    const traceId = (
+      asString(requestContext?.traceId)
+      ?? asString(argObj.trace_id ?? argObj.traceId)
+      ?? `trace_${runId}`
+    ).trim();
+    const sessionId = (
+      asString(requestContext?.sessionId)
+      ?? asString(argObj.session_id ?? argObj.sessionId)
+      ?? `session_${randomUUID()}`
+    ).trim();
+
+    return {
+      sessionId,
+      traceId,
+      runId,
+      requestId: asString(requestContext?.requestId),
+      turnSpanId: `span_${randomUUID()}`,
+      callSpanId: `span_${randomUUID()}`,
+      serviceSpanId: `span_${randomUUID()}`,
+      resultSpanId: `span_${randomUUID()}`
+    };
+  }
+
+  private ensureRunLedger(runId: string, traceId: string, sessionId: string): RunBudgetLedger {
+    const existing = this.runLedgers.get(runId);
+    if (existing) {
+      return existing;
+    }
+    const now = new Date().toISOString();
+    const created: RunBudgetLedger = {
+      runId,
+      traceId,
+      sessionId,
+      startedAt: now,
+      updatedAt: now,
+      totalToolCalls: 0,
+      totalRetries: 0,
+      totalLatencyMs: 0,
+      totalBytesIn: 0,
+      totalBytesOut: 0,
+      totalTokensIn: 0,
+      totalTokensOut: 0,
+      totalCostUsd: 0
+    };
+    this.runLedgers.set(runId, created);
+    return created;
+  }
+
+  private evaluateToolCallBudget(ledger: RunBudgetLedger): string | null {
+    if (ledger.blockedReason) {
+      return ledger.blockedReason;
+    }
+    const maxToolCalls = parsePositiveInteger(process.env.CLARITY_BUDGET_MAX_TOOL_CALLS_PER_RUN) ?? 64;
+    if (ledger.totalToolCalls >= maxToolCalls) {
+      ledger.blockedReason = `max tool calls per run exceeded (${ledger.totalToolCalls}/${maxToolCalls})`;
+      ledger.updatedAt = new Date().toISOString();
+      return ledger.blockedReason;
+    }
+    const maxTokens = parsePositiveInteger(process.env.CLARITY_BUDGET_MAX_TOTAL_TOKENS_PER_RUN) ?? 200_000;
+    if ((ledger.totalTokensIn + ledger.totalTokensOut) >= maxTokens) {
+      ledger.blockedReason = `max total tokens per run exceeded (${ledger.totalTokensIn + ledger.totalTokensOut}/${maxTokens})`;
+      ledger.updatedAt = new Date().toISOString();
+      return ledger.blockedReason;
+    }
+    const maxCost = parsePositiveFloat(process.env.CLARITY_BUDGET_MAX_TOTAL_COST_USD) ?? 20;
+    if (ledger.totalCostUsd >= maxCost) {
+      ledger.blockedReason = `max total cost per run exceeded (${ledger.totalCostUsd.toFixed(6)}/${maxCost.toFixed(6)} USD)`;
+      ledger.updatedAt = new Date().toISOString();
+      return ledger.blockedReason;
+    }
+    return null;
+  }
+
+  private extractUsageMetrics(args: unknown, result: unknown, toolContext: ToolCallContext | undefined): UsageMetrics {
+    const bytesIn = toolContext?.requestBytes ?? encodedSize(args);
+    const bytesOut = toolContext?.responseBytes ?? encodedSize(result);
+    const argObj = asObject(args);
+    const resultObj = asObject(result);
+    const usageObj = asObject(resultObj.usage ?? asObject(resultObj.meta).usage);
+
+    const inCandidates: unknown[] = [
+      usageObj.input_tokens,
+      usageObj.prompt_tokens,
+      usageObj.tokens_in,
+      usageObj.total_input_tokens,
+      resultObj.input_tokens,
+      resultObj.prompt_tokens,
+      argObj.input_tokens,
+      argObj.prompt_tokens
+    ];
+    const outCandidates: unknown[] = [
+      usageObj.output_tokens,
+      usageObj.completion_tokens,
+      usageObj.tokens_out,
+      usageObj.total_output_tokens,
+      resultObj.output_tokens,
+      resultObj.completion_tokens,
+      argObj.output_tokens,
+      argObj.completion_tokens
+    ];
+
+    const tokensIn = inCandidates
+      .map((value) => asFiniteNumber(value))
+      .find((value): value is number => value !== undefined) ?? 0;
+    const tokensOut = outCandidates
+      .map((value) => asFiniteNumber(value))
+      .find((value): value is number => value !== undefined) ?? 0;
+
+    const provider = asString(toolContext?.provider)
+      ?? asString(resultObj.provider ?? usageObj.provider ?? argObj.provider);
+    const model = asString(toolContext?.model)
+      ?? asString(resultObj.model ?? usageObj.model ?? argObj.model);
+
+    return {
+      bytesIn,
+      bytesOut,
+      tokensIn: Math.max(0, Math.floor(tokensIn)),
+      tokensOut: Math.max(0, Math.floor(tokensOut)),
+      ...(provider ? { provider } : {}),
+      ...(model ? { model } : {})
+    };
+  }
+
+  private computeCostUsd(input: UsageMetrics): number {
+    const providerKey = input.provider?.trim().toLowerCase();
+    const modelKey = input.model?.trim().toLowerCase();
+    const providerModelKey = providerKey && modelKey ? `${providerKey}:${modelKey}` : undefined;
+    const pricing = (
+      (providerModelKey ? this.pricingTable[providerModelKey] : undefined)
+      ?? (providerKey ? this.pricingTable[providerKey] : undefined)
+      ?? (modelKey ? this.pricingTable[modelKey] : undefined)
+      ?? this.pricingTable.default
+      ?? DEFAULT_PRICING_TABLE.default
+    );
+    const inputTokenCost = ((input.tokensIn || 0) / 1000) * (pricing.inputTokenPer1kUsd ?? 0);
+    const outputTokenCost = ((input.tokensOut || 0) / 1000) * (pricing.outputTokenPer1kUsd ?? 0);
+    const inputByteFallback = input.tokensIn > 0 ? 0 : ((input.bytesIn || 0) / (1024 * 1024)) * (pricing.inputMbUsd ?? 0);
+    const outputByteFallback = input.tokensOut > 0 ? 0 : ((input.bytesOut || 0) / (1024 * 1024)) * (pricing.outputMbUsd ?? 0);
+    const total = inputTokenCost + outputTokenCost + inputByteFallback + outputByteFallback;
+    return Number(total.toFixed(8));
+  }
+
+  private appendTraceSpan(span: TraceSpanRecord): void {
+    this.traceSpans.push(span);
+    if (this.traceSpans.length > this.maxTraceSpans) {
+      this.traceSpans.shift();
+    }
+  }
+
+  private recordTraceAndLedger(input: ToolExecutionContext & {
+    tool: string;
+    serviceId?: string;
+    retries: number;
+    bytesIn: number;
+    bytesOut: number;
+    tokensIn: number;
+    tokensOut: number;
+    latencyMs: number;
+    provider?: string;
+    model?: string;
+    computedCostUsd: number;
+    success: boolean;
+    error?: string;
+  }): void {
+    const now = new Date().toISOString();
+    const phaseLatency = Math.max(1, Math.floor(input.latencyMs / 4));
+    const spans: TraceSpanRecord[] = [
+      {
+        spanId: input.turnSpanId,
+        spanKind: "agent_turn",
+        traceId: input.traceId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        tool: input.tool,
+        startedAt: new Date(Date.now() - input.latencyMs).toISOString(),
+        endedAt: now,
+        latencyMs: input.latencyMs,
+        retries: input.retries,
+        success: input.success,
+        provider: input.provider,
+        model: input.model,
+        bytesIn: input.bytesIn,
+        bytesOut: input.bytesOut,
+        tokensIn: input.tokensIn,
+        tokensOut: input.tokensOut,
+        computedCostUsd: input.computedCostUsd,
+        ...(input.error ? { error: input.error } : {})
+      },
+      {
+        spanId: input.callSpanId,
+        parentSpanId: input.turnSpanId,
+        spanKind: "mcp.tools/call",
+        traceId: input.traceId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        tool: input.tool,
+        startedAt: new Date(Date.now() - input.latencyMs).toISOString(),
+        endedAt: now,
+        latencyMs: Math.max(1, phaseLatency),
+        retries: input.retries,
+        success: input.success,
+        provider: input.provider,
+        model: input.model,
+        bytesIn: input.bytesIn,
+        bytesOut: input.bytesOut,
+        tokensIn: input.tokensIn,
+        tokensOut: input.tokensOut,
+        computedCostUsd: input.computedCostUsd,
+        ...(input.error ? { error: input.error } : {})
+      },
+      {
+        spanId: input.serviceSpanId,
+        parentSpanId: input.callSpanId,
+        spanKind: "service.execute",
+        traceId: input.traceId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        tool: input.tool,
+        serviceId: input.serviceId,
+        startedAt: new Date(Date.now() - Math.max(1, Math.floor(input.latencyMs * 0.75))).toISOString(),
+        endedAt: now,
+        latencyMs: Math.max(1, phaseLatency),
+        retries: input.retries,
+        success: input.success,
+        provider: input.provider,
+        model: input.model,
+        bytesIn: input.bytesIn,
+        bytesOut: input.bytesOut,
+        tokensIn: input.tokensIn,
+        tokensOut: input.tokensOut,
+        computedCostUsd: input.computedCostUsd,
+        ...(input.error ? { error: input.error } : {})
+      },
+      {
+        spanId: input.resultSpanId,
+        parentSpanId: input.serviceSpanId,
+        spanKind: "result",
+        traceId: input.traceId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        tool: input.tool,
+        serviceId: input.serviceId,
+        startedAt: now,
+        endedAt: now,
+        latencyMs: 0,
+        retries: input.retries,
+        success: input.success,
+        provider: input.provider,
+        model: input.model,
+        bytesIn: input.bytesIn,
+        bytesOut: input.bytesOut,
+        tokensIn: input.tokensIn,
+        tokensOut: input.tokensOut,
+        computedCostUsd: input.computedCostUsd,
+        ...(input.error ? { error: input.error } : {})
+      }
+    ];
+
+    for (const span of spans) {
+      this.appendTraceSpan(span);
+      this.manager.recordRuntimeEvent({
+        kind: "mcp.trace_span",
+        level: span.success ? "info" : "warn",
+        serviceId: span.serviceId,
+        message: `Trace span ${span.spanKind}: ${span.tool}`,
+        data: span
+      });
+    }
+
+    const ledger = this.ensureRunLedger(input.runId, input.traceId, input.sessionId);
+    ledger.updatedAt = now;
+    ledger.totalToolCalls += 1;
+    ledger.totalRetries += input.retries;
+    ledger.totalLatencyMs += input.latencyMs;
+    ledger.totalBytesIn += input.bytesIn;
+    ledger.totalBytesOut += input.bytesOut;
+    ledger.totalTokensIn += input.tokensIn;
+    ledger.totalTokensOut += input.tokensOut;
+    ledger.totalCostUsd = Number((ledger.totalCostUsd + input.computedCostUsd).toFixed(8));
+    ledger.lastTool = input.tool;
+    ledger.lastServiceId = input.serviceId;
+    ledger.lastProvider = input.provider;
+    ledger.lastModel = input.model;
+    const budgetViolation = this.evaluateToolCallBudget(ledger);
+    this.manager.recordRuntimeEvent({
+      kind: "mcp.cost_ledger",
+      level: budgetViolation ? "warn" : "info",
+      serviceId: input.serviceId,
+      message: `Cost ledger updated for run ${input.runId}`,
+      data: {
+        runId: ledger.runId,
+        traceId: ledger.traceId,
+        sessionId: ledger.sessionId,
+        totals: {
+          toolCalls: ledger.totalToolCalls,
+          retries: ledger.totalRetries,
+          latencyMs: ledger.totalLatencyMs,
+          bytesIn: ledger.totalBytesIn,
+          bytesOut: ledger.totalBytesOut,
+          tokensIn: ledger.totalTokensIn,
+          tokensOut: ledger.totalTokensOut,
+          costUsd: ledger.totalCostUsd
+        },
+        ...(budgetViolation ? { blockedReason: budgetViolation } : {})
+      }
+    });
+    if (budgetViolation) {
+      this.manager.recordRuntimeEvent({
+        kind: "mcp.budget_exceeded",
+        level: "warn",
+        serviceId: input.serviceId,
+        message: `Run budget exceeded: ${input.runId}`,
+        data: {
+          runId: input.runId,
+          traceId: input.traceId,
+          reason: budgetViolation
+        }
+      });
+    }
   }
 
   private async aggregateTools(): Promise<Array<{ name: string; description?: string; inputSchema?: unknown }>> {

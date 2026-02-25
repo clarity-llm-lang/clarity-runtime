@@ -28,6 +28,44 @@ function asStringArray(value: unknown): string[] | null {
   return out.length === value.length ? out : null;
 }
 
+const AGENT_A2A_PROTOCOL = "clarity.a2a.v1";
+const AGENT_A2A_MESSAGE_KINDS = new Set([
+  "handoff.request",
+  "handoff.accepted",
+  "handoff.rejected",
+  "handoff.completed"
+]);
+
+function validateAgentA2AProfile(value: unknown): void {
+  const obj = asObject(value);
+  if (!obj) {
+    throw new Error("invalid manifest: metadata.agent.a2a must be an object");
+  }
+  if (asNonEmptyString(obj.protocol) !== AGENT_A2A_PROTOCOL) {
+    throw new Error(`invalid manifest: metadata.agent.a2a.protocol must be '${AGENT_A2A_PROTOCOL}'`);
+  }
+  for (const key of ["acceptedMessageKinds", "emitsMessageKinds"] as const) {
+    if (obj[key] === undefined) {
+      continue;
+    }
+    const values = asStringArray(obj[key]);
+    if (!values || values.length === 0) {
+      throw new Error(`invalid manifest: metadata.agent.a2a.${key} must be a non-empty array of strings when provided`);
+    }
+    for (const item of values) {
+      if (!AGENT_A2A_MESSAGE_KINDS.has(item)) {
+        throw new Error("invalid manifest: metadata.agent.a2a message kinds must be handoff.request|handoff.accepted|handoff.rejected|handoff.completed");
+      }
+    }
+  }
+  if (obj.maxPayloadBytes !== undefined) {
+    const maxPayloadBytes = asPositiveInteger(obj.maxPayloadBytes);
+    if (!maxPayloadBytes || maxPayloadBytes < 128 || maxPayloadBytes > 10_485_760) {
+      throw new Error("invalid manifest: metadata.agent.a2a.maxPayloadBytes must be an integer between 128 and 10485760 when provided");
+    }
+  }
+}
+
 function validateAgentDescriptor(value: unknown): void {
   const obj = asObject(value);
   if (!obj) {
@@ -47,6 +85,12 @@ function validateAgentDescriptor(value: unknown): void {
     if (typeof trigger !== "string" || !allowedTriggers.has(trigger)) {
       throw new Error("invalid manifest: metadata.agent.triggers must only include timer|event|api|a2a");
     }
+  }
+  if (obj.a2a !== undefined) {
+    validateAgentA2AProfile(obj.a2a);
+  }
+  if (triggers.includes("a2a") && obj.a2a === undefined) {
+    throw new Error("invalid manifest: metadata.agent.a2a is required when metadata.agent.triggers includes 'a2a'");
   }
   for (const key of ["inputs", "outputs", "allowedMcpTools", "allowedLlmProviders", "handoffTargets", "dependsOn"] as const) {
     if (obj[key] !== undefined && !asStringArray(obj[key])) {
