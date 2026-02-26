@@ -70,35 +70,6 @@ function parseRatio(value: string | undefined): number | undefined {
   return parsed;
 }
 
-function asStringList(input: unknown): string[] {
-  if (!Array.isArray(input)) {
-    return [];
-  }
-  return input
-    .filter((value): value is string => typeof value === "string")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-}
-
-function extractOpenAiOutputText(payload: unknown): string | undefined {
-  const root = asObject(payload);
-  const direct = asNonEmptyString(root.output_text);
-  if (direct) {
-    return direct;
-  }
-  const output = Array.isArray(root.output) ? root.output : [];
-  for (const item of output) {
-    const content = Array.isArray(asObject(item).content) ? (asObject(item).content as unknown[]) : [];
-    for (const part of content) {
-      const text = asNonEmptyString(asObject(part).text);
-      if (text) {
-        return text;
-      }
-    }
-  }
-  return undefined;
-}
-
 function asPositiveInteger(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     return undefined;
@@ -185,9 +156,6 @@ export interface AgentRunSummary {
 
 export interface ServiceManagerOptions {
   hitlChatMode?: "auto" | "echo" | "disabled";
-  hitlOpenAiApiKey?: string;
-  hitlOpenAiModel?: string;
-  hitlOpenAiTimeoutMs?: number;
 }
 
 interface WorkerValue {
@@ -197,10 +165,8 @@ interface WorkerValue {
 
 interface ResolvedRuntimeChatConfig {
   mode: "auto" | "echo" | "disabled";
-  provider: "openai" | "echo";
-  model: string;
-  timeoutMs: number;
-  apiKey: string;
+  strategy: "agent_tool" | "echo";
+  handlerTool: string;
 }
 
 function asNonEmptyString(value: unknown): string | undefined {
@@ -266,9 +232,6 @@ export class ServiceManager {
   private readonly eventSubscribers = new Set<(event: AuditEvent) => void>();
   private readonly lifecycleAuditEnabled: boolean;
   private readonly hitlChatMode: "auto" | "echo" | "disabled";
-  private readonly hitlOpenAiApiKey: string;
-  private readonly hitlOpenAiModel: string;
-  private readonly hitlOpenAiTimeoutMs: number;
   private readonly hitlRunChains = new Map<string, Promise<void>>();
   private telemetryWriteQueue: Promise<void> = Promise.resolve();
   private telemetryLoaded = false;
@@ -288,24 +251,6 @@ export class ServiceManager {
       .trim()
       .toLowerCase();
     this.hitlChatMode = (modeRaw === "disabled" || modeRaw === "echo") ? modeRaw : "auto";
-    this.hitlOpenAiApiKey = (
-      options.hitlOpenAiApiKey
-      ?? process.env.OPENAI_API_KEY
-      ?? process.env.CLARITY_HITL_OPENAI_API_KEY
-      ?? ""
-    ).trim();
-    this.hitlOpenAiModel = (
-      options.hitlOpenAiModel
-      ?? process.env.CLARITY_HITL_OPENAI_MODEL
-      ?? process.env.OPENAI_MODEL
-      ?? "gpt-4.1-mini"
-    ).trim() || "gpt-4.1-mini";
-    this.hitlOpenAiTimeoutMs = Math.max(
-      1_000,
-      options.hitlOpenAiTimeoutMs
-      ?? parsePositiveInteger(process.env.CLARITY_HITL_OPENAI_TIMEOUT_MS)
-      ?? 20_000
-    );
   }
 
   async init(): Promise<void> {
@@ -1643,36 +1588,50 @@ export class ServiceManager {
         agent,
         stepId,
         mode: runtimeChat.mode,
-        provider: runtimeChat.provider,
+        strategy: runtimeChat.strategy,
+        handlerTool: runtimeChat.handlerTool,
         source: "runtime_hitl_executor",
         inputLength: operatorMessage.length
       }
     });
 
     try {
-      const provider = runtimeChat.provider;
+      const provider = runtimeChat.strategy === "agent_tool" ? "agent" : "echo";
       let reply = "";
-      let usage: Record<string, unknown> | undefined;
-
-      if (provider === "openai") {
+      if (runtimeChat.strategy === "agent_tool") {
+        if (!serviceId) {
+          throw new Error("runtime chat dispatch requires serviceId on run or request");
+        }
+        const triggerContext = asObject(runSummary?.triggerContext);
+        const sessionId = asNonEmptyString(triggerContext.sessionId ?? triggerContext.session_id) ?? runId;
         this.emitEvent({
-          kind: "agent.llm_called",
+          kind: "agent.tool_called",
           serviceId,
           level: "info",
-          message: `OpenAI Responses API request (${runtimeChat.model})`,
+          message: `Runtime chat dispatched to agent tool (${runtimeChat.handlerTool})`,
           data: {
             runId,
-            ...(serviceId ? { serviceId } : {}),
+            serviceId,
             agent,
             stepId,
-            provider: "openai",
-            model: runtimeChat.model,
-            inputLength: operatorMessage.length
+            tool: runtimeChat.handlerTool,
+            sessionId
           }
         });
-        const completion = await this.generateOpenAiReply(operatorMessage, runtimeChat);
-        reply = completion.reply;
-        usage = completion.usage;
+        const toolResult = await this.callTool(
+          serviceId,
+          runtimeChat.handlerTool,
+          this.buildRuntimeChatToolArgs(runtimeChat.handlerTool, operatorMessage, sessionId, runId),
+          {
+            runId,
+            sessionId
+          }
+        );
+        const candidateReply = this.extractRuntimeChatReply(toolResult);
+        if (!candidateReply) {
+          throw new Error(`agent chat tool returned no reply text: ${runtimeChat.handlerTool}`);
+        }
+        reply = candidateReply;
       } else {
         reply = `Echo: ${operatorMessage}`;
       }
@@ -1689,8 +1648,7 @@ export class ServiceManager {
           role: "assistant",
           message: reply,
           provider,
-          ...(provider === "openai" ? { model: runtimeChat.model } : {}),
-          ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
+          ...(runtimeChat.strategy === "agent_tool" ? { handlerTool: runtimeChat.handlerTool } : {}),
           source: "runtime_hitl_executor"
         }
       });
@@ -1706,8 +1664,7 @@ export class ServiceManager {
           agent,
           stepId,
           provider,
-          ...(provider === "openai" ? { model: runtimeChat.model } : {}),
-          ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
+          ...(runtimeChat.strategy === "agent_tool" ? { handlerTool: runtimeChat.handlerTool } : {}),
           message: reply
         }
       });
@@ -1765,102 +1722,50 @@ export class ServiceManager {
     const mode = (modeRaw === "echo" || modeRaw === "disabled" || modeRaw === "auto")
       ? modeRaw
       : this.hitlChatMode;
-    const providerRaw = asNonEmptyString(chat.provider)?.toLowerCase();
-    const declaredProviders = [
-      ...asStringList(agent.allowedLlmProviders).map((item) => item.toLowerCase()),
-      ...asStringList((agent as { llmProviders?: unknown }).llmProviders).map((item) => item.toLowerCase())
-    ];
-    const model = asNonEmptyString(chat.model) ?? this.hitlOpenAiModel;
-    const timeoutMs = Math.max(
-      1_000,
-      asPositiveInteger(chat.timeoutMs) ?? this.hitlOpenAiTimeoutMs
-    );
-    const apiKeyEnv = asNonEmptyString(chat.apiKeyEnv);
-    const apiKey = (
-      (apiKeyEnv ? process.env[apiKeyEnv] : undefined)
-      ?? this.hitlOpenAiApiKey
-      ?? ""
-    ).trim();
-    const providerIntent: "openai" | "echo" = providerRaw === "openai" || providerRaw === "echo"
-      ? providerRaw
-      : (declaredProviders.includes("openai") ? "openai" : "echo");
-    const provider: "openai" | "echo" =
-      mode === "disabled" || mode === "echo"
-        ? "echo"
-        : (providerIntent === "openai" && apiKey ? "openai" : "echo");
+    const defaultTool = service?.manifest.spec.origin.type === "remote_mcp" ? "receive_chat" : "fn__receive_chat";
+    const handlerTool = asNonEmptyString(chat.handlerTool ?? chat.handler_tool) ?? defaultTool;
+    const strategy = mode === "echo" ? "echo" : "agent_tool";
     return {
       mode,
-      provider,
-      model,
-      timeoutMs,
-      apiKey
+      strategy,
+      handlerTool
     };
   }
 
-  private async generateOpenAiReply(
-    operatorMessage: string,
-    config: ResolvedRuntimeChatConfig
-  ): Promise<{ reply: string; usage?: Record<string, unknown> }> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, config.timeoutMs);
-    try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${config.apiKey}`,
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({
-          model: config.model,
-          input: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "input_text",
-                  text: operatorMessage
-                }
-              ]
-            }
-          ]
-        }),
-        signal: controller.signal
-      });
-
-      const payloadText = await response.text();
-      let payload: unknown = {};
-      if (payloadText.trim().length > 0) {
-        try {
-          payload = JSON.parse(payloadText) as unknown;
-        } catch {
-          throw new Error("OpenAI response parsing failed");
-        }
-      }
-
-      if (!response.ok) {
-        const root = asObject(payload);
-        const errorMessage = asNonEmptyString(asObject(root.error).message) ?? payloadText.trim();
-        throw new Error(
-          errorMessage.length > 0
-            ? `OpenAI request failed (${response.status}): ${errorMessage}`
-            : `OpenAI request failed with status ${response.status}`
-        );
-      }
-
-      const reply = extractOpenAiOutputText(payload);
-      if (!reply) {
-        throw new Error("OpenAI response missing output text");
-      }
-      const usage = asObject(asObject(payload).usage);
+  private buildRuntimeChatToolArgs(
+    handlerTool: string,
+    message: string,
+    sessionId: string,
+    runId: string
+  ): unknown {
+    if (handlerTool.startsWith("fn__")) {
       return {
-        reply,
-        ...(Object.keys(usage).length > 0 ? { usage } : {})
+        args: [message, sessionId, runId]
       };
-    } finally {
-      clearTimeout(timeout);
     }
+    return {
+      message,
+      sessionId,
+      runId,
+      session_id: sessionId,
+      run_id: runId
+    };
+  }
+
+  private extractRuntimeChatReply(result: unknown): string | undefined {
+    const root = asObject(result);
+    const direct = asNonEmptyString(root.reply ?? root.message ?? root.text ?? root.output_text);
+    if (direct) {
+      return direct;
+    }
+    const content = Array.isArray(root.content) ? (root.content as unknown[]) : [];
+    for (const item of content) {
+      const text = asNonEmptyString(asObject(item).text);
+      if (text) {
+        return text;
+      }
+    }
+    return undefined;
   }
 
   private async loadTelemetry(): Promise<void> {

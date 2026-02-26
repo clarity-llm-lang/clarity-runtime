@@ -62,7 +62,7 @@ async function waitForRunEvent(
   baseUrl: string,
   runId: string,
   predicate: (item: Record<string, unknown>) => boolean,
-  attempts = 30,
+  attempts = 80,
   sleepMs = 25
 ): Promise<Record<string, unknown> | null> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -717,6 +717,159 @@ test("run messages endpoint honors per-agent chat mode overrides", async () => {
       ? (runEventsBody.items as Array<Record<string, unknown>>)
       : [];
     assert.ok(!items.some((item) => String(item.kind) === "agent.step_started"));
+    assert.ok(!items.some((item) => String(item.kind) === "agent.chat.assistant_message"));
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("run messages endpoint dispatches to agent chat handler in auto mode", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-chat-auto-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"), {
+    hitlChatMode: "auto"
+  });
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const wasmPath = path.join(root, "chat-auto-agent.wasm");
+    await writeFile(wasmPath, "", "utf8");
+    const applyAgent = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        manifest: {
+          apiVersion: "clarity.runtime/v1",
+          kind: "MCPService",
+          metadata: {
+            sourceFile: path.join(root, "chat-auto-agent.clarity"),
+            module: "ChatAutoAgent",
+            serviceType: "agent",
+            agent: {
+              agentId: "chat-auto-agent",
+              name: "Chat Auto Agent",
+              role: "assistant",
+              objective: "Validate runtime chat tool dispatch",
+              triggers: ["api"]
+            }
+          },
+          spec: {
+            origin: {
+              type: "local_wasm",
+              wasmPath,
+              entry: "main"
+            },
+            enabled: true,
+            autostart: false,
+            restartPolicy: {
+              mode: "never",
+              maxRestarts: 0,
+              windowSeconds: 60
+            },
+            policyRef: "default"
+          }
+        }
+      })
+    });
+    assert.equal(applyAgent.status, 200);
+    const serviceId = String(
+      asObject(asObject(asObject(asObject(applyAgent.body).service).manifest).metadata).serviceId ?? ""
+    );
+    assert.ok(serviceId.length > 0);
+
+    const started = await jsonRequest(runtime.baseUrl, `/api/services/${encodeURIComponent(serviceId)}/start`, {
+      method: "POST"
+    });
+    assert.equal(started.status, 200);
+
+    const runId = "run-chat-auto-1";
+    const runCreated = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_created",
+        message: "Run created",
+        service_id: serviceId,
+        run_id: runId,
+        agent: "chat-auto-agent",
+        data: {
+          trigger: "api",
+          triggerContext: {
+            route: "/tests",
+            method: "POST",
+            requestId: "req-chat-auto-1",
+            caller: "agent-observability.test"
+          }
+        }
+      })
+    });
+    assert.equal(runCreated.status, 200);
+
+    const runStarted = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_started",
+        message: "Run started",
+        service_id: serviceId,
+        run_id: runId,
+        agent: "chat-auto-agent"
+      })
+    });
+    assert.equal(runStarted.status, 200);
+
+    const postedMessage = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        role: "user",
+        message: "hello runtime",
+        service_id: serviceId,
+        agent: "chat-auto-agent"
+      })
+    });
+    assert.equal(postedMessage.status, 200);
+    assert.equal(Boolean(asObject(postedMessage.body).runtime_chat_execution_queued), true);
+
+    const stepStarted = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) => String(item.kind) === "agent.step_started"
+    );
+    assert.ok(stepStarted);
+    assert.equal(String(asObject(stepStarted?.data).strategy), "agent_tool");
+    assert.equal(String(asObject(stepStarted?.data).handlerTool), "fn__receive_chat");
+
+    const stepCompleted = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) =>
+        String(item.kind) === "agent.step_completed"
+        && String(item.level) === "error"
+        && String(asObject(item.data).error).trim().length > 0
+    );
+    assert.ok(stepCompleted);
+    assert.equal(String(asObject(stepCompleted?.data).stepId).length > 0, true);
+
+    const waiting = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) =>
+        String(item.kind) === "agent.waiting"
+        && String(asObject(item.data).waitingReason).trim().length > 0
+    );
+    assert.ok(waiting);
+
+    const runEvents = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/events?limit=200`);
+    assert.equal(runEvents.status, 200);
+    const runEventsBody = asObject(runEvents.body);
+    const items = Array.isArray(runEventsBody.items)
+      ? (runEventsBody.items as Array<Record<string, unknown>>)
+      : [];
+    assert.ok(items.some((item) => String(item.kind) === "agent.tool_called"));
     assert.ok(!items.some((item) => String(item.kind) === "agent.chat.assistant_message"));
   } finally {
     await manager.shutdown();

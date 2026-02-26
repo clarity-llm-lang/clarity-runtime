@@ -26,29 +26,24 @@ When runtime receives run-scoped chat input, it must enqueue asynchronous proces
 5. Processing must be serialized per run (`runId`) to keep response order deterministic.
 6. Runtime must keep the run non-terminal between turns (do not auto-complete after each reply).
 
-## Provider/Mode Requirements
+## Dispatch/Mode Requirements
 
 1. Runtime must support a deterministic fallback mode for local/dev operation:
    - `echo` mode returns `Echo: <input>` without external dependencies.
-2. Runtime must support an `auto` mode that can use OpenAI Responses API when:
-   - agent metadata declares OpenAI provider intent (`allowedLlmProviders` or `llmProviders` includes `openai`)
-   - OpenAI API key is configured.
-3. Runtime must support a `disabled` mode that preserves existing ingest-only behavior.
-4. Mode can be configured globally and overridden per agent:
-   - global default: `CLARITY_HITL_CHAT_MODE`
+2. Runtime must support an `auto` mode that dispatches to an agent-owned handler tool:
+   - default handler for local wasm agents: `fn__receive_chat`
+   - default handler for remote MCP agents: `receive_chat`
+   - per-agent override: `metadata.agent.chat.handlerTool`
+3. Runtime must not perform provider HTTP calls directly in `auto` mode; provider access belongs to the agent implementation.
+4. Runtime must support a `disabled` mode that preserves ingest-only behavior.
+5. Mode can be configured globally and overridden per agent:
+   - global default: `CLARITY_HITL_CHAT_MODE` (`auto` default, `echo`, `disabled`)
    - per-agent override: `metadata.agent.chat.mode`
-5. Provider/model/key selection can be configured per agent:
+6. Provider/model/key settings may still be declared per agent for agent-owned execution:
    - `metadata.agent.chat.provider`
    - `metadata.agent.chat.model`
    - `metadata.agent.chat.apiKeyEnv`
    - `metadata.agent.chat.timeoutMs`
-6. OpenAI global defaults remain available:
-   - `auto` (default)
-   - `echo`
-   - `disabled`
-   - `CLARITY_HITL_OPENAI_MODEL` (default `gpt-4.1-mini`)
-   - `CLARITY_HITL_OPENAI_TIMEOUT_MS` (default `20000`)
-   - API key from `OPENAI_API_KEY` (or `CLARITY_HITL_OPENAI_API_KEY`)
 
 ## Non-Goals (This Increment)
 

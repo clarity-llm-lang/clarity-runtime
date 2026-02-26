@@ -238,12 +238,11 @@ Not implemented yet:
 - `CLARITY_COMPILER_INSTALL_ALLOWLIST=brew,apt-get`: optional installer command allowlist for `clarity__ensure_compiler`.
 - `CLARITY_AUDIT_INCLUDE_LIFECYCLE=1`: include service lifecycle events in audit (`service.*`). Set `0` to log only MCP tool calls.
 - `CLARITY_A2A_MAX_MESSAGE_BYTES=65536`: max accepted body size for formal A2A envelope ingestion at `POST /api/a2a/messages`.
-- Runtime chat defaults:
-  - `CLARITY_HITL_CHAT_MODE=auto|echo|disabled`
-  - `CLARITY_HITL_OPENAI_MODEL` (default `gpt-4.1-mini`)
-  - `CLARITY_HITL_OPENAI_TIMEOUT_MS` (default `20000`)
-  - `OPENAI_API_KEY` or `CLARITY_HITL_OPENAI_API_KEY`
-  - per-agent overrides in manifest: `metadata.agent.chat` (`mode`, `provider`, `model`, `apiKeyEnv`, `timeoutMs`)
+- Runtime chat dispatch:
+  - `CLARITY_HITL_CHAT_MODE=auto|echo|disabled` (global default)
+  - per-agent overrides in manifest: `metadata.agent.chat` (`mode`, `handlerTool`)
+  - in `auto` mode runtime dispatches to agent-owned handler tools (local default `fn__receive_chat`, remote default `receive_chat`)
+  - provider keys/models should be owned by the agent implementation, not runtime
 
 ## Security Defaults
 

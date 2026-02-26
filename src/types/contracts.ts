@@ -37,6 +37,7 @@ export type AgentChatProvider = "openai" | "echo";
 export interface AgentChatProfile {
   mode?: AgentChatMode;
   provider?: AgentChatProvider;
+  handlerTool?: string;
   model?: string;
   apiKeyEnv?: string;
   timeoutMs?: number;

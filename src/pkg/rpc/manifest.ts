@@ -89,6 +89,9 @@ function validateAgentChatProfile(value: unknown): void {
       throw new Error("invalid manifest: metadata.agent.chat.provider must be openai|echo");
     }
   }
+  if (obj.handlerTool !== undefined && !asNonEmptyString(obj.handlerTool)) {
+    throw new Error("invalid manifest: metadata.agent.chat.handlerTool must be a non-empty string when provided");
+  }
   if (obj.model !== undefined && !asNonEmptyString(obj.model)) {
     throw new Error("invalid manifest: metadata.agent.chat.model must be a non-empty string when provided");
   }

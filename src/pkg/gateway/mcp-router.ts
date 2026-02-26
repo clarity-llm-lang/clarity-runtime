@@ -613,12 +613,14 @@ function asAgentChatProfile(input: unknown): NonNullable<AgentDescriptor["chat"]
   const mode = modeRaw === "auto" || modeRaw === "echo" || modeRaw === "disabled" ? modeRaw : undefined;
   const providerRaw = asString(obj.provider)?.toLowerCase();
   const provider = providerRaw === "openai" || providerRaw === "echo" ? providerRaw : undefined;
+  const handlerTool = asString(obj.handler_tool ?? obj.handlerTool);
   const model = asString(obj.model);
   const apiKeyEnv = asString(obj.api_key_env ?? obj.apiKeyEnv);
   const timeoutMs = asIntegerMin(obj.timeout_ms ?? obj.timeoutMs, 1_000);
   const out: NonNullable<AgentDescriptor["chat"]> = {
     ...(mode ? { mode } : {}),
     ...(provider ? { provider } : {}),
+    ...(handlerTool ? { handlerTool } : {}),
     ...(model ? { model } : {}),
     ...(apiKeyEnv ? { apiKeyEnv } : {}),
     ...(timeoutMs ? { timeoutMs } : {})
