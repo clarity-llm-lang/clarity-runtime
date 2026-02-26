@@ -387,7 +387,7 @@ test("agent HTTP endpoints accept events and return run timeline", async () => {
   }
 });
 
-test("run HITL input queues runtime chat executor response events", async () => {
+test("run chat messages endpoint queues runtime chat executor response events", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-hitl-chat-http-"));
   const registry = new ServiceRegistry(path.join(root, "registry.json"));
   await registry.init();
@@ -485,16 +485,26 @@ test("run HITL input queues runtime chat executor response events", async () => 
     });
     assert.equal(runStarted.status, 200);
 
-    const hitl = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/hitl`, {
+    const messageIn = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/messages`, {
       method: "POST",
       body: JSON.stringify({
         message: "hello runtime",
         service_id: serviceId,
-        agent: "chat-agent"
+        agent: "chat-agent",
+        role: "user"
       })
     });
-    assert.equal(hitl.status, 200);
-    assert.equal(Boolean(asObject(hitl.body).runtime_chat_execution_queued), true);
+    assert.equal(messageIn.status, 200);
+    assert.equal(String(asObject(messageIn.body).kind), "agent.chat.user_message");
+    assert.equal(Boolean(asObject(messageIn.body).runtime_chat_execution_queued), true);
+
+    const assistantMessage = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) => String(item.kind) === "agent.chat.assistant_message"
+    );
+    assert.ok(assistantMessage);
+    assert.equal(String(asObject(assistantMessage?.data).message), "Echo: hello runtime");
 
     const stepCompleted = await waitForRunEvent(
       runtime.baseUrl,

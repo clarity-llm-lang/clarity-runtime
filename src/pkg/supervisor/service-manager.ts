@@ -1011,7 +1011,7 @@ export class ServiceManager {
     this.emitEvent(input);
   }
 
-  queueRuntimeHitlInput(input: {
+  queueRuntimeChatMessage(input: {
     runId: string;
     message: string;
     serviceId?: string;
@@ -1030,7 +1030,7 @@ export class ServiceManager {
         // Ignore previous failures for this run and continue processing new inputs.
       })
       .then(async () => {
-        await this.processRuntimeHitlInput(input);
+        await this.processRuntimeChatMessage(input);
       })
       .catch((error) => {
         const reason = error instanceof Error ? error.message : String(error);
@@ -1054,6 +1054,15 @@ export class ServiceManager {
         this.hitlRunChains.delete(runId);
       }
     });
+  }
+
+  queueRuntimeHitlInput(input: {
+    runId: string;
+    message: string;
+    serviceId?: string;
+    agent?: string;
+  }): void {
+    this.queueRuntimeChatMessage(input);
   }
 
   async shutdown(): Promise<void> {
@@ -1571,7 +1580,7 @@ export class ServiceManager {
     }
   }
 
-  private async processRuntimeHitlInput(input: {
+  private async processRuntimeChatMessage(input: {
     runId: string;
     message: string;
     serviceId?: string;
@@ -1606,7 +1615,7 @@ export class ServiceManager {
         ...(serviceId ? { serviceId } : {}),
         agent,
         stepId,
-        source: "runtime_hitl_executor",
+        source: "runtime_chat_executor",
         inputLength: operatorMessage.length
       }
     });
@@ -1640,6 +1649,23 @@ export class ServiceManager {
       }
 
       this.emitEvent({
+        kind: "agent.chat.assistant_message",
+        serviceId,
+        level: "info",
+        message: `Assistant response (${runId})`,
+        data: {
+          runId,
+          ...(serviceId ? { serviceId } : {}),
+          agent,
+          role: "assistant",
+          provider,
+          ...(provider === "openai" ? { model: this.hitlOpenAiModel } : {}),
+          ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
+          message: reply
+        }
+      });
+
+      this.emitEvent({
         kind: "agent.step_completed",
         serviceId,
         level: "info",
@@ -1667,7 +1693,7 @@ export class ServiceManager {
           agent,
           reason: "awaiting operator input",
           waitingReason: "awaiting operator input",
-          source: "runtime_hitl_executor"
+          source: "runtime_chat_executor"
         }
       });
     } catch (error) {
@@ -1696,7 +1722,7 @@ export class ServiceManager {
           agent,
           reason,
           waitingReason: reason,
-          source: "runtime_hitl_executor"
+          source: "runtime_chat_executor"
         }
       });
     }

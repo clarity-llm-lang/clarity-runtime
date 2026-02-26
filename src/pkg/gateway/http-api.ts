@@ -99,6 +99,7 @@ const FAVICON_PNG_PATH = path.resolve(
   "../../../assets/clarity-github-avatar.png"
 );
 const DEFAULT_HITL_EVENT_KIND = "agent.hitl_input";
+const CHAT_MESSAGE_ROLES = ["user", "assistant", "system"] as const;
 const HITL_MAX_MESSAGE_CHARS = parsePositiveIntegerEnv(process.env.CLARITY_HITL_MAX_MESSAGE_CHARS, 2000);
 const FORMAL_A2A_PROTOCOL = "clarity.a2a.v1";
 const FORMAL_A2A_MESSAGE_KINDS = [
@@ -111,6 +112,7 @@ const A2A_MAX_MESSAGE_BYTES = parsePositiveIntegerEnv(process.env.CLARITY_A2A_MA
 const MCP_ROUTERS = new WeakMap<ServiceManager, McpRouter>();
 
 type FormalA2AMessageKind = typeof FORMAL_A2A_MESSAGE_KINDS[number];
+type ChatMessageRole = typeof CHAT_MESSAGE_ROLES[number];
 
 interface A2AAgentRef {
   agentId: string;
@@ -374,6 +376,24 @@ function nonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeChatMessageRole(value: unknown): ChatMessageRole | null {
+  const raw = nonEmptyString(value)?.toLowerCase();
+  if (!raw) {
+    return "user";
+  }
+  return (CHAT_MESSAGE_ROLES as readonly string[]).includes(raw) ? (raw as ChatMessageRole) : null;
+}
+
+function chatMessageKindForRole(role: ChatMessageRole): string {
+  if (role === "assistant") {
+    return "agent.chat.assistant_message";
+  }
+  if (role === "system") {
+    return "agent.chat.system_message";
+  }
+  return "agent.chat.user_message";
 }
 
 function getField(data: Record<string, unknown>, key: string): unknown {
@@ -1434,6 +1454,91 @@ export async function handleHttp(
       return;
     }
 
+    const agentRunMessagesMatch = url.pathname.match(/^\/api\/agents\/runs\/([^/]+)\/messages$/);
+    if (method === "POST" && agentRunMessagesMatch) {
+      const runId = decodeURIComponent(agentRunMessagesMatch[1]).trim();
+      if (!runId) {
+        json(res, 400, { error: "runId is required" });
+        return;
+      }
+      const body = (await readJsonBody(req)) as {
+        message?: unknown;
+        text?: unknown;
+        input?: unknown;
+        service_id?: unknown;
+        serviceId?: unknown;
+        agent?: unknown;
+        role?: unknown;
+      };
+      const message =
+        nonEmptyString(body.message) ?? nonEmptyString(body.text) ?? nonEmptyString(body.input);
+      if (!message) {
+        json(res, 400, { error: "expected non-empty message (or text/input)" });
+        return;
+      }
+      const role = normalizeChatMessageRole(body.role);
+      if (!role) {
+        json(res, 400, { error: "expected role to be one of: user, assistant, system" });
+        return;
+      }
+      const kind = chatMessageKindForRole(role);
+      const run = findAgentRun(manager, runId);
+      if (run && isTerminalAgentRunStatus(run.status)) {
+        json(res, 409, {
+          error: `run is terminal and no longer accepts chat messages: ${runId}`,
+          runId,
+          status: run.status
+        });
+        return;
+      }
+
+      const sanitized = sanitizeHitlMessage(message, HITL_MAX_MESSAGE_CHARS);
+      const serviceId =
+        nonEmptyString(body.serviceId) ?? nonEmptyString(body.service_id) ?? run?.serviceId;
+      const agent = nonEmptyString(body.agent) ?? run?.agent;
+      manager.recordRuntimeEvent({
+        kind,
+        level: "info",
+        message: `${role} chat message received (${runId})`,
+        serviceId,
+        data: {
+          runId,
+          ...(serviceId ? { serviceId } : {}),
+          ...(agent ? { agent } : {}),
+          role,
+          message: sanitized.message,
+          messageOriginalLength: sanitized.originalLength,
+          messageStoredLength: sanitized.storedLength,
+          messageTruncated: sanitized.truncated,
+          messageRedacted: sanitized.redacted,
+          source: "runtime_chat",
+          channel: "run_messages",
+          submittedAt: new Date().toISOString()
+        }
+      });
+      const queuedForExecution = role === "user";
+      if (queuedForExecution) {
+        manager.queueRuntimeChatMessage({
+          runId,
+          message: sanitized.message,
+          ...(serviceId ? { serviceId } : {}),
+          ...(agent ? { agent } : {})
+        });
+      }
+      json(res, 200, {
+        ok: true,
+        runId,
+        role,
+        kind,
+        runtime_chat_execution_queued: queuedForExecution,
+        message_truncated: sanitized.truncated,
+        message_redacted: sanitized.redacted,
+        ...(serviceId ? { serviceId } : {}),
+        ...(agent ? { agent } : {})
+      });
+      return;
+    }
+
     const agentRunHitlMatch = url.pathname.match(/^\/api\/agents\/runs\/([^/]+)\/hitl$/);
     if (method === "POST" && agentRunHitlMatch) {
       const runId = decodeURIComponent(agentRunHitlMatch[1]).trim();
@@ -1494,17 +1599,10 @@ export async function handleHttp(
           submittedAt: new Date().toISOString()
         }
       });
-      manager.queueRuntimeHitlInput({
-        runId,
-        message: sanitized.message,
-        ...(serviceId ? { serviceId } : {}),
-        ...(agent ? { agent } : {})
-      });
       json(res, 200, {
         ok: true,
         runId,
         kind,
-        runtime_chat_execution_queued: true,
         message_truncated: sanitized.truncated,
         message_redacted: sanitized.redacted,
         ...(serviceId ? { serviceId } : {}),
