@@ -1069,14 +1069,6 @@ export async function handleHttp(
       }
 
       const context = buildMcpRequestContext(req, url, message as JsonRpcRequest);
-      const response = await (
-        mcpRouter as unknown as {
-          handle: (
-            message: JsonRpcRequest,
-            context: McpRequestContext
-          ) => Promise<ReturnType<McpRouter["handle"]>>;
-        }
-      ).handle(message as JsonRpcRequest, context);
       const routerHandle = (mcpRouter as unknown as {
         handle: (request: JsonRpcRequest, requestContext?: unknown) => Promise<unknown>;
       }).handle;
@@ -1238,15 +1230,6 @@ export async function handleHttp(
               ...(runId ? { runId } : {}),
               ...(traceId ? { traceId } : {})
             })
-      const getTraceSpans = (mcpRouter as unknown as {
-        getTraceSpans?: (maxItems: number, filter?: { runId?: string; traceId?: string }) => unknown[];
-      }).getTraceSpans;
-      json(res, 200, {
-        items: getTraceSpans
-          ? getTraceSpans(limit, {
-            ...(runId ? { runId } : {}),
-            ...(traceId ? { traceId } : {})
-          })
           : []
       });
       return;
@@ -1260,11 +1243,6 @@ export async function handleHttp(
       };
       json(res, 200, {
         items: costReader.getRunCostLedgers ? costReader.getRunCostLedgers(limit, runId) : []
-      const getRunCostLedgers = (mcpRouter as unknown as {
-        getRunCostLedgers?: (maxItems: number, runId?: string) => unknown[];
-      }).getRunCostLedgers;
-      json(res, 200, {
-        items: getRunCostLedgers ? getRunCostLedgers(limit, runId) : []
       });
       return;
     }

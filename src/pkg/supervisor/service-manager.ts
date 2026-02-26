@@ -68,6 +68,8 @@ function parseRatio(value: string | undefined): number | undefined {
     return undefined;
   }
   return parsed;
+}
+
 function asStringList(input: unknown): string[] {
   if (!Array.isArray(input)) {
     return [];
