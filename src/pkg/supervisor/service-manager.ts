@@ -195,6 +195,14 @@ interface WorkerValue {
   value?: string | number | boolean;
 }
 
+interface ResolvedRuntimeChatConfig {
+  mode: "auto" | "echo" | "disabled";
+  provider: "openai" | "echo";
+  model: string;
+  timeoutMs: number;
+  apiKey: string;
+}
+
 function asNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -1028,9 +1036,6 @@ export class ServiceManager {
     serviceId?: string;
     agent?: string;
   }): boolean {
-    if (this.hitlChatMode === "disabled") {
-      return false;
-    }
     const runId = input.runId.trim();
     if (!runId) {
       return false;
@@ -1607,6 +1612,25 @@ export class ServiceManager {
       ?? asNonEmptyString(agentMetadata.name)
       ?? "unknown-agent";
     const stepId = `runtime_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const runtimeChat = this.resolveRuntimeHitlConfig(service);
+
+    if (runtimeChat.mode === "disabled") {
+      this.emitEvent({
+        kind: "agent.waiting",
+        serviceId,
+        level: "warn",
+        message: `Runtime chat disabled for agent (${runId})`,
+        data: {
+          runId,
+          ...(serviceId ? { serviceId } : {}),
+          agent,
+          reason: "runtime chat disabled by agent configuration",
+          waitingReason: "runtime chat disabled by agent configuration",
+          source: "runtime_hitl_executor"
+        }
+      });
+      return;
+    }
 
     this.emitEvent({
       kind: "agent.step_started",
@@ -1618,13 +1642,15 @@ export class ServiceManager {
         ...(serviceId ? { serviceId } : {}),
         agent,
         stepId,
+        mode: runtimeChat.mode,
+        provider: runtimeChat.provider,
         source: "runtime_hitl_executor",
         inputLength: operatorMessage.length
       }
     });
 
     try {
-      const provider = this.resolveRuntimeHitlProvider(service);
+      const provider = runtimeChat.provider;
       let reply = "";
       let usage: Record<string, unknown> | undefined;
 
@@ -1633,23 +1659,41 @@ export class ServiceManager {
           kind: "agent.llm_called",
           serviceId,
           level: "info",
-          message: `OpenAI Responses API request (${this.hitlOpenAiModel})`,
+          message: `OpenAI Responses API request (${runtimeChat.model})`,
           data: {
             runId,
             ...(serviceId ? { serviceId } : {}),
             agent,
             stepId,
             provider: "openai",
-            model: this.hitlOpenAiModel,
+            model: runtimeChat.model,
             inputLength: operatorMessage.length
           }
         });
-        const completion = await this.generateOpenAiReply(operatorMessage);
+        const completion = await this.generateOpenAiReply(operatorMessage, runtimeChat);
         reply = completion.reply;
         usage = completion.usage;
       } else {
         reply = `Echo: ${operatorMessage}`;
       }
+
+      this.emitEvent({
+        kind: "agent.chat.assistant_message",
+        serviceId,
+        level: "info",
+        message: `Assistant message emitted (${runId})`,
+        data: {
+          runId,
+          ...(serviceId ? { serviceId } : {}),
+          agent,
+          role: "assistant",
+          message: reply,
+          provider,
+          ...(provider === "openai" ? { model: runtimeChat.model } : {}),
+          ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
+          source: "runtime_hitl_executor"
+        }
+      });
 
       this.emitEvent({
         kind: "agent.step_completed",
@@ -1662,7 +1706,7 @@ export class ServiceManager {
           agent,
           stepId,
           provider,
-          ...(provider === "openai" ? { model: this.hitlOpenAiModel } : {}),
+          ...(provider === "openai" ? { model: runtimeChat.model } : {}),
           ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
           message: reply
         }
@@ -1714,39 +1758,62 @@ export class ServiceManager {
     }
   }
 
-  private resolveRuntimeHitlProvider(service?: ServiceRecord): "openai" | "echo" {
-    if (this.hitlChatMode === "echo" || this.hitlChatMode === "disabled") {
-      return "echo";
-    }
-    if (!this.hitlOpenAiApiKey) {
-      return "echo";
-    }
+  private resolveRuntimeHitlConfig(service?: ServiceRecord): ResolvedRuntimeChatConfig {
     const agent = asObject(service?.manifest.metadata.agent);
-    const providers = [
+    const chat = asObject(agent.chat);
+    const modeRaw = asNonEmptyString(chat.mode)?.toLowerCase();
+    const mode = (modeRaw === "echo" || modeRaw === "disabled" || modeRaw === "auto")
+      ? modeRaw
+      : this.hitlChatMode;
+    const providerRaw = asNonEmptyString(chat.provider)?.toLowerCase();
+    const declaredProviders = [
       ...asStringList(agent.allowedLlmProviders).map((item) => item.toLowerCase()),
-      ...asStringList((agent as { llmProviders?: unknown }).llmProviders).map((item) =>
-        item.toLowerCase()
-      )
+      ...asStringList((agent as { llmProviders?: unknown }).llmProviders).map((item) => item.toLowerCase())
     ];
-    return providers.includes("openai") ? "openai" : "echo";
+    const model = asNonEmptyString(chat.model) ?? this.hitlOpenAiModel;
+    const timeoutMs = Math.max(
+      1_000,
+      asPositiveInteger(chat.timeoutMs) ?? this.hitlOpenAiTimeoutMs
+    );
+    const apiKeyEnv = asNonEmptyString(chat.apiKeyEnv);
+    const apiKey = (
+      (apiKeyEnv ? process.env[apiKeyEnv] : undefined)
+      ?? this.hitlOpenAiApiKey
+      ?? ""
+    ).trim();
+    const providerIntent: "openai" | "echo" = providerRaw === "openai" || providerRaw === "echo"
+      ? providerRaw
+      : (declaredProviders.includes("openai") ? "openai" : "echo");
+    const provider: "openai" | "echo" =
+      mode === "disabled" || mode === "echo"
+        ? "echo"
+        : (providerIntent === "openai" && apiKey ? "openai" : "echo");
+    return {
+      mode,
+      provider,
+      model,
+      timeoutMs,
+      apiKey
+    };
   }
 
   private async generateOpenAiReply(
-    operatorMessage: string
+    operatorMessage: string,
+    config: ResolvedRuntimeChatConfig
   ): Promise<{ reply: string; usage?: Record<string, unknown> }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => {
       controller.abort();
-    }, this.hitlOpenAiTimeoutMs);
+    }, config.timeoutMs);
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: {
-          authorization: `Bearer ${this.hitlOpenAiApiKey}`,
+          authorization: `Bearer ${config.apiKey}`,
           "content-type": "application/json"
         },
         body: JSON.stringify({
-          model: this.hitlOpenAiModel,
+          model: config.model,
           input: [
             {
               role: "user",

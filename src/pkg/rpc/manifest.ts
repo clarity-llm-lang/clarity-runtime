@@ -35,6 +35,12 @@ const AGENT_A2A_MESSAGE_KINDS = new Set([
   "handoff.rejected",
   "handoff.completed"
 ]);
+const AGENT_CHAT_MODES = new Set(["auto", "echo", "disabled"]);
+const AGENT_CHAT_PROVIDERS = new Set(["openai", "echo"]);
+
+function isEnvVarName(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
 
 function validateAgentA2AProfile(value: unknown): void {
   const obj = asObject(value);
@@ -66,6 +72,40 @@ function validateAgentA2AProfile(value: unknown): void {
   }
 }
 
+function validateAgentChatProfile(value: unknown): void {
+  const obj = asObject(value);
+  if (!obj) {
+    throw new Error("invalid manifest: metadata.agent.chat must be an object");
+  }
+  if (obj.mode !== undefined) {
+    const mode = asNonEmptyString(obj.mode);
+    if (!mode || !AGENT_CHAT_MODES.has(mode)) {
+      throw new Error("invalid manifest: metadata.agent.chat.mode must be auto|echo|disabled");
+    }
+  }
+  if (obj.provider !== undefined) {
+    const provider = asNonEmptyString(obj.provider);
+    if (!provider || !AGENT_CHAT_PROVIDERS.has(provider)) {
+      throw new Error("invalid manifest: metadata.agent.chat.provider must be openai|echo");
+    }
+  }
+  if (obj.model !== undefined && !asNonEmptyString(obj.model)) {
+    throw new Error("invalid manifest: metadata.agent.chat.model must be a non-empty string when provided");
+  }
+  if (obj.apiKeyEnv !== undefined) {
+    const apiKeyEnv = asNonEmptyString(obj.apiKeyEnv);
+    if (!apiKeyEnv || !isEnvVarName(apiKeyEnv)) {
+      throw new Error("invalid manifest: metadata.agent.chat.apiKeyEnv must be a valid env var name when provided");
+    }
+  }
+  if (obj.timeoutMs !== undefined) {
+    const timeoutMs = asPositiveInteger(obj.timeoutMs);
+    if (!timeoutMs || timeoutMs < 1_000 || timeoutMs > 120_000) {
+      throw new Error("invalid manifest: metadata.agent.chat.timeoutMs must be an integer between 1000 and 120000 when provided");
+    }
+  }
+}
+
 function validateAgentDescriptor(value: unknown): void {
   const obj = asObject(value);
   if (!obj) {
@@ -92,10 +132,13 @@ function validateAgentDescriptor(value: unknown): void {
   if (triggers.includes("a2a") && obj.a2a === undefined) {
     throw new Error("invalid manifest: metadata.agent.a2a is required when metadata.agent.triggers includes 'a2a'");
   }
-  for (const key of ["inputs", "outputs", "allowedMcpTools", "allowedLlmProviders", "handoffTargets", "dependsOn"] as const) {
+  for (const key of ["inputs", "outputs", "allowedMcpTools", "allowedLlmProviders", "llmProviders", "handoffTargets", "dependsOn"] as const) {
     if (obj[key] !== undefined && !asStringArray(obj[key])) {
       throw new Error(`invalid manifest: metadata.agent.${key} must be an array of strings when provided`);
     }
+  }
+  if (obj.chat !== undefined) {
+    validateAgentChatProfile(obj.chat);
   }
   if (obj.version !== undefined && !asNonEmptyString(obj.version)) {
     throw new Error("invalid manifest: metadata.agent.version must be a non-empty string when provided");
