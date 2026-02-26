@@ -68,6 +68,8 @@ function parseRatio(value: string | undefined): number | undefined {
     return undefined;
   }
   return parsed;
+}
+
 function asStringList(input: unknown): string[] {
   if (!Array.isArray(input)) {
     return [];
@@ -1011,18 +1013,27 @@ export class ServiceManager {
     this.emitEvent(input);
   }
 
+  queueRuntimeChatMessage(input: {
+    runId: string;
+    message: string;
+    serviceId?: string;
+    agent?: string;
+  }): boolean {
+    return this.queueRuntimeHitlInput(input);
+  }
+
   queueRuntimeHitlInput(input: {
     runId: string;
     message: string;
     serviceId?: string;
     agent?: string;
-  }): void {
+  }): boolean {
     if (this.hitlChatMode === "disabled") {
-      return;
+      return false;
     }
     const runId = input.runId.trim();
     if (!runId) {
-      return;
+      return false;
     }
     const previous = this.hitlRunChains.get(runId) ?? Promise.resolve();
     const next = previous
@@ -1054,6 +1065,7 @@ export class ServiceManager {
         this.hitlRunChains.delete(runId);
       }
     });
+    return true;
   }
 
   async shutdown(): Promise<void> {

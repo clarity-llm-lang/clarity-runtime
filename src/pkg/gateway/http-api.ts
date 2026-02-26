@@ -99,6 +99,13 @@ const FAVICON_PNG_PATH = path.resolve(
   "../../../assets/clarity-github-avatar.png"
 );
 const DEFAULT_HITL_EVENT_KIND = "agent.hitl_input";
+const AGENT_CHAT_EVENT_KINDS = {
+  user: "agent.chat.user_message",
+  assistant: "agent.chat.assistant_message",
+  system: "agent.chat.system_message"
+} as const;
+type AgentChatRole = keyof typeof AGENT_CHAT_EVENT_KINDS;
+const DEFAULT_AGENT_CHAT_ROLE: AgentChatRole = "user";
 const HITL_MAX_MESSAGE_CHARS = parsePositiveIntegerEnv(process.env.CLARITY_HITL_MAX_MESSAGE_CHARS, 2000);
 const FORMAL_A2A_PROTOCOL = "clarity.a2a.v1";
 const FORMAL_A2A_MESSAGE_KINDS = [
@@ -374,6 +381,14 @@ function nonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeAgentChatRole(value: unknown): AgentChatRole | null {
+  const role = nonEmptyString(value)?.toLowerCase();
+  if (role === "user" || role === "assistant" || role === "system") {
+    return role;
+  }
+  return null;
 }
 
 function getField(data: Record<string, unknown>, key: string): unknown {
@@ -1049,18 +1064,7 @@ export async function handleHttp(
       }
 
       const context = buildMcpRequestContext(req, url, message as JsonRpcRequest);
-      const response = await (
-        mcpRouter as unknown as {
-          handle: (
-            message: JsonRpcRequest,
-            context: McpRequestContext
-          ) => Promise<ReturnType<McpRouter["handle"]>>;
-        }
-      ).handle(message as JsonRpcRequest, context);
-      const routerHandle = (mcpRouter as unknown as {
-        handle: (request: JsonRpcRequest, requestContext?: unknown) => Promise<unknown>;
-      }).handle;
-      const response = await routerHandle.call(mcpRouter, message as JsonRpcRequest, context);
+      const response = await mcpRouter.handle(message as JsonRpcRequest, context);
       if (!response) {
         res.statusCode = 202;
         res.end();
@@ -1206,28 +1210,11 @@ export async function handleHttp(
       const limit = parseLimit(url.searchParams.get("limit"), 200, 1, 5000);
       const runId = nonEmptyString(url.searchParams.get("run_id"));
       const traceId = nonEmptyString(url.searchParams.get("trace_id"));
-      const traceReader = mcpRouter as unknown as {
-        getTraceSpans?: (
-          limit: number,
-          filters: { runId?: string; traceId?: string }
-        ) => unknown[];
-      };
       json(res, 200, {
-        items: traceReader.getTraceSpans
-          ? traceReader.getTraceSpans(limit, {
-              ...(runId ? { runId } : {}),
-              ...(traceId ? { traceId } : {})
-            })
-      const getTraceSpans = (mcpRouter as unknown as {
-        getTraceSpans?: (maxItems: number, filter?: { runId?: string; traceId?: string }) => unknown[];
-      }).getTraceSpans;
-      json(res, 200, {
-        items: getTraceSpans
-          ? getTraceSpans(limit, {
+        items: mcpRouter.getTraceSpans(limit, {
             ...(runId ? { runId } : {}),
             ...(traceId ? { traceId } : {})
           })
-          : []
       });
       return;
     }
@@ -1235,16 +1222,8 @@ export async function handleHttp(
     if (method === "GET" && url.pathname === "/api/costs/runs") {
       const limit = parseLimit(url.searchParams.get("limit"), 200, 1, 2000);
       const runId = nonEmptyString(url.searchParams.get("run_id")) ?? undefined;
-      const costReader = mcpRouter as unknown as {
-        getRunCostLedgers?: (limit: number, runId?: string) => unknown[];
-      };
       json(res, 200, {
-        items: costReader.getRunCostLedgers ? costReader.getRunCostLedgers(limit, runId) : []
-      const getRunCostLedgers = (mcpRouter as unknown as {
-        getRunCostLedgers?: (maxItems: number, runId?: string) => unknown[];
-      }).getRunCostLedgers;
-      json(res, 200, {
-        items: getRunCostLedgers ? getRunCostLedgers(limit, runId) : []
+        items: mcpRouter.getRunCostLedgers(limit, runId)
       });
       return;
     }
@@ -1434,6 +1413,90 @@ export async function handleHttp(
       return;
     }
 
+    const agentRunMessagesMatch = url.pathname.match(/^\/api\/agents\/runs\/([^/]+)\/messages$/);
+    if (method === "POST" && agentRunMessagesMatch) {
+      const runId = decodeURIComponent(agentRunMessagesMatch[1]).trim();
+      if (!runId) {
+        json(res, 400, { error: "runId is required" });
+        return;
+      }
+      const body = (await readJsonBody(req)) as {
+        message?: unknown;
+        text?: unknown;
+        input?: unknown;
+        role?: unknown;
+        service_id?: unknown;
+        serviceId?: unknown;
+        agent?: unknown;
+      };
+      const message =
+        nonEmptyString(body.message) ?? nonEmptyString(body.text) ?? nonEmptyString(body.input);
+      if (!message) {
+        json(res, 400, { error: "expected non-empty message (or text/input)" });
+        return;
+      }
+      const role = normalizeAgentChatRole(body.role ?? DEFAULT_AGENT_CHAT_ROLE);
+      if (!role) {
+        json(res, 400, { error: "expected role to be one of: user|assistant|system" });
+        return;
+      }
+      const kind = AGENT_CHAT_EVENT_KINDS[role];
+      const run = findAgentRun(manager, runId);
+      if (run && isTerminalAgentRunStatus(run.status)) {
+        json(res, 409, {
+          error: `run is terminal and no longer accepts chat messages: ${runId}`,
+          runId,
+          status: run.status
+        });
+        return;
+      }
+
+      const sanitized = sanitizeHitlMessage(message, HITL_MAX_MESSAGE_CHARS);
+      const serviceId =
+        nonEmptyString(body.serviceId) ?? nonEmptyString(body.service_id) ?? run?.serviceId;
+      const agent = nonEmptyString(body.agent) ?? run?.agent;
+      manager.recordRuntimeEvent({
+        kind,
+        level: "info",
+        message: `Chat message received (${runId})`,
+        serviceId,
+        data: {
+          runId,
+          ...(serviceId ? { serviceId } : {}),
+          ...(agent ? { agent } : {}),
+          role,
+          message: sanitized.message,
+          messageOriginalLength: sanitized.originalLength,
+          messageStoredLength: sanitized.storedLength,
+          messageTruncated: sanitized.truncated,
+          messageRedacted: sanitized.redacted,
+          source: "runtime_messages_api",
+          channel: "runtime_chat",
+          submittedAt: new Date().toISOString()
+        }
+      });
+      const runtimeChatExecutionQueued = role === "user"
+        ? manager.queueRuntimeChatMessage({
+            runId,
+            message: sanitized.message,
+            ...(serviceId ? { serviceId } : {}),
+            ...(agent ? { agent } : {})
+          })
+        : false;
+      json(res, 200, {
+        ok: true,
+        runId,
+        role,
+        kind,
+        runtime_chat_execution_queued: runtimeChatExecutionQueued,
+        message_truncated: sanitized.truncated,
+        message_redacted: sanitized.redacted,
+        ...(serviceId ? { serviceId } : {}),
+        ...(agent ? { agent } : {})
+      });
+      return;
+    }
+
     const agentRunHitlMatch = url.pathname.match(/^\/api\/agents\/runs\/([^/]+)\/hitl$/);
     if (method === "POST" && agentRunHitlMatch) {
       const runId = decodeURIComponent(agentRunHitlMatch[1]).trim();
@@ -1494,7 +1557,7 @@ export async function handleHttp(
           submittedAt: new Date().toISOString()
         }
       });
-      manager.queueRuntimeHitlInput({
+      const runtimeChatExecutionQueued = manager.queueRuntimeHitlInput({
         runId,
         message: sanitized.message,
         ...(serviceId ? { serviceId } : {}),
@@ -1504,7 +1567,7 @@ export async function handleHttp(
         ok: true,
         runId,
         kind,
-        runtime_chat_execution_queued: true,
+        runtime_chat_execution_queued: runtimeChatExecutionQueued,
         message_truncated: sanitized.truncated,
         message_redacted: sanitized.redacted,
         ...(serviceId ? { serviceId } : {}),

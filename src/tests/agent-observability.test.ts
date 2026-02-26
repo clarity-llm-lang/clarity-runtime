@@ -357,6 +357,37 @@ test("agent HTTP endpoints accept events and return run timeline", async () => {
     assert.equal(Boolean(latestHitlData.messageTruncated), true);
     assert.equal(Boolean(latestHitlData.messageRedacted), true);
 
+    const chatMessage = await jsonRequest(runtime.baseUrl, "/api/agents/runs/run-http-1/messages", {
+      method: "POST",
+      body: JSON.stringify({
+        role: "user",
+        message: `api_key=abc123 bearer sk-xyz987654321 ${"y".repeat(2600)}`
+      })
+    });
+    assert.equal(chatMessage.status, 200);
+    const chatMessageBody = asObject(chatMessage.body);
+    assert.equal(Boolean(chatMessageBody.ok), true);
+    assert.equal(String(chatMessageBody.role), "user");
+    assert.equal(String(chatMessageBody.kind), "agent.chat.user_message");
+    assert.equal(Boolean(chatMessageBody.message_truncated), true);
+    assert.equal(Boolean(chatMessageBody.message_redacted), true);
+
+    const runEventsAfterMessage = await jsonRequest(
+      runtime.baseUrl,
+      "/api/agents/runs/run-http-1/events?limit=60"
+    );
+    assert.equal(runEventsAfterMessage.status, 200);
+    const messageItems = asObject(runEventsAfterMessage.body).items as Array<Record<string, unknown>>;
+    const latestChatMessage = messageItems.find((item) => String(item.kind) === "agent.chat.user_message");
+    assert.ok(latestChatMessage);
+    const latestChatData = asObject(latestChatMessage?.data);
+    assert.equal(String(latestChatData.role), "user");
+    assert.equal(typeof latestChatData.message, "string");
+    assert.ok(String(latestChatData.message).length <= 2000);
+    assert.match(String(latestChatData.message), /\[REDACTED\]/);
+    assert.equal(Boolean(latestChatData.messageTruncated), true);
+    assert.equal(Boolean(latestChatData.messageRedacted), true);
+
     const completeRun = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
       method: "POST",
       body: JSON.stringify({
@@ -380,6 +411,20 @@ test("agent HTTP endpoints accept events and return run timeline", async () => {
     );
     assert.equal(hitlAfterCompletion.status, 409);
     assert.equal(String(asObject(hitlAfterCompletion.body).status), "completed");
+
+    const chatAfterCompletion = await jsonRequest(
+      runtime.baseUrl,
+      "/api/agents/runs/run-http-1/messages",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          role: "user",
+          message: "hello after completion"
+        })
+      }
+    );
+    assert.equal(chatAfterCompletion.status, 409);
+    assert.equal(String(asObject(chatAfterCompletion.body).status), "completed");
   } finally {
     await manager.shutdown();
     await runtime.close();
@@ -387,7 +432,7 @@ test("agent HTTP endpoints accept events and return run timeline", async () => {
   }
 });
 
-test("run HITL input queues runtime chat executor response events", async () => {
+test("run messages endpoint queues runtime chat executor response events", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-hitl-chat-http-"));
   const registry = new ServiceRegistry(path.join(root, "registry.json"));
   await registry.init();
@@ -485,16 +530,28 @@ test("run HITL input queues runtime chat executor response events", async () => 
     });
     assert.equal(runStarted.status, 200);
 
-    const hitl = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/hitl`, {
+    const postedMessage = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/messages`, {
       method: "POST",
       body: JSON.stringify({
+        role: "user",
         message: "hello runtime",
         service_id: serviceId,
         agent: "chat-agent"
       })
     });
-    assert.equal(hitl.status, 200);
-    assert.equal(Boolean(asObject(hitl.body).runtime_chat_execution_queued), true);
+    assert.equal(postedMessage.status, 200);
+    const postedMessageBody = asObject(postedMessage.body);
+    assert.equal(String(postedMessageBody.kind), "agent.chat.user_message");
+    assert.equal(String(postedMessageBody.role), "user");
+    assert.equal(Boolean(postedMessageBody.runtime_chat_execution_queued), true);
+
+    const userMessageEvent = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) => String(item.kind) === "agent.chat.user_message"
+    );
+    assert.ok(userMessageEvent);
+    assert.equal(String(asObject(userMessageEvent?.data).role), "user");
 
     const stepCompleted = await waitForRunEvent(
       runtime.baseUrl,
