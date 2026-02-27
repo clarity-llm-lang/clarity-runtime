@@ -42,6 +42,11 @@ function parseFunctionArgs(args: unknown): unknown[] {
   return raw;
 }
 
+function parseFunctionExpectString(args: unknown): boolean {
+  const payload = asObject(args);
+  return payload.expectStringResult === true || payload.expect_string_result === true;
+}
+
 function parseAllowedHosts(value: string | undefined): Set<string> | null {
   if (!value) return null;
   const hosts = value
@@ -717,7 +722,9 @@ export class ServiceManager {
       if (toolName.startsWith("fn__")) {
         const functionName = toolName.slice("fn__".length);
         const argsList = parseFunctionArgs(args);
-        const output = await this.runLocalFunction(service, functionName, argsList);
+        const output = await this.runLocalFunction(service, functionName, argsList, {
+          expectStringResult: parseFunctionExpectString(args)
+        });
         this.appendLog(serviceId, `tools/call ${toolName}(${JSON.stringify(argsList)})`);
         this.emitEvent({
           kind: "service.tool_called",
@@ -1312,7 +1319,10 @@ export class ServiceManager {
   private async runLocalFunction(
     service: ServiceRecord,
     functionName: string,
-    argsList: unknown[]
+    argsList: unknown[],
+    options?: {
+      expectStringResult?: boolean;
+    }
   ): Promise<string> {
     if (service.manifest.spec.origin.type !== "local_wasm") {
       throw new Error("local function execution requires local_wasm origin");
@@ -1324,7 +1334,13 @@ export class ServiceManager {
     let lastTypeError: Error | null = null;
 
     for (const candidate of args) {
-      const workerResult = await this.runLocalFunctionInWorker(wasmPath, functionName, candidate, timeoutMs);
+      const workerResult = await this.runLocalFunctionInWorker(
+        wasmPath,
+        functionName,
+        candidate,
+        timeoutMs,
+        options?.expectStringResult === true
+      );
       if (workerResult.ok) {
         return this.formatWorkerResult(workerResult.value);
       }
@@ -1351,8 +1367,9 @@ export class ServiceManager {
   private async runLocalFunctionInWorker(
     wasmPath: string,
     functionName: string,
-    args: Array<number | bigint>,
-    timeoutMs: number
+    args: Array<number | bigint | string>,
+    timeoutMs: number,
+    expectStringResult: boolean
   ): Promise<WorkerResponse> {
     const workerUrl = new URL("./local-wasm-worker.js", import.meta.url);
 
@@ -1361,7 +1378,8 @@ export class ServiceManager {
         workerData: {
           wasmPath,
           functionName,
-          args
+          args,
+          expectStringResult
         }
       });
 
@@ -1417,8 +1435,8 @@ export class ServiceManager {
     return module;
   }
 
-  private resolveWasmArgs(args: unknown[]): Array<Array<number | bigint>> {
-    const perArg: Array<Array<number | bigint>> = args.map((arg) => {
+  private resolveWasmArgs(args: unknown[]): Array<Array<number | bigint | string>> {
+    const perArg: Array<Array<number | bigint | string>> = args.map((arg) => {
       if (typeof arg === "bigint") {
         const asNumber = Number(arg);
         return Number.isSafeInteger(asNumber) ? [arg, asNumber] : [arg];
@@ -1436,14 +1454,20 @@ export class ServiceManager {
       }
 
       if (typeof arg === "string") {
+        const out: Array<number | bigint | string> = [arg];
         if (/^-?\d+$/.test(arg)) {
           const asNumber = Number(arg);
-          return Number.isSafeInteger(asNumber) ? [BigInt(arg), asNumber] : [BigInt(arg)];
+          out.push(BigInt(arg));
+          if (Number.isSafeInteger(asNumber)) {
+            out.push(asNumber);
+          }
+          return out;
         }
         if (/^-?\d+\.\d+$/.test(arg)) {
-          return [Number(arg)];
+          out.push(Number(arg));
+          return out;
         }
-        throw new Error(`unsupported string argument '${arg}' for in-process wasm call`);
+        return out;
       }
 
       throw new Error(`unsupported argument type '${typeof arg}' for in-process wasm call`);
@@ -1453,8 +1477,8 @@ export class ServiceManager {
       return [[]];
     }
 
-    const combinations: Array<Array<number | bigint>> = [];
-    const current: Array<number | bigint> = [];
+    const combinations: Array<Array<number | bigint | string>> = [];
+    const current: Array<number | bigint | string> = [];
 
     const walk = (index: number): void => {
       if (index === perArg.length) {
@@ -1740,7 +1764,8 @@ export class ServiceManager {
   ): unknown {
     if (handlerTool.startsWith("fn__")) {
       return {
-        args: [message, sessionId, runId]
+        args: [message, sessionId, runId],
+        expectStringResult: true
       };
     }
     return {
