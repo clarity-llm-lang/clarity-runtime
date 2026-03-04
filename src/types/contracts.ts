@@ -32,7 +32,7 @@ export interface AgentA2AProfile {
 }
 
 export type AgentChatMode = "auto" | "echo" | "disabled";
-export type AgentChatProvider = "openai" | "echo";
+export type AgentChatProvider = "openai" | "anthropic" | "echo";
 
 export interface AgentChatProfile {
   mode?: AgentChatMode;

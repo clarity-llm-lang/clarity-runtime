@@ -718,6 +718,24 @@ test("run messages endpoint honors per-agent chat mode overrides", async () => {
       : [];
     assert.ok(!items.some((item) => String(item.kind) === "agent.step_started"));
     assert.ok(!items.some((item) => String(item.kind) === "agent.chat.assistant_message"));
+
+    const postedHitl = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/hitl`, {
+      method: "POST",
+      body: JSON.stringify({
+        message: "override from operator",
+        service_id: serviceId,
+        agent: "chat-mode-agent"
+      })
+    });
+    assert.equal(postedHitl.status, 200);
+    assert.equal(Boolean(asObject(postedHitl.body).runtime_chat_execution_queued), true);
+
+    const hitlStepStarted = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) => String(item.kind) === "agent.step_started"
+    );
+    assert.ok(hitlStepStarted);
   } finally {
     await manager.shutdown();
     await runtime.close();
