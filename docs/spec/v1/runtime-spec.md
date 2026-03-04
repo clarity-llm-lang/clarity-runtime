@@ -34,6 +34,8 @@
 - `GET /api/agents/runs/:runId/events?limit=200`: events for one agent run.
 - `GET /api/agents/runs/:runId/events/stream?limit=200`: server-sent events stream for one run (initial replay + live `agent.*` updates for matching `runId`).
 - `POST /api/a2a/messages`: ingest one formal A2A envelope (`clarity.a2a.v1`) and normalize into canonical `agent.*` events.
+- `POST /api/agents/runs/:runId/hitl`: append human input as `agent.hitl_input` for non-terminal runs (`409` when run is completed/failed/cancelled). Input is sanitized/redacted and bounded by `CLARITY_HITL_MAX_MESSAGE_CHARS` (default `2000`). This endpoint is for HITL injection only.
+- `POST /api/agents/runs/:runId/messages`: append run-scoped chat messages (`role=user|assistant|system`) and queue async runtime chat execution for `role=user` (`runtime_chat_execution_queued=true`). Runtime emits follow-up `agent.chat.assistant_message`, `agent.step_*`, and `agent.waiting` events for the same `runId`.
 - `POST /api/agents/runs/:runId/messages`: append run chat input for non-terminal runs (`409` when run is completed/failed/cancelled). `role=user|assistant|system` maps to `agent.chat.user_message|agent.chat.assistant_message|agent.chat.system_message`; only `role=user` queues async run response execution (`runtime_chat_execution_queued=true`) and emits follow-up `agent.step_*` / `agent.waiting` events for the same `runId`.
 - `POST /api/agents/runs/:runId/hitl`: append explicit human override input as `agent.hitl_input` for non-terminal runs (`409` when run is completed/failed/cancelled). Input is sanitized/redacted and bounded by `CLARITY_HITL_MAX_MESSAGE_CHARS` (default `2000`). Runtime queues async run response execution and emits follow-up `agent.step_*` / `agent.waiting` events for the same `runId`.
 - `POST /api/agents/events`: ingest one `agent.*` event from orchestration clients.
@@ -167,4 +169,4 @@
 
 - Add stricter auth isolation controls for remote services.
 - Integrate language-side orchestration (`std/a2a`, `std/mcp`) with runtime agent event ingestion APIs.
-- Replace TypeScript runtime HITL chat executor bridge with native Clarity orchestration once string/HTTP execution primitives are available.
+- Replace TypeScript runtime chat executor bridge with native Clarity orchestration once string/HTTP execution primitives are available.

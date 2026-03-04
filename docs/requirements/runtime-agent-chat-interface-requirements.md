@@ -1,4 +1,4 @@
-# Runtime HITL Chat Executor Requirements
+# Runtime Agent Chat Interface Requirements
 
 Status: Draft  
 Owner: `LLM-runtime`  
@@ -6,17 +6,19 @@ Related: `LLM-cli` runtime-chat bridge (`docs/runtime-agent-chat-spec.md` in `LL
 
 ## Problem
 
-`POST /api/agents/runs/:runId/hitl` currently records `agent.hitl_input`, but a chat response depends on additional `agent.*` events being produced for the same run. Without a runtime-side executor loop, CLI users can send input but do not see replies.
+HITL and chat are distinct concepts. `POST /api/agents/runs/:runId/hitl` is reserved for explicit human override/injection flows, while interactive operator chat needs a dedicated run-scoped message interface.
 
 ## Goal
 
-When runtime receives run-scoped HITL chat input, it must enqueue asynchronous processing and emit response events so operator clients can continue an interactive session on one run timeline.
+When runtime receives run-scoped chat messages, it must enqueue asynchronous processing and emit response events so operator clients can continue an interactive session on one run timeline.
 
 ## Functional Requirements
 
-1. `POST /api/agents/runs/:runId/hitl` must enqueue runtime chat execution after input is persisted.
+1. `POST /api/agents/runs/:runId/messages` must enqueue runtime chat execution for `role=user` after input is persisted.
 2. Execution must preserve request latency: endpoint returns immediately (`200`) while processing continues asynchronously.
 3. Runtime must emit canonical run events for each processed message:
+   - `agent.chat.user_message` (ingested request)
+   - `agent.chat.assistant_message` (generated reply)
    - `agent.step_started`
    - optional `agent.llm_called` (when an LLM provider is used)
    - `agent.step_completed` with response text in `data.message`
@@ -32,7 +34,7 @@ When runtime receives run-scoped HITL chat input, it must enqueue asynchronous p
 2. Runtime must support an `auto` mode that can use OpenAI Responses API when:
    - agent metadata declares OpenAI provider intent (`allowedLlmProviders` or `llmProviders` includes `openai`)
    - OpenAI API key is configured.
-3. Runtime must support a `disabled` mode that preserves existing ingest-only behavior.
+3. Runtime must support a `disabled` mode that preserves existing ingest-only behavior for chat execution.
 4. Mode is configured via `CLARITY_HITL_CHAT_MODE`:
    - `auto` (default)
    - `echo`
@@ -50,11 +52,11 @@ When runtime receives run-scoped HITL chat input, it must enqueue asynchronous p
 
 ## Acceptance Criteria
 
-1. A run started via API trigger receives `agent.hitl_input` and then emits response events from runtime executor.
+1. A run started via API trigger receives `agent.chat.user_message` and then emits response events from runtime executor.
 2. `runtime-chat` in `LLM-cli` displays assistant output without external manual event scripts.
-3. Existing `/api/agents/runs/:runId/hitl` contract remains backward compatible.
+3. Existing `/api/agents/runs/:runId/hitl` contract remains backward compatible and remains HITL-specific.
 4. Automated tests cover the new async event emission path.
 
 ## Backlog
 
-- `RUNTIME-HITL-CLARITY-001`: Replace TypeScript runtime chat executor with native Clarity orchestration once language/runtime primitives are ready.
+- `RUNTIME-CHAT-CLARITY-001`: Replace TypeScript runtime chat executor with native Clarity orchestration once language/runtime primitives are ready.

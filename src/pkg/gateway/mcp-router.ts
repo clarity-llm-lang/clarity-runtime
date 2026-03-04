@@ -1089,7 +1089,7 @@ export class McpRouter {
 
       const turnStarted = Date.now();
       let serviceId: string | undefined;
-      let result: unknown = {};
+      let result: unknown;
       let successCall = false;
       let retries = 0;
       let provider: string | undefined;
