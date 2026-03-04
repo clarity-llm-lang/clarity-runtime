@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.8.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.7.0...v0.8.0) (2026-03-04)
+
+
+### Features
+
+* add per-agent runtime chat configuration ([e13cb7c](https://github.com/clarity-llm-lang/clarity-runtime/commit/e13cb7c2e5657e8a973e14f16ce2a6577ad53812))
+* add per-agent runtime chat configuration ([36d9f8c](https://github.com/clarity-llm-lang/clarity-runtime/commit/36d9f8c0b0190b229f429e5219404177bac0416c))
+* add runtime HITL chat executor for run-scoped replies ([d20e32f](https://github.com/clarity-llm-lang/clarity-runtime/commit/d20e32ff6c7b243660356509aaa448ce62923931))
+* add runtime HITL chat executor for run-scoped replies ([61cb618](https://github.com/clarity-llm-lang/clarity-runtime/commit/61cb6189dd01127337b537c998d13af8a1750eb7))
+
+
+### Bug Fixes
+
+* **ci:** regenerate valid package-lock for npm ci ([15fe3de](https://github.com/clarity-llm-lang/clarity-runtime/commit/15fe3de0e7752c5c1c9e1993ff9327ab5cf4d473))
+* enable local wasm chat handlers for runtime chat ([1281275](https://github.com/clarity-llm-lang/clarity-runtime/commit/1281275c6137e11c5300cb398f8e8c5aaecd5d45))
+* resolve merge regressions in runtime gateway ([a84d0c4](https://github.com/clarity-llm-lang/clarity-runtime/commit/a84d0c4b8bd0aac357f05112620dd5022f12a489))
+
 ## [0.7.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.6.0...v0.7.0) (2026-02-25)
 
 
