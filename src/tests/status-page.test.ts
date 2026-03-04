@@ -34,6 +34,7 @@ test("status page renders capabilities tab for MCP and agent guidance", () => {
   assert.match(html, /MCP: What You Can Do/);
   assert.match(html, /Agents: What You Can Do/);
   assert.match(html, /\/api\/agents\/registry/);
+  assert.match(html, /POST \/api\/agents\/runs\/:runId\/messages/);
 });
 
 test("status page embedded script remains syntactically valid javascript", () => {

@@ -1129,7 +1129,7 @@ function renderGuideAgentSection(agentRegistryItems, allRuns) {
       '<li>Observe runs by trigger, status, and flow/event timeline.</li>' +
       '<li>Filter agent services by query, run status, trigger, and HITL support.</li>' +
       '<li>Send formal A2A handoff envelopes through <span class="code">POST /api/a2a/messages</span> and inspect compliance via <span class="code">GET /api/a2a/capabilities</span>.</li>' +
-      '<li>Use HITL workbench to inject run input or answer broker queue questions.</li>' +
+      '<li>Use <span class="code">POST /api/agents/runs/:runId/messages</span> for run chat input, and HITL workbench for human override and broker queue flows.</li>' +
       '<li>Control service lifecycle and inspect dependencies/handoff topology.</li>' +
     '</ul>' +
     '<div class="guide-meta" style="margin:8px 0">Agent footprint: ' + services.length + ' services · ' + runs.length + ' recent runs.</div>' +
