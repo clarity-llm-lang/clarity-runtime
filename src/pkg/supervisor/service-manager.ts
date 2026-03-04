@@ -1606,6 +1606,9 @@ export class ServiceManager {
       ?? asNonEmptyString(agentMetadata.agentId)
       ?? asNonEmptyString(agentMetadata.name)
       ?? "unknown-agent";
+    const instructionContext = await this.resolveRuntimeChatSystemInstructionContext(runId, service);
+    const systemInstruction = instructionContext.instruction;
+    const systemInstructionSource = instructionContext.source;
     const stepId = `runtime_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     this.emitEvent({
@@ -1619,7 +1622,9 @@ export class ServiceManager {
         agent,
         stepId,
         source: "runtime_hitl_executor",
-        inputLength: operatorMessage.length
+        inputLength: operatorMessage.length,
+        systemInstructionApplied: Boolean(systemInstruction),
+        systemInstructionSource
       }
     });
 
@@ -1641,15 +1646,37 @@ export class ServiceManager {
             stepId,
             provider: "openai",
             model: this.hitlOpenAiModel,
-            inputLength: operatorMessage.length
+            inputLength: operatorMessage.length,
+            systemInstructionApplied: Boolean(systemInstruction),
+            systemInstructionSource
           }
         });
-        const completion = await this.generateOpenAiReply(operatorMessage);
+        const completion = await this.generateOpenAiReply(operatorMessage, systemInstruction);
         reply = completion.reply;
         usage = completion.usage;
       } else {
         reply = `Echo: ${operatorMessage}`;
       }
+
+      this.emitEvent({
+        kind: "agent.chat.assistant_message",
+        serviceId,
+        level: "info",
+        message: `Assistant message emitted (${runId})`,
+        data: {
+          runId,
+          ...(serviceId ? { serviceId } : {}),
+          agent,
+          stepId,
+          role: "assistant",
+          source: "runtime_hitl_executor",
+          channel: "runtime_chat",
+          provider,
+          ...(provider === "openai" ? { model: this.hitlOpenAiModel } : {}),
+          ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
+          message: reply
+        }
+      });
 
       this.emitEvent({
         kind: "agent.step_completed",
@@ -1664,6 +1691,8 @@ export class ServiceManager {
           provider,
           ...(provider === "openai" ? { model: this.hitlOpenAiModel } : {}),
           ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
+          systemInstructionApplied: Boolean(systemInstruction),
+          systemInstructionSource,
           message: reply
         }
       });
@@ -1714,6 +1743,91 @@ export class ServiceManager {
     }
   }
 
+  private resolveRuntimeChatSystemInstruction(runId: string): string | undefined {
+    const normalized = runId.trim();
+    if (!normalized) {
+      return undefined;
+    }
+    for (let index = this.events.length - 1; index >= 0; index -= 1) {
+      const event = this.events[index];
+      if (event.kind !== "agent.chat.system_message") {
+        continue;
+      }
+      const payload = asObject(event.data);
+      const eventRunId = String(payload.runId ?? payload.run_id ?? "").trim();
+      if (eventRunId !== normalized) {
+        continue;
+      }
+      const message = asNonEmptyString(payload.message);
+      if (message) {
+        return message;
+      }
+    }
+    return undefined;
+  }
+
+  private async resolveRuntimeChatSystemInstructionContext(
+    runId: string,
+    service?: ServiceRecord
+  ): Promise<{
+    instruction?: string;
+    source: "run_system_message" | "agent_manifest" | "agent_code" | "none";
+  }> {
+    const runInstruction = this.resolveRuntimeChatSystemInstruction(runId);
+    if (runInstruction) {
+      return { instruction: runInstruction, source: "run_system_message" };
+    }
+
+    const manifestInstruction = this.resolveAgentManifestSystemInstruction(service);
+    if (manifestInstruction) {
+      return { instruction: manifestInstruction, source: "agent_manifest" };
+    }
+
+    const codeInstruction = await this.resolveAgentCodeSystemInstruction(service);
+    if (codeInstruction) {
+      return { instruction: codeInstruction, source: "agent_code" };
+    }
+
+    return { source: "none" };
+  }
+
+  private resolveAgentManifestSystemInstruction(service?: ServiceRecord): string | undefined {
+    const agent = asObject(service?.manifest.metadata.agent);
+    const chat = asObject(agent.chat);
+    return (
+      asNonEmptyString(chat.systemInstruction ?? chat.system_instruction ?? chat.instruction ?? chat.instructions)
+      ?? asNonEmptyString(agent.systemInstruction ?? agent.system_instruction ?? agent.instruction ?? agent.instructions)
+    );
+  }
+
+  private async resolveAgentCodeSystemInstruction(service?: ServiceRecord): Promise<string | undefined> {
+    if (!service || service.manifest.spec.origin.type !== "local_wasm") {
+      return undefined;
+    }
+    const tools = Array.isArray(service.interfaceSnapshot?.tools) ? service.interfaceSnapshot?.tools : [];
+    const toolNames = new Set(
+      tools
+        .map((tool) => asNonEmptyString(asObject(tool).name))
+        .filter((value): value is string => value !== undefined)
+    );
+    const candidates = ["chat_system_instruction", "chat_instruction", "system_instruction"];
+    for (const fn of candidates) {
+      if (!toolNames.has(`fn__${fn}`)) {
+        continue;
+      }
+      try {
+        const output = await this.runLocalFunction(service, fn, []);
+        const instruction = asNonEmptyString(output);
+        if (instruction) {
+          return instruction;
+        }
+      } catch {
+        // Ignore malformed optional instruction hooks and continue.
+      }
+    }
+    return undefined;
+  }
+
   private resolveRuntimeHitlProvider(service?: ServiceRecord): "openai" | "echo" {
     if (this.hitlChatMode === "echo" || this.hitlChatMode === "disabled") {
       return "echo";
@@ -1732,7 +1846,8 @@ export class ServiceManager {
   }
 
   private async generateOpenAiReply(
-    operatorMessage: string
+    operatorMessage: string,
+    systemInstruction?: string
   ): Promise<{ reply: string; usage?: Record<string, unknown> }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => {
@@ -1748,6 +1863,19 @@ export class ServiceManager {
         body: JSON.stringify({
           model: this.hitlOpenAiModel,
           input: [
+            ...(systemInstruction
+              ? [
+                  {
+                    role: "system",
+                    content: [
+                      {
+                        type: "input_text",
+                        text: systemInstruction
+                      }
+                    ]
+                  }
+                ]
+              : []),
             {
               role: "user",
               content: [
