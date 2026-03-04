@@ -36,7 +36,7 @@ const AGENT_A2A_MESSAGE_KINDS = new Set([
   "handoff.completed"
 ]);
 const AGENT_CHAT_MODES = new Set(["auto", "echo", "disabled"]);
-const AGENT_CHAT_PROVIDERS = new Set(["openai", "echo"]);
+const AGENT_CHAT_PROVIDERS = new Set(["openai", "anthropic", "echo"]);
 
 function isEnvVarName(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
@@ -86,7 +86,7 @@ function validateAgentChatProfile(value: unknown): void {
   if (obj.provider !== undefined) {
     const provider = asNonEmptyString(obj.provider);
     if (!provider || !AGENT_CHAT_PROVIDERS.has(provider)) {
-      throw new Error("invalid manifest: metadata.agent.chat.provider must be openai|echo");
+      throw new Error("invalid manifest: metadata.agent.chat.provider must be openai|anthropic|echo");
     }
   }
   if (obj.handlerTool !== undefined && !asNonEmptyString(obj.handlerTool)) {

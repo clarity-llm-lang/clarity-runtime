@@ -154,6 +154,46 @@ test("validateManifest accepts metadata.agent.a2a profile when trigger includes 
   assert.equal(manifest.metadata.agent?.a2a?.protocol, "clarity.a2a.v1");
 });
 
+test("validateManifest accepts metadata.agent.chat.provider=anthropic", () => {
+  const manifest = validateManifest({
+    apiVersion: "clarity.runtime/v1",
+    kind: "MCPService",
+    metadata: {
+      sourceFile: "/tmp/agent-anthropic.clarity",
+      module: "AgentAnthropic",
+      serviceType: "agent",
+      agent: {
+        agentId: "agent-anthropic",
+        name: "Agent Anthropic",
+        role: "assistant",
+        objective: "Validate anthropic chat provider metadata",
+        triggers: ["api"],
+        chat: {
+          provider: "anthropic",
+          model: "claude-3-7-sonnet"
+        }
+      }
+    },
+    spec: {
+      origin: {
+        type: "local_wasm",
+        wasmPath: "/tmp/agent-anthropic.wasm",
+        entry: "mcp_main"
+      },
+      enabled: true,
+      autostart: false,
+      restartPolicy: {
+        mode: "on-failure",
+        maxRestarts: 5,
+        windowSeconds: 60
+      },
+      policyRef: "default"
+    }
+  });
+
+  assert.equal(manifest.metadata.agent?.chat?.provider, "anthropic");
+});
+
 test("validateManifest rejects metadata.serviceType=agent without metadata.agent", () => {
   assert.throws(
     () =>
