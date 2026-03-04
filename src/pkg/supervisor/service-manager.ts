@@ -42,6 +42,11 @@ function parseFunctionArgs(args: unknown): unknown[] {
   return raw;
 }
 
+function parseFunctionExpectString(args: unknown): boolean {
+  const payload = asObject(args);
+  return payload.expectStringResult === true || payload.expect_string_result === true;
+}
+
 function parseAllowedHosts(value: string | undefined): Set<string> | null {
   if (!value) return null;
   const hosts = value
@@ -68,35 +73,6 @@ function parseRatio(value: string | undefined): number | undefined {
     return undefined;
   }
   return parsed;
-}
-
-function asStringList(input: unknown): string[] {
-  if (!Array.isArray(input)) {
-    return [];
-  }
-  return input
-    .filter((value): value is string => typeof value === "string")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-}
-
-function extractOpenAiOutputText(payload: unknown): string | undefined {
-  const root = asObject(payload);
-  const direct = asNonEmptyString(root.output_text);
-  if (direct) {
-    return direct;
-  }
-  const output = Array.isArray(root.output) ? root.output : [];
-  for (const item of output) {
-    const content = Array.isArray(asObject(item).content) ? (asObject(item).content as unknown[]) : [];
-    for (const part of content) {
-      const text = asNonEmptyString(asObject(part).text);
-      if (text) {
-        return text;
-      }
-    }
-  }
-  return undefined;
 }
 
 function asPositiveInteger(value: unknown): number | undefined {
@@ -185,14 +161,17 @@ export interface AgentRunSummary {
 
 export interface ServiceManagerOptions {
   hitlChatMode?: "auto" | "echo" | "disabled";
-  hitlOpenAiApiKey?: string;
-  hitlOpenAiModel?: string;
-  hitlOpenAiTimeoutMs?: number;
 }
 
 interface WorkerValue {
   kind: "undefined" | "string" | "number" | "boolean" | "bigint";
   value?: string | number | boolean;
+}
+
+interface ResolvedRuntimeChatConfig {
+  mode: "auto" | "echo" | "disabled";
+  strategy: "agent_tool" | "echo";
+  handlerTool: string;
 }
 
 function asNonEmptyString(value: unknown): string | undefined {
@@ -258,9 +237,6 @@ export class ServiceManager {
   private readonly eventSubscribers = new Set<(event: AuditEvent) => void>();
   private readonly lifecycleAuditEnabled: boolean;
   private readonly hitlChatMode: "auto" | "echo" | "disabled";
-  private readonly hitlOpenAiApiKey: string;
-  private readonly hitlOpenAiModel: string;
-  private readonly hitlOpenAiTimeoutMs: number;
   private readonly hitlRunChains = new Map<string, Promise<void>>();
   private telemetryWriteQueue: Promise<void> = Promise.resolve();
   private telemetryLoaded = false;
@@ -280,24 +256,6 @@ export class ServiceManager {
       .trim()
       .toLowerCase();
     this.hitlChatMode = (modeRaw === "disabled" || modeRaw === "echo") ? modeRaw : "auto";
-    this.hitlOpenAiApiKey = (
-      options.hitlOpenAiApiKey
-      ?? process.env.OPENAI_API_KEY
-      ?? process.env.CLARITY_HITL_OPENAI_API_KEY
-      ?? ""
-    ).trim();
-    this.hitlOpenAiModel = (
-      options.hitlOpenAiModel
-      ?? process.env.CLARITY_HITL_OPENAI_MODEL
-      ?? process.env.OPENAI_MODEL
-      ?? "gpt-4.1-mini"
-    ).trim() || "gpt-4.1-mini";
-    this.hitlOpenAiTimeoutMs = Math.max(
-      1_000,
-      options.hitlOpenAiTimeoutMs
-      ?? parsePositiveInteger(process.env.CLARITY_HITL_OPENAI_TIMEOUT_MS)
-      ?? 20_000
-    );
   }
 
   async init(): Promise<void> {
@@ -764,7 +722,9 @@ export class ServiceManager {
       if (toolName.startsWith("fn__")) {
         const functionName = toolName.slice("fn__".length);
         const argsList = parseFunctionArgs(args);
-        const output = await this.runLocalFunction(service, functionName, argsList);
+        const output = await this.runLocalFunction(service, functionName, argsList, {
+          expectStringResult: parseFunctionExpectString(args)
+        });
         this.appendLog(serviceId, `tools/call ${toolName}(${JSON.stringify(argsList)})`);
         this.emitEvent({
           kind: "service.tool_called",
@@ -1019,9 +979,15 @@ export class ServiceManager {
     serviceId?: string;
     agent?: string;
   }): boolean {
-    if (this.hitlChatMode === "disabled") {
-      return false;
-    }
+    return this.queueRuntimeHitlInput(input);
+  }
+
+  queueRuntimeHitlInput(input: {
+    runId: string;
+    message: string;
+    serviceId?: string;
+    agent?: string;
+  }): boolean {
     const runId = input.runId.trim();
     if (!runId) {
       return false;
@@ -1032,7 +998,7 @@ export class ServiceManager {
         // Ignore previous failures for this run and continue processing new inputs.
       })
       .then(async () => {
-        await this.processRuntimeChatMessage(input);
+        await this.processRuntimeHitlInput(input);
       })
       .catch((error) => {
         const reason = error instanceof Error ? error.message : String(error);
@@ -1057,15 +1023,6 @@ export class ServiceManager {
       }
     });
     return true;
-  }
-
-  queueRuntimeHitlInput(input: {
-    runId: string;
-    message: string;
-    serviceId?: string;
-    agent?: string;
-  }): boolean {
-    return this.queueRuntimeChatMessage(input);
   }
 
   async shutdown(): Promise<void> {
@@ -1362,7 +1319,10 @@ export class ServiceManager {
   private async runLocalFunction(
     service: ServiceRecord,
     functionName: string,
-    argsList: unknown[]
+    argsList: unknown[],
+    options?: {
+      expectStringResult?: boolean;
+    }
   ): Promise<string> {
     if (service.manifest.spec.origin.type !== "local_wasm") {
       throw new Error("local function execution requires local_wasm origin");
@@ -1374,7 +1334,13 @@ export class ServiceManager {
     let lastTypeError: Error | null = null;
 
     for (const candidate of args) {
-      const workerResult = await this.runLocalFunctionInWorker(wasmPath, functionName, candidate, timeoutMs);
+      const workerResult = await this.runLocalFunctionInWorker(
+        wasmPath,
+        functionName,
+        candidate,
+        timeoutMs,
+        options?.expectStringResult === true
+      );
       if (workerResult.ok) {
         return this.formatWorkerResult(workerResult.value);
       }
@@ -1401,8 +1367,9 @@ export class ServiceManager {
   private async runLocalFunctionInWorker(
     wasmPath: string,
     functionName: string,
-    args: Array<number | bigint>,
-    timeoutMs: number
+    args: Array<number | bigint | string>,
+    timeoutMs: number,
+    expectStringResult: boolean
   ): Promise<WorkerResponse> {
     const workerUrl = new URL("./local-wasm-worker.js", import.meta.url);
 
@@ -1411,7 +1378,8 @@ export class ServiceManager {
         workerData: {
           wasmPath,
           functionName,
-          args
+          args,
+          expectStringResult
         }
       });
 
@@ -1467,8 +1435,8 @@ export class ServiceManager {
     return module;
   }
 
-  private resolveWasmArgs(args: unknown[]): Array<Array<number | bigint>> {
-    const perArg: Array<Array<number | bigint>> = args.map((arg) => {
+  private resolveWasmArgs(args: unknown[]): Array<Array<number | bigint | string>> {
+    const perArg: Array<Array<number | bigint | string>> = args.map((arg) => {
       if (typeof arg === "bigint") {
         const asNumber = Number(arg);
         return Number.isSafeInteger(asNumber) ? [arg, asNumber] : [arg];
@@ -1486,14 +1454,20 @@ export class ServiceManager {
       }
 
       if (typeof arg === "string") {
+        const out: Array<number | bigint | string> = [arg];
         if (/^-?\d+$/.test(arg)) {
           const asNumber = Number(arg);
-          return Number.isSafeInteger(asNumber) ? [BigInt(arg), asNumber] : [BigInt(arg)];
+          out.push(BigInt(arg));
+          if (Number.isSafeInteger(asNumber)) {
+            out.push(asNumber);
+          }
+          return out;
         }
         if (/^-?\d+\.\d+$/.test(arg)) {
-          return [Number(arg)];
+          out.push(Number(arg));
+          return out;
         }
-        throw new Error(`unsupported string argument '${arg}' for in-process wasm call`);
+        return out;
       }
 
       throw new Error(`unsupported argument type '${typeof arg}' for in-process wasm call`);
@@ -1503,8 +1477,8 @@ export class ServiceManager {
       return [[]];
     }
 
-    const combinations: Array<Array<number | bigint>> = [];
-    const current: Array<number | bigint> = [];
+    const combinations: Array<Array<number | bigint | string>> = [];
+    const current: Array<number | bigint | string> = [];
 
     const walk = (index: number): void => {
       if (index === perArg.length) {
@@ -1583,7 +1557,7 @@ export class ServiceManager {
     }
   }
 
-  private async processRuntimeChatMessage(input: {
+  private async processRuntimeHitlInput(input: {
     runId: string;
     message: string;
     serviceId?: string;
@@ -1606,10 +1580,26 @@ export class ServiceManager {
       ?? asNonEmptyString(agentMetadata.agentId)
       ?? asNonEmptyString(agentMetadata.name)
       ?? "unknown-agent";
-    const instructionContext = await this.resolveRuntimeChatSystemInstructionContext(runId, service);
-    const systemInstruction = instructionContext.instruction;
-    const systemInstructionSource = instructionContext.source;
     const stepId = `runtime_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const runtimeChat = this.resolveRuntimeHitlConfig(service);
+
+    if (runtimeChat.mode === "disabled") {
+      this.emitEvent({
+        kind: "agent.waiting",
+        serviceId,
+        level: "warn",
+        message: `Runtime chat disabled for agent (${runId})`,
+        data: {
+          runId,
+          ...(serviceId ? { serviceId } : {}),
+          agent,
+          reason: "runtime chat disabled by agent configuration",
+          waitingReason: "runtime chat disabled by agent configuration",
+          source: "runtime_hitl_executor"
+        }
+      });
+      return;
+    }
 
     this.emitEvent({
       kind: "agent.step_started",
@@ -1621,39 +1611,51 @@ export class ServiceManager {
         ...(serviceId ? { serviceId } : {}),
         agent,
         stepId,
-        source: "runtime_chat_executor",
-        inputLength: operatorMessage.length,
-        systemInstructionApplied: Boolean(systemInstruction),
-        systemInstructionSource
+        mode: runtimeChat.mode,
+        strategy: runtimeChat.strategy,
+        handlerTool: runtimeChat.handlerTool,
+        source: "runtime_hitl_executor",
+        inputLength: operatorMessage.length
       }
     });
 
     try {
-      const provider = this.resolveRuntimeHitlProvider(service);
+      const provider = runtimeChat.strategy === "agent_tool" ? "agent" : "echo";
       let reply = "";
-      let usage: Record<string, unknown> | undefined;
-
-      if (provider === "openai") {
+      if (runtimeChat.strategy === "agent_tool") {
+        if (!serviceId) {
+          throw new Error("runtime chat dispatch requires serviceId on run or request");
+        }
+        const triggerContext = asObject(runSummary?.triggerContext);
+        const sessionId = asNonEmptyString(triggerContext.sessionId ?? triggerContext.session_id) ?? runId;
         this.emitEvent({
-          kind: "agent.llm_called",
+          kind: "agent.tool_called",
           serviceId,
           level: "info",
-          message: `OpenAI Responses API request (${this.hitlOpenAiModel})`,
+          message: `Runtime chat dispatched to agent tool (${runtimeChat.handlerTool})`,
           data: {
             runId,
-            ...(serviceId ? { serviceId } : {}),
+            serviceId,
             agent,
             stepId,
-            provider: "openai",
-            model: this.hitlOpenAiModel,
-            inputLength: operatorMessage.length,
-            systemInstructionApplied: Boolean(systemInstruction),
-            systemInstructionSource
+            tool: runtimeChat.handlerTool,
+            sessionId
           }
         });
-        const completion = await this.generateOpenAiReply(operatorMessage, systemInstruction);
-        reply = completion.reply;
-        usage = completion.usage;
+        const toolResult = await this.callTool(
+          serviceId,
+          runtimeChat.handlerTool,
+          this.buildRuntimeChatToolArgs(runtimeChat.handlerTool, operatorMessage, sessionId, runId),
+          {
+            runId,
+            sessionId
+          }
+        );
+        const candidateReply = this.extractRuntimeChatReply(toolResult);
+        if (!candidateReply) {
+          throw new Error(`agent chat tool returned no reply text: ${runtimeChat.handlerTool}`);
+        }
+        reply = candidateReply;
       } else {
         reply = `Echo: ${operatorMessage}`;
       }
@@ -1667,16 +1669,11 @@ export class ServiceManager {
           runId,
           ...(serviceId ? { serviceId } : {}),
           agent,
-          stepId,
           role: "assistant",
-          source: "runtime_chat_executor",
-          channel: "runtime_chat",
+          message: reply,
           provider,
-          ...(provider === "openai" ? { model: this.hitlOpenAiModel } : {}),
-          ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
-          systemInstructionApplied: Boolean(systemInstruction),
-          systemInstructionSource,
-          message: reply
+          ...(runtimeChat.strategy === "agent_tool" ? { handlerTool: runtimeChat.handlerTool } : {}),
+          source: "runtime_hitl_executor"
         }
       });
 
@@ -1691,10 +1688,7 @@ export class ServiceManager {
           agent,
           stepId,
           provider,
-          ...(provider === "openai" ? { model: this.hitlOpenAiModel } : {}),
-          ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
-          systemInstructionApplied: Boolean(systemInstruction),
-          systemInstructionSource,
+          ...(runtimeChat.strategy === "agent_tool" ? { handlerTool: runtimeChat.handlerTool } : {}),
           message: reply
         }
       });
@@ -1710,7 +1704,7 @@ export class ServiceManager {
           agent,
           reason: "awaiting operator input",
           waitingReason: "awaiting operator input",
-          source: "runtime_chat_executor"
+          source: "runtime_hitl_executor"
         }
       });
     } catch (error) {
@@ -1739,191 +1733,64 @@ export class ServiceManager {
           agent,
           reason,
           waitingReason: reason,
-          source: "runtime_chat_executor"
+          source: "runtime_hitl_executor"
         }
       });
     }
   }
 
-  private resolveRuntimeChatSystemInstruction(runId: string): string | undefined {
-    const normalized = runId.trim();
-    if (!normalized) {
-      return undefined;
-    }
-    for (let index = this.events.length - 1; index >= 0; index -= 1) {
-      const event = this.events[index];
-      if (event.kind !== "agent.chat.system_message") {
-        continue;
-      }
-      const payload = asObject(event.data);
-      const eventRunId = String(payload.runId ?? payload.run_id ?? "").trim();
-      if (eventRunId !== normalized) {
-        continue;
-      }
-      const message = asNonEmptyString(payload.message);
-      if (message) {
-        return message;
-      }
-    }
-    return undefined;
-  }
-
-  private async resolveRuntimeChatSystemInstructionContext(
-    runId: string,
-    service?: ServiceRecord
-  ): Promise<{
-    instruction?: string;
-    source: "run_system_message" | "agent_manifest" | "agent_code" | "none";
-  }> {
-    const runInstruction = this.resolveRuntimeChatSystemInstruction(runId);
-    if (runInstruction) {
-      return { instruction: runInstruction, source: "run_system_message" };
-    }
-
-    const manifestInstruction = this.resolveAgentManifestSystemInstruction(service);
-    if (manifestInstruction) {
-      return { instruction: manifestInstruction, source: "agent_manifest" };
-    }
-
-    const codeInstruction = await this.resolveAgentCodeSystemInstruction(service);
-    if (codeInstruction) {
-      return { instruction: codeInstruction, source: "agent_code" };
-    }
-
-    return { source: "none" };
-  }
-
-  private resolveAgentManifestSystemInstruction(service?: ServiceRecord): string | undefined {
+  private resolveRuntimeHitlConfig(service?: ServiceRecord): ResolvedRuntimeChatConfig {
     const agent = asObject(service?.manifest.metadata.agent);
     const chat = asObject(agent.chat);
-    return (
-      asNonEmptyString(chat.systemInstruction ?? chat.system_instruction ?? chat.instruction ?? chat.instructions)
-      ?? asNonEmptyString(agent.systemInstruction ?? agent.system_instruction ?? agent.instruction ?? agent.instructions)
-    );
+    const modeRaw = asNonEmptyString(chat.mode)?.toLowerCase();
+    const mode = (modeRaw === "echo" || modeRaw === "disabled" || modeRaw === "auto")
+      ? modeRaw
+      : this.hitlChatMode;
+    const defaultTool = service?.manifest.spec.origin.type === "remote_mcp" ? "receive_chat" : "fn__receive_chat";
+    const handlerTool = asNonEmptyString(chat.handlerTool ?? chat.handler_tool) ?? defaultTool;
+    const strategy = mode === "echo" ? "echo" : "agent_tool";
+    return {
+      mode,
+      strategy,
+      handlerTool
+    };
   }
 
-  private async resolveAgentCodeSystemInstruction(service?: ServiceRecord): Promise<string | undefined> {
-    if (!service || service.manifest.spec.origin.type !== "local_wasm") {
-      return undefined;
+  private buildRuntimeChatToolArgs(
+    handlerTool: string,
+    message: string,
+    sessionId: string,
+    runId: string
+  ): unknown {
+    if (handlerTool.startsWith("fn__")) {
+      return {
+        args: [message, sessionId, runId],
+        expectStringResult: true
+      };
     }
-    const tools = Array.isArray(service.interfaceSnapshot?.tools) ? service.interfaceSnapshot?.tools : [];
-    const toolNames = new Set(
-      tools
-        .map((tool) => asNonEmptyString(asObject(tool).name))
-        .filter((value): value is string => value !== undefined)
-    );
-    const candidates = ["chat_system_instruction", "chat_instruction", "system_instruction"];
-    for (const fn of candidates) {
-      if (!toolNames.has(`fn__${fn}`)) {
-        continue;
-      }
-      try {
-        const output = await this.runLocalFunction(service, fn, []);
-        const instruction = asNonEmptyString(output);
-        if (instruction) {
-          return instruction;
-        }
-      } catch {
-        // Ignore malformed optional instruction hooks and continue.
+    return {
+      message,
+      sessionId,
+      runId,
+      session_id: sessionId,
+      run_id: runId
+    };
+  }
+
+  private extractRuntimeChatReply(result: unknown): string | undefined {
+    const root = asObject(result);
+    const direct = asNonEmptyString(root.reply ?? root.message ?? root.text ?? root.output_text);
+    if (direct) {
+      return direct;
+    }
+    const content = Array.isArray(root.content) ? (root.content as unknown[]) : [];
+    for (const item of content) {
+      const text = asNonEmptyString(asObject(item).text);
+      if (text) {
+        return text;
       }
     }
     return undefined;
-  }
-
-  private resolveRuntimeHitlProvider(service?: ServiceRecord): "openai" | "echo" {
-    if (this.hitlChatMode === "echo" || this.hitlChatMode === "disabled") {
-      return "echo";
-    }
-    if (!this.hitlOpenAiApiKey) {
-      return "echo";
-    }
-    const agent = asObject(service?.manifest.metadata.agent);
-    const providers = [
-      ...asStringList(agent.allowedLlmProviders).map((item) => item.toLowerCase()),
-      ...asStringList((agent as { llmProviders?: unknown }).llmProviders).map((item) =>
-        item.toLowerCase()
-      )
-    ];
-    return providers.includes("openai") ? "openai" : "echo";
-  }
-
-  private async generateOpenAiReply(
-    operatorMessage: string,
-    systemInstruction?: string
-  ): Promise<{ reply: string; usage?: Record<string, unknown> }> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, this.hitlOpenAiTimeoutMs);
-    try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${this.hitlOpenAiApiKey}`,
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({
-          model: this.hitlOpenAiModel,
-          input: [
-            ...(systemInstruction
-              ? [
-                  {
-                    role: "system",
-                    content: [
-                      {
-                        type: "input_text",
-                        text: systemInstruction
-                      }
-                    ]
-                  }
-                ]
-              : []),
-            {
-              role: "user",
-              content: [
-                {
-                  type: "input_text",
-                  text: operatorMessage
-                }
-              ]
-            }
-          ]
-        }),
-        signal: controller.signal
-      });
-
-      const payloadText = await response.text();
-      let payload: unknown = {};
-      if (payloadText.trim().length > 0) {
-        try {
-          payload = JSON.parse(payloadText) as unknown;
-        } catch {
-          throw new Error("OpenAI response parsing failed");
-        }
-      }
-
-      if (!response.ok) {
-        const root = asObject(payload);
-        const errorMessage = asNonEmptyString(asObject(root.error).message) ?? payloadText.trim();
-        throw new Error(
-          errorMessage.length > 0
-            ? `OpenAI request failed (${response.status}): ${errorMessage}`
-            : `OpenAI request failed with status ${response.status}`
-        );
-      }
-
-      const reply = extractOpenAiOutputText(payload);
-      if (!reply) {
-        throw new Error("OpenAI response missing output text");
-      }
-      const usage = asObject(asObject(payload).usage);
-      return {
-        reply,
-        ...(Object.keys(usage).length > 0 ? { usage } : {})
-      };
-    } finally {
-      clearTimeout(timeout);
-    }
   }
 
   private async loadTelemetry(): Promise<void> {

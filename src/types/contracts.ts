@@ -31,6 +31,18 @@ export interface AgentA2AProfile {
   maxPayloadBytes?: number;
 }
 
+export type AgentChatMode = "auto" | "echo" | "disabled";
+export type AgentChatProvider = "openai" | "echo";
+
+export interface AgentChatProfile {
+  mode?: AgentChatMode;
+  provider?: AgentChatProvider;
+  handlerTool?: string;
+  model?: string;
+  apiKeyEnv?: string;
+  timeoutMs?: number;
+}
+
 export interface AgentDescriptor {
   agentId: string;
   name: string;
@@ -42,6 +54,8 @@ export interface AgentDescriptor {
   outputs?: string[];
   allowedMcpTools?: string[];
   allowedLlmProviders?: string[];
+  llmProviders?: string[];
+  chat?: AgentChatProfile;
   handoffTargets?: string[];
   dependsOn?: string[];
   version?: string;

@@ -71,14 +71,23 @@ test("validateManifest accepts explicit metadata.serviceType=agent", () => {
       sourceFile: "/tmp/agent.clarity",
       module: "AgentSample",
       serviceType: "agent",
-      agent: {
-        agentId: "agent-sample",
-        name: "Agent Sample",
-        role: "coordinator",
-        objective: "Coordinate downstream tools",
-        triggers: ["api"]
-      }
-    },
+        agent: {
+          agentId: "agent-sample",
+          name: "Agent Sample",
+          role: "coordinator",
+          objective: "Coordinate downstream tools",
+          triggers: ["api"],
+          llmProviders: ["openai"],
+          chat: {
+            mode: "auto",
+            provider: "openai",
+            handlerTool: "fn__receive_chat",
+            model: "gpt-4.1-mini",
+            apiKeyEnv: "OPENAI_API_KEY",
+            timeoutMs: 15000
+          }
+        }
+      },
     spec: {
       origin: {
         type: "local_wasm",
@@ -98,6 +107,9 @@ test("validateManifest accepts explicit metadata.serviceType=agent", () => {
 
   assert.equal(manifest.metadata.serviceType, "agent");
   assert.equal(manifest.metadata.agent?.agentId, "agent-sample");
+  assert.equal(manifest.metadata.agent?.llmProviders?.[0], "openai");
+  assert.equal(manifest.metadata.agent?.chat?.provider, "openai");
+  assert.equal(manifest.metadata.agent?.chat?.handlerTool, "fn__receive_chat");
 });
 
 test("validateManifest accepts metadata.agent.a2a profile when trigger includes a2a", () => {
@@ -276,5 +288,87 @@ test("validateManifest rejects invalid metadata.serviceType", () => {
         }
       }),
     /metadata\.serviceType/
+  );
+});
+
+test("validateManifest rejects invalid metadata.agent.chat.apiKeyEnv", () => {
+  assert.throws(
+    () =>
+      validateManifest({
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile: "/tmp/agent-invalid-chat.clarity",
+          module: "AgentInvalidChat",
+          serviceType: "agent",
+          agent: {
+            agentId: "agent-invalid-chat",
+            name: "Agent Invalid Chat",
+            role: "assistant",
+            objective: "Validate chat config",
+            triggers: ["api"],
+            chat: {
+              apiKeyEnv: "OPENAI API KEY"
+            }
+          }
+        },
+        spec: {
+          origin: {
+            type: "local_wasm",
+            wasmPath: "/tmp/agent-invalid-chat.wasm",
+            entry: "mcp_main"
+          },
+          enabled: true,
+          autostart: true,
+          restartPolicy: {
+            mode: "on-failure",
+            maxRestarts: 5,
+            windowSeconds: 60
+          },
+          policyRef: "default"
+        }
+      }),
+    /metadata\.agent\.chat\.apiKeyEnv/
+  );
+});
+
+test("validateManifest rejects empty metadata.agent.chat.handlerTool", () => {
+  assert.throws(
+    () =>
+      validateManifest({
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile: "/tmp/agent-invalid-chat-handler.clarity",
+          module: "AgentInvalidChatHandler",
+          serviceType: "agent",
+          agent: {
+            agentId: "agent-invalid-chat-handler",
+            name: "Agent Invalid Chat Handler",
+            role: "assistant",
+            objective: "Validate chat handler config",
+            triggers: ["api"],
+            chat: {
+              handlerTool: "   "
+            }
+          }
+        },
+        spec: {
+          origin: {
+            type: "local_wasm",
+            wasmPath: "/tmp/agent-invalid-chat-handler.wasm",
+            entry: "mcp_main"
+          },
+          enabled: true,
+          autostart: true,
+          restartPolicy: {
+            mode: "on-failure",
+            maxRestarts: 5,
+            windowSeconds: 60
+          },
+          policyRef: "default"
+        }
+      }),
+    /metadata\.agent\.chat\.handlerTool/
   );
 });

@@ -68,6 +68,19 @@
             "outputs": { "type": "array", "items": { "type": "string" } },
             "allowedMcpTools": { "type": "array", "items": { "type": "string" } },
             "allowedLlmProviders": { "type": "array", "items": { "type": "string" } },
+            "llmProviders": { "type": "array", "items": { "type": "string" } },
+            "chat": {
+              "type": "object",
+              "properties": {
+                "mode": { "enum": ["auto", "echo", "disabled"] },
+                "provider": { "enum": ["openai", "echo"] },
+                "handlerTool": { "type": "string", "minLength": 1 },
+                "model": { "type": "string", "minLength": 1 },
+                "apiKeyEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+                "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000 }
+              },
+              "additionalProperties": false
+            },
             "handoffTargets": { "type": "array", "items": { "type": "string" } },
             "dependsOn": { "type": "array", "items": { "type": "string" } },
             "version": { "type": "string" }

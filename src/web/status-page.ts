@@ -1737,6 +1737,9 @@ function renderAgentStandardFlow(agent, runs) {
   const outputs = Array.isArray(agent && agent.outputs) ? agent.outputs : [];
   const deps = Array.isArray(agent && agent.dependsOn) ? agent.dependsOn : [];
   const handoffs = Array.isArray(agent && agent.handoffTargets) ? agent.handoffTargets : [];
+  const llmProviders = Array.isArray(agent && agent.allowedLlmProviders) && agent.allowedLlmProviders.length > 0
+    ? agent.allowedLlmProviders
+    : (Array.isArray(agent && agent.llmProviders) ? agent.llmProviders : []);
   const observed = collectObservedCapabilities(runs);
   const triggerNodes = observed.triggers.size > 0
     ? Array.from(observed.triggers)
@@ -1755,7 +1758,7 @@ function renderAgentStandardFlow(agent, runs) {
   if (observed.usesMcp || (Array.isArray(agent && agent.allowedMcpTools) && agent.allowedMcpTools.length > 0)) {
     nodes.push('use MCP tools');
   }
-  if (observed.usesLlm || (Array.isArray(agent && agent.allowedLlmProviders) && agent.allowedLlmProviders.length > 0)) {
+  if (observed.usesLlm || llmProviders.length > 0) {
     nodes.push('call LLM');
   }
   if (deps.length > 0) {
@@ -1845,7 +1848,7 @@ function renderServiceDetails(serviceId, data, agentRunsForService) {
         '<div><h3 class="detail-title">Dependencies</h3>' + renderDependencyStatusList(agent.dependsOn) + '</div>' +
         '<div><h3 class="detail-title">Handoff Targets</h3>' + listOrNone(agent.handoffTargets, 'No handoff targets declared.') + '</div>' +
         '<div><h3 class="detail-title">Allowed MCP Tools</h3>' + listOrNone(agent.allowedMcpTools, 'No MCP tool allowlist declared.') + '</div>' +
-        '<div><h3 class="detail-title">Allowed LLM Providers</h3>' + listOrNone(agent.allowedLlmProviders, 'No LLM provider allowlist declared.') + '</div>' +
+        '<div><h3 class="detail-title">Allowed LLM Providers</h3>' + listOrNone((Array.isArray(agent.allowedLlmProviders) && agent.allowedLlmProviders.length > 0) ? agent.allowedLlmProviders : agent.llmProviders, 'No LLM provider allowlist declared.') + '</div>' +
       '</div>'
     : '';
 

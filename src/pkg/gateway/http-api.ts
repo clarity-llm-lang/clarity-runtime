@@ -285,6 +285,21 @@ function summarizeAgentRegistryRecord(record: Awaited<ReturnType<ServiceManager[
       .filter((item): item is string => item !== null);
   };
   const a2a = summarizeAgentA2AProfile(descriptor);
+  const chatRecord = asObject(descriptorRecord.chat);
+  const chatMode = nonEmptyString(chatRecord.mode);
+  const chatProvider = nonEmptyString(chatRecord.provider);
+  const chatHandlerTool = nonEmptyString(chatRecord.handlerTool);
+  const chatModel = nonEmptyString(chatRecord.model);
+  const chatApiKeyEnv = nonEmptyString(chatRecord.apiKeyEnv);
+  const chatTimeoutMs = Number(chatRecord.timeoutMs);
+  const chat = {
+    ...(chatMode ? { mode: chatMode } : {}),
+    ...(chatProvider ? { provider: chatProvider } : {}),
+    ...(chatHandlerTool ? { handlerTool: chatHandlerTool } : {}),
+    ...(chatModel ? { model: chatModel } : {}),
+    ...(chatApiKeyEnv ? { apiKeyEnv: chatApiKeyEnv } : {}),
+    ...(Number.isInteger(chatTimeoutMs) && chatTimeoutMs > 0 ? { timeoutMs: chatTimeoutMs } : {})
+  };
   return {
     serviceId: record.manifest.metadata.serviceId,
     displayName: record.manifest.metadata.displayName,
@@ -324,7 +339,9 @@ function summarizeAgentRegistryRecord(record: Awaited<ReturnType<ServiceManager[
       handoffTargets: listField("handoffTargets"),
       allowedMcpTools: listField("allowedMcpTools"),
       allowedLlmProviders: listField("allowedLlmProviders"),
+      llmProviders: listField("llmProviders"),
       version: nonEmptyString(descriptorRecord.version) ?? undefined,
+      ...(Object.keys(chat).length > 0 ? { chat } : {}),
       a2a
     }
   };

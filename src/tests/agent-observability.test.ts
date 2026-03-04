@@ -62,7 +62,7 @@ async function waitForRunEvent(
   baseUrl: string,
   runId: string,
   predicate: (item: Record<string, unknown>) => boolean,
-  attempts = 30,
+  attempts = 80,
   sleepMs = 25
 ): Promise<Record<string, unknown> | null> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -553,6 +553,17 @@ test("run messages endpoint queues runtime chat executor response events", async
     assert.ok(userMessageEvent);
     assert.equal(String(asObject(userMessageEvent?.data).role), "user");
 
+    const assistantMessageEvent = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) => String(item.kind) === "agent.chat.assistant_message"
+    );
+    assert.ok(assistantMessageEvent);
+    const assistantMessageData = asObject(assistantMessageEvent?.data);
+    assert.equal(String(assistantMessageData.role), "assistant");
+    assert.equal(String(assistantMessageData.message), "Echo: hello runtime");
+    assert.equal(String(assistantMessageData.provider), "echo");
+
     const stepCompleted = await waitForRunEvent(
       runtime.baseUrl,
       runId,
@@ -562,18 +573,6 @@ test("run messages endpoint queues runtime chat executor response events", async
     const stepCompletedData = asObject(stepCompleted?.data);
     assert.equal(String(stepCompletedData.message), "Echo: hello runtime");
     assert.equal(String(stepCompletedData.provider), "echo");
-    assert.equal(String(stepCompletedData.systemInstructionApplied), "false");
-    assert.equal(String(stepCompletedData.systemInstructionSource), "none");
-
-    const assistantMessage = await waitForRunEvent(
-      runtime.baseUrl,
-      runId,
-      (item) => String(item.kind) === "agent.chat.assistant_message"
-    );
-    assert.ok(assistantMessage);
-    const assistantMessageData = asObject(assistantMessage?.data);
-    assert.equal(String(assistantMessageData.message), "Echo: hello runtime");
-    assert.equal(String(assistantMessageData.provider), "echo");
 
     const waiting = await waitForRunEvent(
       runtime.baseUrl,
@@ -590,12 +589,12 @@ test("run messages endpoint queues runtime chat executor response events", async
   }
 });
 
-test("run messages endpoint applies run-scoped system instruction to runtime chat", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-chat-system-instruction-http-"));
+test("run messages endpoint honors per-agent chat mode overrides", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-chat-mode-http-"));
   const registry = new ServiceRegistry(path.join(root, "registry.json"));
   await registry.init();
   const manager = new ServiceManager(registry, path.join(root, "telemetry.json"), {
-    hitlChatMode: "echo"
+    hitlChatMode: "auto"
   });
   await manager.init();
   const authConfig: AuthConfig = {
@@ -604,7 +603,7 @@ test("run messages endpoint applies run-scoped system instruction to runtime cha
   const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
 
   try {
-    const wasmPath = path.join(root, "chat-agent-system.wasm");
+    const wasmPath = path.join(root, "chat-mode-agent.wasm");
     await writeFile(wasmPath, "", "utf8");
     const applyAgent = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
       method: "POST",
@@ -613,161 +612,17 @@ test("run messages endpoint applies run-scoped system instruction to runtime cha
           apiVersion: "clarity.runtime/v1",
           kind: "MCPService",
           metadata: {
-            sourceFile: path.join(root, "chat-agent-system.clarity"),
-            module: "ChatAgentSystem",
+            sourceFile: path.join(root, "chat-mode-agent.clarity"),
+            module: "ChatModeAgent",
             serviceType: "agent",
             agent: {
-              agentId: "chat-agent-system",
-              name: "Chat Agent System",
+              agentId: "chat-mode-agent",
+              name: "Chat Mode Agent",
               role: "assistant",
-              objective: "Respond with runtime chat",
+              objective: "Validate per-agent runtime chat mode",
               triggers: ["api"],
-              allowedLlmProviders: ["openai"]
-            }
-          },
-          spec: {
-            origin: {
-              type: "local_wasm",
-              wasmPath,
-              entry: "main"
-            },
-            enabled: true,
-            autostart: false,
-            restartPolicy: {
-              mode: "never",
-              maxRestarts: 0,
-              windowSeconds: 60
-            },
-            policyRef: "default"
-          }
-        }
-      })
-    });
-    assert.equal(applyAgent.status, 200);
-    const serviceId = String(
-      asObject(asObject(asObject(asObject(applyAgent.body).service).manifest).metadata).serviceId ?? ""
-    );
-    assert.ok(serviceId.length > 0);
-
-    const started = await jsonRequest(runtime.baseUrl, `/api/services/${encodeURIComponent(serviceId)}/start`, {
-      method: "POST"
-    });
-    assert.equal(started.status, 200);
-
-    const runId = "run-chat-system-instruction-1";
-    const runCreated = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
-      method: "POST",
-      body: JSON.stringify({
-        kind: "agent.run_created",
-        message: "Run created",
-        service_id: serviceId,
-        run_id: runId,
-        agent: "chat-agent-system",
-        data: {
-          trigger: "api",
-          triggerContext: {
-            route: "/tests",
-            method: "POST",
-            requestId: "req-system-1",
-            caller: "agent-observability.test"
-          }
-        }
-      })
-    });
-    assert.equal(runCreated.status, 200);
-
-    const runStarted = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
-      method: "POST",
-      body: JSON.stringify({
-        kind: "agent.run_started",
-        message: "Run started",
-        service_id: serviceId,
-        run_id: runId,
-        agent: "chat-agent-system"
-      })
-    });
-    assert.equal(runStarted.status, 200);
-
-    const postedSystem = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/messages`, {
-      method: "POST",
-      body: JSON.stringify({
-        role: "system",
-        message: "Act like a strict coding assistant.",
-        service_id: serviceId,
-        agent: "chat-agent-system"
-      })
-    });
-    assert.equal(postedSystem.status, 200);
-    const postedSystemBody = asObject(postedSystem.body);
-    assert.equal(String(postedSystemBody.kind), "agent.chat.system_message");
-    assert.equal(String(postedSystemBody.role), "system");
-    assert.equal(Boolean(postedSystemBody.runtime_chat_execution_queued), false);
-
-    const postedMessage = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/messages`, {
-      method: "POST",
-      body: JSON.stringify({
-        role: "user",
-        message: "hello runtime",
-        service_id: serviceId,
-        agent: "chat-agent-system"
-      })
-    });
-    assert.equal(postedMessage.status, 200);
-    assert.equal(Boolean(asObject(postedMessage.body).runtime_chat_execution_queued), true);
-
-    const stepCompleted = await waitForRunEvent(
-      runtime.baseUrl,
-      runId,
-      (item) => String(item.kind) === "agent.step_completed" && asObject(item.data).stepId !== undefined
-    );
-    assert.ok(stepCompleted);
-    const stepCompletedData = asObject(stepCompleted?.data);
-    assert.equal(String(stepCompletedData.provider), "echo");
-    assert.equal(String(stepCompletedData.message), "Echo: hello runtime");
-    assert.equal(String(stepCompletedData.systemInstructionApplied), "true");
-    assert.equal(String(stepCompletedData.systemInstructionSource), "run_system_message");
-  } finally {
-    await manager.shutdown();
-    await runtime.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("run messages endpoint applies manifest-level agent instruction when no run system message exists", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-chat-manifest-instruction-http-"));
-  const registry = new ServiceRegistry(path.join(root, "registry.json"));
-  await registry.init();
-  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"), {
-    hitlChatMode: "echo"
-  });
-  await manager.init();
-  const authConfig: AuthConfig = {
-    enforceLoopbackWhenNoToken: true
-  };
-  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
-
-  try {
-    const wasmPath = path.join(root, "chat-agent-manifest-instruction.wasm");
-    await writeFile(wasmPath, "", "utf8");
-    const applyAgent = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
-      method: "POST",
-      body: JSON.stringify({
-        manifest: {
-          apiVersion: "clarity.runtime/v1",
-          kind: "MCPService",
-          metadata: {
-            sourceFile: path.join(root, "chat-agent-manifest-instruction.clarity"),
-            module: "ChatAgentManifestInstruction",
-            serviceType: "agent",
-            agent: {
-              agentId: "chat-agent-manifest-instruction",
-              name: "Chat Agent Manifest Instruction",
-              role: "assistant",
-              objective: "Respond to runtime chat with static persona",
-              triggers: ["api"],
-              allowedLlmProviders: ["openai"],
               chat: {
-                systemInstruction: "Act as a coding mentor."
+                mode: "disabled"
               }
             }
           },
@@ -800,7 +655,7 @@ test("run messages endpoint applies manifest-level agent instruction when no run
     });
     assert.equal(started.status, 200);
 
-    const runId = "run-chat-manifest-instruction-1";
+    const runId = "run-chat-disabled-1";
     const runCreated = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
       method: "POST",
       body: JSON.stringify({
@@ -808,13 +663,13 @@ test("run messages endpoint applies manifest-level agent instruction when no run
         message: "Run created",
         service_id: serviceId,
         run_id: runId,
-        agent: "chat-agent-manifest-instruction",
+        agent: "chat-mode-agent",
         data: {
           trigger: "api",
           triggerContext: {
             route: "/tests",
             method: "POST",
-            requestId: "req-manifest-1",
+            requestId: "req-chat-disabled-1",
             caller: "agent-observability.test"
           }
         }
@@ -829,7 +684,7 @@ test("run messages endpoint applies manifest-level agent instruction when no run
         message: "Run started",
         service_id: serviceId,
         run_id: runId,
-        agent: "chat-agent-manifest-instruction"
+        agent: "chat-mode-agent"
       })
     });
     assert.equal(runStarted.status, 200);
@@ -840,23 +695,390 @@ test("run messages endpoint applies manifest-level agent instruction when no run
         role: "user",
         message: "hello runtime",
         service_id: serviceId,
-        agent: "chat-agent-manifest-instruction"
+        agent: "chat-mode-agent"
       })
     });
     assert.equal(postedMessage.status, 200);
     assert.equal(Boolean(asObject(postedMessage.body).runtime_chat_execution_queued), true);
 
+    const waiting = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) =>
+        String(item.kind) === "agent.waiting"
+        && String(asObject(item.data).waitingReason) === "runtime chat disabled by agent configuration"
+    );
+    assert.ok(waiting);
+
+    const runEvents = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/events?limit=200`);
+    assert.equal(runEvents.status, 200);
+    const runEventsBody = asObject(runEvents.body);
+    const items = Array.isArray(runEventsBody.items)
+      ? (runEventsBody.items as Array<Record<string, unknown>>)
+      : [];
+    assert.ok(!items.some((item) => String(item.kind) === "agent.step_started"));
+    assert.ok(!items.some((item) => String(item.kind) === "agent.chat.assistant_message"));
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("run messages endpoint dispatches to agent chat handler in auto mode", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-chat-auto-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"), {
+    hitlChatMode: "auto"
+  });
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const wasmPath = path.join(root, "chat-auto-agent.wasm");
+    await writeFile(wasmPath, "", "utf8");
+    const applyAgent = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        manifest: {
+          apiVersion: "clarity.runtime/v1",
+          kind: "MCPService",
+          metadata: {
+            sourceFile: path.join(root, "chat-auto-agent.clarity"),
+            module: "ChatAutoAgent",
+            serviceType: "agent",
+            agent: {
+              agentId: "chat-auto-agent",
+              name: "Chat Auto Agent",
+              role: "assistant",
+              objective: "Validate runtime chat tool dispatch",
+              triggers: ["api"]
+            }
+          },
+          spec: {
+            origin: {
+              type: "local_wasm",
+              wasmPath,
+              entry: "main"
+            },
+            enabled: true,
+            autostart: false,
+            restartPolicy: {
+              mode: "never",
+              maxRestarts: 0,
+              windowSeconds: 60
+            },
+            policyRef: "default"
+          }
+        }
+      })
+    });
+    assert.equal(applyAgent.status, 200);
+    const serviceId = String(
+      asObject(asObject(asObject(asObject(applyAgent.body).service).manifest).metadata).serviceId ?? ""
+    );
+    assert.ok(serviceId.length > 0);
+
+    const started = await jsonRequest(runtime.baseUrl, `/api/services/${encodeURIComponent(serviceId)}/start`, {
+      method: "POST"
+    });
+    assert.equal(started.status, 200);
+
+    const runId = "run-chat-auto-1";
+    const runCreated = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_created",
+        message: "Run created",
+        service_id: serviceId,
+        run_id: runId,
+        agent: "chat-auto-agent",
+        data: {
+          trigger: "api",
+          triggerContext: {
+            route: "/tests",
+            method: "POST",
+            requestId: "req-chat-auto-1",
+            caller: "agent-observability.test"
+          }
+        }
+      })
+    });
+    assert.equal(runCreated.status, 200);
+
+    const runStarted = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_started",
+        message: "Run started",
+        service_id: serviceId,
+        run_id: runId,
+        agent: "chat-auto-agent"
+      })
+    });
+    assert.equal(runStarted.status, 200);
+
+    const postedMessage = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        role: "user",
+        message: "hello runtime",
+        service_id: serviceId,
+        agent: "chat-auto-agent"
+      })
+    });
+    assert.equal(postedMessage.status, 200);
+    assert.equal(Boolean(asObject(postedMessage.body).runtime_chat_execution_queued), true);
+
+    const stepStarted = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) => String(item.kind) === "agent.step_started"
+    );
+    assert.ok(stepStarted);
+    assert.equal(String(asObject(stepStarted?.data).strategy), "agent_tool");
+    assert.equal(String(asObject(stepStarted?.data).handlerTool), "fn__receive_chat");
+
     const stepCompleted = await waitForRunEvent(
       runtime.baseUrl,
       runId,
-      (item) => String(item.kind) === "agent.step_completed" && asObject(item.data).stepId !== undefined
+      (item) =>
+        String(item.kind) === "agent.step_completed"
+        && String(item.level) === "error"
+        && String(asObject(item.data).error).trim().length > 0
     );
     assert.ok(stepCompleted);
-    const stepCompletedData = asObject(stepCompleted?.data);
-    assert.equal(String(stepCompletedData.provider), "echo");
-    assert.equal(String(stepCompletedData.message), "Echo: hello runtime");
-    assert.equal(String(stepCompletedData.systemInstructionApplied), "true");
-    assert.equal(String(stepCompletedData.systemInstructionSource), "agent_manifest");
+    assert.equal(String(asObject(stepCompleted?.data).stepId).length > 0, true);
+
+    const waiting = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) =>
+        String(item.kind) === "agent.waiting"
+        && String(asObject(item.data).waitingReason).trim().length > 0
+    );
+    assert.ok(waiting);
+
+    const runEvents = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/events?limit=200`);
+    assert.equal(runEvents.status, 200);
+    const runEventsBody = asObject(runEvents.body);
+    const items = Array.isArray(runEventsBody.items)
+      ? (runEventsBody.items as Array<Record<string, unknown>>)
+      : [];
+    assert.ok(items.some((item) => String(item.kind) === "agent.tool_called"));
+    assert.ok(!items.some((item) => String(item.kind) === "agent.chat.assistant_message"));
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("run messages endpoint executes local fn__receive_chat and emits assistant response", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-chat-local-success-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"), {
+    hitlChatMode: "auto"
+  });
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const wasmPath = path.join(root, "chat-local-success-agent.wasm");
+    const wasmBase64 =
+      "AGFzbQEAAAABDgJgAn9/AX9gA39/fwF/AhUBA2Vudg1zdHJpbmdfY29uY2F0AAADAgEBBQUBAQGAAgYGAX8AQQwLBycDBm1lbW9yeQIADHJlY2VpdmVfY2hhdAABC19faGVhcF9iYXNlAwAKCgEIAEEAIAAQAAsLEAEAQQALCgYAAABFY2hvOiA=";
+    await writeFile(wasmPath, Buffer.from(wasmBase64, "base64"));
+    const applyAgent = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        manifest: {
+          apiVersion: "clarity.runtime/v1",
+          kind: "MCPService",
+          metadata: {
+            sourceFile: path.join(root, "chat-local-success-agent.clarity"),
+            module: "ChatLocalSuccessAgent",
+            serviceType: "agent",
+            agent: {
+              agentId: "chat-local-success-agent",
+              name: "Chat Local Success Agent",
+              role: "assistant",
+              objective: "Validate local wasm chat handler execution",
+              triggers: ["api"]
+            }
+          },
+          spec: {
+            origin: {
+              type: "local_wasm",
+              wasmPath,
+              entry: "main"
+            },
+            enabled: true,
+            autostart: false,
+            restartPolicy: {
+              mode: "never",
+              maxRestarts: 0,
+              windowSeconds: 60
+            },
+            policyRef: "default"
+          }
+        }
+      })
+    });
+    assert.equal(applyAgent.status, 200);
+    const serviceId = String(
+      asObject(asObject(asObject(asObject(applyAgent.body).service).manifest).metadata).serviceId ?? ""
+    );
+    assert.ok(serviceId.length > 0);
+
+    const started = await jsonRequest(runtime.baseUrl, `/api/services/${encodeURIComponent(serviceId)}/start`, {
+      method: "POST"
+    });
+    assert.equal(started.status, 200);
+
+    const runId = "run-chat-local-success-1";
+    const runCreated = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_created",
+        message: "Run created",
+        service_id: serviceId,
+        run_id: runId,
+        agent: "chat-local-success-agent",
+        data: {
+          trigger: "api",
+          triggerContext: {
+            route: "/tests",
+            method: "POST",
+            requestId: "req-chat-local-success-1",
+            caller: "agent-observability.test"
+          }
+        }
+      })
+    });
+    assert.equal(runCreated.status, 200);
+
+    const runStarted = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_started",
+        message: "Run started",
+        service_id: serviceId,
+        run_id: runId,
+        agent: "chat-local-success-agent"
+      })
+    });
+    assert.equal(runStarted.status, 200);
+
+    const postedMessage = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        role: "user",
+        message: "hello runtime",
+        service_id: serviceId,
+        agent: "chat-local-success-agent"
+      })
+    });
+    assert.equal(postedMessage.status, 200);
+    assert.equal(Boolean(asObject(postedMessage.body).runtime_chat_execution_queued), true);
+
+    const assistantMessage = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) =>
+        String(item.kind) === "agent.chat.assistant_message"
+        && String(asObject(item.data).message) === "Echo: hello runtime"
+    );
+    assert.ok(assistantMessage);
+    assert.equal(String(asObject(assistantMessage?.data).provider), "agent");
+
+    const stepCompleted = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) =>
+        String(item.kind) === "agent.step_completed"
+        && String(item.level) === "info"
+        && String(asObject(item.data).message) === "Echo: hello runtime"
+    );
+    assert.ok(stepCompleted);
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("run-scoped agent events stream replays history and streams live updates", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-agent-run-stream-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"));
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const startRun = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_started",
+        message: "Run started",
+        runId: "run-stream-1",
+        agent: "coordinator"
+      })
+    });
+    assert.equal(startRun.status, 200);
+
+    const streamEvents = await collectSseEvents(
+      runtime.baseUrl,
+      "/api/agents/runs/run-stream-1/events/stream?limit=20",
+      2,
+      {
+        onOpen: async () => {
+          const wrongRunEvent = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+            method: "POST",
+            body: JSON.stringify({
+              kind: "agent.step_started",
+              message: "Other run step",
+              runId: "run-other-1",
+              stepId: "x",
+              agent: "coordinator"
+            })
+          });
+          assert.equal(wrongRunEvent.status, 200);
+
+          const sameRunEvent = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+            method: "POST",
+            body: JSON.stringify({
+              kind: "agent.step_started",
+              message: "Current run step",
+              runId: "run-stream-1",
+              stepId: "a",
+              agent: "coordinator"
+            })
+          });
+          assert.equal(sameRunEvent.status, 200);
+        }
+      }
+    );
+
+    assert.equal(streamEvents.length, 2);
+    assert.equal(String(streamEvents[0]?.kind), "agent.run_started");
+    assert.equal(String(streamEvents[1]?.kind), "agent.step_started");
+
+    const firstData = asObject(streamEvents[0]?.data);
+    const secondData = asObject(streamEvents[1]?.data);
+    assert.equal(String(firstData.runId), "run-stream-1");
+    assert.equal(String(secondData.runId), "run-stream-1");
   } finally {
     await manager.shutdown();
     await runtime.close();

@@ -1,4 +1,4 @@
-# Runtime Agent Chat Interface Requirements
+# Runtime HITL Chat Executor Requirements
 
 Status: Draft  
 Owner: `LLM-runtime`  
@@ -6,43 +6,44 @@ Related: `LLM-cli` runtime-chat bridge (`docs/runtime-agent-chat-spec.md` in `LL
 
 ## Problem
 
-HITL and chat are distinct concepts. `POST /api/agents/runs/:runId/hitl` is reserved for explicit human override/injection flows, while interactive operator chat needs a dedicated run-scoped message interface.
+`POST /api/agents/runs/:runId/messages` records run-scoped chat input, but a response depends on additional `agent.*` events being produced for the same run. Without a runtime-side executor loop, CLI users can send input but do not see replies.
 
 ## Goal
 
-When runtime receives run-scoped chat messages, it must enqueue asynchronous processing and emit response events so operator clients can continue an interactive session on one run timeline.
+When runtime receives run-scoped chat input, it must enqueue asynchronous processing and emit response events so operator clients can continue an interactive session on one run timeline.
 
 ## Functional Requirements
 
 1. `POST /api/agents/runs/:runId/messages` must enqueue runtime chat execution for `role=user` after input is persisted.
 2. Execution must preserve request latency: endpoint returns immediately (`200`) while processing continues asynchronously.
 3. Runtime must emit canonical run events for each processed message:
-   - `agent.chat.user_message` (ingested request)
-   - `agent.chat.assistant_message` (generated reply)
    - `agent.step_started`
    - optional `agent.llm_called` (when an LLM provider is used)
+   - `agent.chat.assistant_message` with reply text in `data.message`
    - `agent.step_completed` with response text in `data.message`
    - `agent.waiting` with `data.waitingReason="awaiting operator input"` for the next turn
 4. All emitted events must include `data.runId` so `/api/agents/runs/:runId/events*` and CLI filtering remain compatible.
 5. Processing must be serialized per run (`runId`) to keep response order deterministic.
 6. Runtime must keep the run non-terminal between turns (do not auto-complete after each reply).
 
-## Provider/Mode Requirements
+## Dispatch/Mode Requirements
 
 1. Runtime must support a deterministic fallback mode for local/dev operation:
    - `echo` mode returns `Echo: <input>` without external dependencies.
-2. Runtime must support an `auto` mode that can use OpenAI Responses API when:
-   - agent metadata declares OpenAI provider intent (`allowedLlmProviders` or `llmProviders` includes `openai`)
-   - OpenAI API key is configured.
-3. Runtime must support a `disabled` mode that preserves existing ingest-only behavior for chat execution.
-4. Mode is configured via `CLARITY_HITL_CHAT_MODE`:
-   - `auto` (default)
-   - `echo`
-   - `disabled`
-5. OpenAI runtime knobs:
-   - `CLARITY_HITL_OPENAI_MODEL` (default `gpt-4.1-mini`)
-   - `CLARITY_HITL_OPENAI_TIMEOUT_MS` (default `20000`)
-   - API key from `OPENAI_API_KEY` (or `CLARITY_HITL_OPENAI_API_KEY`)
+2. Runtime must support an `auto` mode that dispatches to an agent-owned handler tool:
+   - default handler for local wasm agents: `fn__receive_chat`
+   - default handler for remote MCP agents: `receive_chat`
+   - per-agent override: `metadata.agent.chat.handlerTool`
+3. Runtime must not perform provider HTTP calls directly in `auto` mode; provider access belongs to the agent implementation.
+4. Runtime must support a `disabled` mode that preserves ingest-only behavior.
+5. Mode can be configured globally and overridden per agent:
+   - global default: `CLARITY_HITL_CHAT_MODE` (`auto` default, `echo`, `disabled`)
+   - per-agent override: `metadata.agent.chat.mode`
+6. Provider/model/key settings may still be declared per agent for agent-owned execution:
+   - `metadata.agent.chat.provider`
+   - `metadata.agent.chat.model`
+   - `metadata.agent.chat.apiKeyEnv`
+   - `metadata.agent.chat.timeoutMs`
 
 ## Non-Goals (This Increment)
 
@@ -59,4 +60,4 @@ When runtime receives run-scoped chat messages, it must enqueue asynchronous pro
 
 ## Backlog
 
-- `RUNTIME-CHAT-CLARITY-001`: Replace TypeScript runtime chat executor with native Clarity orchestration once language/runtime primitives are ready.
+- `RUNTIME-HITL-CLARITY-001`: Replace TypeScript runtime chat executor with native Clarity orchestration once language/runtime primitives are ready.

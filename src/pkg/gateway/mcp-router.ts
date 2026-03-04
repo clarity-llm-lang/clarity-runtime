@@ -604,6 +604,30 @@ function defaultAgentA2AProfile(): NonNullable<AgentDescriptor["a2a"]> {
   };
 }
 
+function asAgentChatProfile(input: unknown): NonNullable<AgentDescriptor["chat"]> | undefined {
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+  const obj = input as Record<string, unknown>;
+  const modeRaw = asString(obj.mode)?.toLowerCase();
+  const mode = modeRaw === "auto" || modeRaw === "echo" || modeRaw === "disabled" ? modeRaw : undefined;
+  const providerRaw = asString(obj.provider)?.toLowerCase();
+  const provider = providerRaw === "openai" || providerRaw === "echo" ? providerRaw : undefined;
+  const handlerTool = asString(obj.handler_tool ?? obj.handlerTool);
+  const model = asString(obj.model);
+  const apiKeyEnv = asString(obj.api_key_env ?? obj.apiKeyEnv);
+  const timeoutMs = asIntegerMin(obj.timeout_ms ?? obj.timeoutMs, 1_000);
+  const out: NonNullable<AgentDescriptor["chat"]> = {
+    ...(mode ? { mode } : {}),
+    ...(provider ? { provider } : {}),
+    ...(handlerTool ? { handlerTool } : {}),
+    ...(model ? { model } : {}),
+    ...(apiKeyEnv ? { apiKeyEnv } : {}),
+    ...(timeoutMs ? { timeoutMs } : {})
+  };
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function asAgentDescriptor(input: unknown): AgentDescriptor | undefined {
   if (!input || typeof input !== "object") {
     return undefined;
@@ -632,6 +656,8 @@ function asAgentDescriptor(input: unknown): AgentDescriptor | undefined {
     ...(asStringList(obj.outputs) ? { outputs: asStringList(obj.outputs)! } : {}),
     ...(asStringList(obj.allowed_mcp_tools ?? obj.allowedMcpTools) ? { allowedMcpTools: asStringList(obj.allowed_mcp_tools ?? obj.allowedMcpTools)! } : {}),
     ...(asStringList(obj.allowed_llm_providers ?? obj.allowedLlmProviders) ? { allowedLlmProviders: asStringList(obj.allowed_llm_providers ?? obj.allowedLlmProviders)! } : {}),
+    ...(asStringList(obj.llm_providers ?? obj.llmProviders) ? { llmProviders: asStringList(obj.llm_providers ?? obj.llmProviders)! } : {}),
+    ...(asAgentChatProfile(obj.chat) ? { chat: asAgentChatProfile(obj.chat)! } : {}),
     ...(asStringList(obj.handoff_targets ?? obj.handoffTargets) ? { handoffTargets: asStringList(obj.handoff_targets ?? obj.handoffTargets)! } : {}),
     ...(asStringList(obj.depends_on ?? obj.dependsOn) ? { dependsOn: asStringList(obj.depends_on ?? obj.dependsOn)! } : {}),
     ...(asString(obj.version) ? { version: asString(obj.version)! } : {})
