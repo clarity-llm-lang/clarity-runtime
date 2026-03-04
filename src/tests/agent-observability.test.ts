@@ -432,7 +432,6 @@ test("agent HTTP endpoints accept events and return run timeline", async () => {
   }
 });
 
-test("run chat messages endpoint queues runtime chat executor response events", async () => {
 test("run messages endpoint queues runtime chat executor response events", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-hitl-chat-http-"));
   const registry = new ServiceRegistry(path.join(root, "registry.json"));
@@ -531,28 +530,15 @@ test("run messages endpoint queues runtime chat executor response events", async
     });
     assert.equal(runStarted.status, 200);
 
-    const messageIn = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/messages`, {
     const postedMessage = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/messages`, {
       method: "POST",
       body: JSON.stringify({
         role: "user",
         message: "hello runtime",
         service_id: serviceId,
-        agent: "chat-agent",
-        role: "user"
+        agent: "chat-agent"
       })
     });
-    assert.equal(messageIn.status, 200);
-    assert.equal(String(asObject(messageIn.body).kind), "agent.chat.user_message");
-    assert.equal(Boolean(asObject(messageIn.body).runtime_chat_execution_queued), true);
-
-    const assistantMessage = await waitForRunEvent(
-      runtime.baseUrl,
-      runId,
-      (item) => String(item.kind) === "agent.chat.assistant_message"
-    );
-    assert.ok(assistantMessage);
-    assert.equal(String(asObject(assistantMessage?.data).message), "Echo: hello runtime");
     assert.equal(postedMessage.status, 200);
     const postedMessageBody = asObject(postedMessage.body);
     assert.equal(String(postedMessageBody.kind), "agent.chat.user_message");
@@ -871,77 +857,6 @@ test("run messages endpoint applies manifest-level agent instruction when no run
     assert.equal(String(stepCompletedData.message), "Echo: hello runtime");
     assert.equal(String(stepCompletedData.systemInstructionApplied), "true");
     assert.equal(String(stepCompletedData.systemInstructionSource), "agent_manifest");
-  } finally {
-    await manager.shutdown();
-    await runtime.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("run-scoped agent events stream replays history and streams live updates", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-agent-run-stream-http-"));
-  const registry = new ServiceRegistry(path.join(root, "registry.json"));
-  await registry.init();
-  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"));
-  await manager.init();
-  const authConfig: AuthConfig = {
-    enforceLoopbackWhenNoToken: true
-  };
-  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
-
-  try {
-    const startRun = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
-      method: "POST",
-      body: JSON.stringify({
-        kind: "agent.run_started",
-        message: "Run started",
-        runId: "run-stream-1",
-        agent: "coordinator"
-      })
-    });
-    assert.equal(startRun.status, 200);
-
-    const streamEvents = await collectSseEvents(
-      runtime.baseUrl,
-      "/api/agents/runs/run-stream-1/events/stream?limit=20",
-      2,
-      {
-        onOpen: async () => {
-          const wrongRunEvent = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
-            method: "POST",
-            body: JSON.stringify({
-              kind: "agent.step_started",
-              message: "Other run step",
-              runId: "run-other-1",
-              stepId: "x",
-              agent: "coordinator"
-            })
-          });
-          assert.equal(wrongRunEvent.status, 200);
-
-          const sameRunEvent = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
-            method: "POST",
-            body: JSON.stringify({
-              kind: "agent.step_started",
-              message: "Current run step",
-              runId: "run-stream-1",
-              stepId: "a",
-              agent: "coordinator"
-            })
-          });
-          assert.equal(sameRunEvent.status, 200);
-        }
-      }
-    );
-
-    assert.equal(streamEvents.length, 2);
-    assert.equal(String(streamEvents[0]?.kind), "agent.run_started");
-    assert.equal(String(streamEvents[1]?.kind), "agent.step_started");
-
-    const firstData = asObject(streamEvents[0]?.data);
-    const secondData = asObject(streamEvents[1]?.data);
-    assert.equal(String(firstData.runId), "run-stream-1");
-    assert.equal(String(secondData.runId), "run-stream-1");
   } finally {
     await manager.shutdown();
     await runtime.close();

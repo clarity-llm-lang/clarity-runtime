@@ -1019,15 +1019,6 @@ export class ServiceManager {
     serviceId?: string;
     agent?: string;
   }): boolean {
-    return this.queueRuntimeHitlInput(input);
-  }
-
-  queueRuntimeHitlInput(input: {
-    runId: string;
-    message: string;
-    serviceId?: string;
-    agent?: string;
-  }): boolean {
     if (this.hitlChatMode === "disabled") {
       return false;
     }
@@ -1073,8 +1064,8 @@ export class ServiceManager {
     message: string;
     serviceId?: string;
     agent?: string;
-  }): void {
-    this.queueRuntimeChatMessage(input);
+  }): boolean {
+    return this.queueRuntimeChatMessage(input);
   }
 
   async shutdown(): Promise<void> {
@@ -1631,8 +1622,6 @@ export class ServiceManager {
         agent,
         stepId,
         source: "runtime_chat_executor",
-        inputLength: operatorMessage.length
-        source: "runtime_hitl_executor",
         inputLength: operatorMessage.length,
         systemInstructionApplied: Boolean(systemInstruction),
         systemInstructionSource
@@ -1673,20 +1662,20 @@ export class ServiceManager {
         kind: "agent.chat.assistant_message",
         serviceId,
         level: "info",
-        message: `Assistant response (${runId})`,
         message: `Assistant message emitted (${runId})`,
         data: {
           runId,
           ...(serviceId ? { serviceId } : {}),
           agent,
-          role: "assistant",
           stepId,
           role: "assistant",
-          source: "runtime_hitl_executor",
+          source: "runtime_chat_executor",
           channel: "runtime_chat",
           provider,
           ...(provider === "openai" ? { model: this.hitlOpenAiModel } : {}),
           ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
+          systemInstructionApplied: Boolean(systemInstruction),
+          systemInstructionSource,
           message: reply
         }
       });

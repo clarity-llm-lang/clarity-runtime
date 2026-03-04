@@ -100,13 +100,6 @@ const FAVICON_PNG_PATH = path.resolve(
 );
 const DEFAULT_HITL_EVENT_KIND = "agent.hitl_input";
 const CHAT_MESSAGE_ROLES = ["user", "assistant", "system"] as const;
-const AGENT_CHAT_EVENT_KINDS = {
-  user: "agent.chat.user_message",
-  assistant: "agent.chat.assistant_message",
-  system: "agent.chat.system_message"
-} as const;
-type AgentChatRole = keyof typeof AGENT_CHAT_EVENT_KINDS;
-const DEFAULT_AGENT_CHAT_ROLE: AgentChatRole = "user";
 const HITL_MAX_MESSAGE_CHARS = parsePositiveIntegerEnv(process.env.CLARITY_HITL_MAX_MESSAGE_CHARS, 2000);
 const FORMAL_A2A_PROTOCOL = "clarity.a2a.v1";
 const FORMAL_A2A_MESSAGE_KINDS = [
@@ -401,12 +394,6 @@ function chatMessageKindForRole(role: ChatMessageRole): string {
     return "agent.chat.system_message";
   }
   return "agent.chat.user_message";
-function normalizeAgentChatRole(value: unknown): AgentChatRole | null {
-  const role = nonEmptyString(value)?.toLowerCase();
-  if (role === "user" || role === "assistant" || role === "system") {
-    return role;
-  }
-  return null;
 }
 
 function getField(data: Record<string, unknown>, key: string): unknown {
@@ -1082,10 +1069,6 @@ export async function handleHttp(
       }
 
       const context = buildMcpRequestContext(req, url, message as JsonRpcRequest);
-      const routerHandle = (mcpRouter as unknown as {
-        handle: (request: JsonRpcRequest, requestContext?: unknown) => Promise<unknown>;
-      }).handle;
-      const response = await routerHandle.call(mcpRouter, message as JsonRpcRequest, context);
       const response = await mcpRouter.handle(message as JsonRpcRequest, context);
       if (!response) {
         res.statusCode = 202;
@@ -1232,24 +1215,11 @@ export async function handleHttp(
       const limit = parseLimit(url.searchParams.get("limit"), 200, 1, 5000);
       const runId = nonEmptyString(url.searchParams.get("run_id"));
       const traceId = nonEmptyString(url.searchParams.get("trace_id"));
-      const traceReader = mcpRouter as unknown as {
-        getTraceSpans?: (
-          limit: number,
-          filters: { runId?: string; traceId?: string }
-        ) => unknown[];
-      };
-      json(res, 200, {
-        items: traceReader.getTraceSpans
-          ? traceReader.getTraceSpans(limit, {
-              ...(runId ? { runId } : {}),
-              ...(traceId ? { traceId } : {})
-            })
-          : []
       json(res, 200, {
         items: mcpRouter.getTraceSpans(limit, {
-            ...(runId ? { runId } : {}),
-            ...(traceId ? { traceId } : {})
-          })
+          ...(runId ? { runId } : {}),
+          ...(traceId ? { traceId } : {})
+        })
       });
       return;
     }
@@ -1257,14 +1227,7 @@ export async function handleHttp(
     if (method === "GET" && url.pathname === "/api/costs/runs") {
       const limit = parseLimit(url.searchParams.get("limit"), 200, 1, 2000);
       const runId = nonEmptyString(url.searchParams.get("run_id")) ?? undefined;
-      const costReader = mcpRouter as unknown as {
-        getRunCostLedgers?: (limit: number, runId?: string) => unknown[];
-      };
-      json(res, 200, {
-        items: costReader.getRunCostLedgers ? costReader.getRunCostLedgers(limit, runId) : []
-      json(res, 200, {
-        items: mcpRouter.getRunCostLedgers(limit, runId)
-      });
+      json(res, 200, { items: mcpRouter.getRunCostLedgers(limit, runId) });
       return;
     }
 
@@ -1468,10 +1431,6 @@ export async function handleHttp(
         serviceId?: unknown;
         agent?: unknown;
         role?: unknown;
-        role?: unknown;
-        service_id?: unknown;
-        serviceId?: unknown;
-        agent?: unknown;
       };
       const message =
         nonEmptyString(body.message) ?? nonEmptyString(body.text) ?? nonEmptyString(body.input);
@@ -1485,12 +1444,6 @@ export async function handleHttp(
         return;
       }
       const kind = chatMessageKindForRole(role);
-      const role = normalizeAgentChatRole(body.role ?? DEFAULT_AGENT_CHAT_ROLE);
-      if (!role) {
-        json(res, 400, { error: "expected role to be one of: user|assistant|system" });
-        return;
-      }
-      const kind = AGENT_CHAT_EVENT_KINDS[role];
       const run = findAgentRun(manager, runId);
       if (run && isTerminalAgentRunStatus(run.status)) {
         json(res, 409, {
@@ -1509,7 +1462,6 @@ export async function handleHttp(
         kind,
         level: "info",
         message: `${role} chat message received (${runId})`,
-        message: `Chat message received (${runId})`,
         serviceId,
         data: {
           runId,
@@ -1526,20 +1478,6 @@ export async function handleHttp(
           submittedAt: new Date().toISOString()
         }
       });
-      const queuedForExecution = role === "user";
-      if (queuedForExecution) {
-        manager.queueRuntimeChatMessage({
-          runId,
-          message: sanitized.message,
-          ...(serviceId ? { serviceId } : {}),
-          ...(agent ? { agent } : {})
-        });
-      }
-          source: "runtime_messages_api",
-          channel: "runtime_chat",
-          submittedAt: new Date().toISOString()
-        }
-      });
       const runtimeChatExecutionQueued = role === "user"
         ? manager.queueRuntimeChatMessage({
             runId,
@@ -1553,7 +1491,6 @@ export async function handleHttp(
         runId,
         role,
         kind,
-        runtime_chat_execution_queued: queuedForExecution,
         runtime_chat_execution_queued: runtimeChatExecutionQueued,
         message_truncated: sanitized.truncated,
         message_redacted: sanitized.redacted,
