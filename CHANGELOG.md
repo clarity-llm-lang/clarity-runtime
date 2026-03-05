@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.8.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.7.0...v0.8.0) (2026-03-04)
+## [0.8.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.7.0...v0.8.0) (2026-03-05)
 
 
 ### Features
