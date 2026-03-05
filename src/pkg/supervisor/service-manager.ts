@@ -47,6 +47,11 @@ function parseFunctionExpectString(args: unknown): boolean {
   return payload.expectStringResult === true || payload.expect_string_result === true;
 }
 
+function parseFunctionAllowStringArgs(args: unknown): boolean {
+  const payload = asObject(args);
+  return payload.allowStringArgs === true || payload.allow_string_args === true;
+}
+
 function parseAllowedHosts(value: string | undefined): Set<string> | null {
   if (!value) return null;
   const hosts = value
@@ -723,7 +728,8 @@ export class ServiceManager {
         const functionName = toolName.slice("fn__".length);
         const argsList = parseFunctionArgs(args);
         const output = await this.runLocalFunction(service, functionName, argsList, {
-          expectStringResult: parseFunctionExpectString(args)
+          expectStringResult: parseFunctionExpectString(args),
+          allowStringArgs: parseFunctionAllowStringArgs(args)
         });
         this.appendLog(serviceId, `tools/call ${toolName}(${JSON.stringify(argsList)})`);
         this.emitEvent({
@@ -979,7 +985,7 @@ export class ServiceManager {
     serviceId?: string;
     agent?: string;
   }): boolean {
-    return this.queueRuntimeHitlInput(input);
+    return this.queueRuntimeInput(input, { allowDisabledMode: false });
   }
 
   queueRuntimeHitlInput(input: {
@@ -988,6 +994,20 @@ export class ServiceManager {
     serviceId?: string;
     agent?: string;
   }): boolean {
+    return this.queueRuntimeInput(input, { allowDisabledMode: true });
+  }
+
+  private queueRuntimeInput(
+    input: {
+      runId: string;
+      message: string;
+      serviceId?: string;
+      agent?: string;
+    },
+    options: {
+      allowDisabledMode: boolean;
+    }
+  ): boolean {
     const runId = input.runId.trim();
     if (!runId) {
       return false;
@@ -998,7 +1018,7 @@ export class ServiceManager {
         // Ignore previous failures for this run and continue processing new inputs.
       })
       .then(async () => {
-        await this.processRuntimeHitlInput(input);
+        await this.processRuntimeHitlInput(input, options);
       })
       .catch((error) => {
         const reason = error instanceof Error ? error.message : String(error);
@@ -1322,6 +1342,7 @@ export class ServiceManager {
     argsList: unknown[],
     options?: {
       expectStringResult?: boolean;
+      allowStringArgs?: boolean;
     }
   ): Promise<string> {
     if (service.manifest.spec.origin.type !== "local_wasm") {
@@ -1330,7 +1351,7 @@ export class ServiceManager {
 
     const wasmPath = service.manifest.spec.origin.wasmPath;
     const timeoutMs = parsePositiveInteger(process.env.CLARITY_LOCAL_FN_TIMEOUT_MS) ?? 2_000;
-    const args = this.resolveWasmArgs(argsList);
+    const args = this.resolveWasmArgs(argsList, options?.allowStringArgs === true);
     let lastTypeError: Error | null = null;
 
     for (const candidate of args) {
@@ -1435,7 +1456,7 @@ export class ServiceManager {
     return module;
   }
 
-  private resolveWasmArgs(args: unknown[]): Array<Array<number | bigint | string>> {
+  private resolveWasmArgs(args: unknown[], allowStringArgs = false): Array<Array<number | bigint | string>> {
     const perArg: Array<Array<number | bigint | string>> = args.map((arg) => {
       if (typeof arg === "bigint") {
         const asNumber = Number(arg);
@@ -1454,20 +1475,30 @@ export class ServiceManager {
       }
 
       if (typeof arg === "string") {
-        const out: Array<number | bigint | string> = [arg];
-        if (/^-?\d+$/.test(arg)) {
-          const asNumber = Number(arg);
-          out.push(BigInt(arg));
-          if (Number.isSafeInteger(asNumber)) {
-            out.push(asNumber);
+        if (allowStringArgs) {
+          const out: Array<number | bigint | string> = [arg];
+          if (/^-?\d+$/.test(arg)) {
+            const asNumber = Number(arg);
+            out.push(BigInt(arg));
+            if (Number.isSafeInteger(asNumber)) {
+              out.push(asNumber);
+            }
+            return out;
+          }
+          if (/^-?\d+\.\d+$/.test(arg)) {
+            out.push(Number(arg));
+            return out;
           }
           return out;
         }
-        if (/^-?\d+\.\d+$/.test(arg)) {
-          out.push(Number(arg));
-          return out;
+        if (/^-?\d+$/.test(arg)) {
+          const asNumber = Number(arg);
+          return Number.isSafeInteger(asNumber) ? [BigInt(arg), asNumber] : [BigInt(arg)];
         }
-        return out;
+        if (/^-?\d+\.\d+$/.test(arg)) {
+          return [Number(arg)];
+        }
+        throw new Error(`unsupported string argument '${arg}' for in-process wasm call`);
       }
 
       throw new Error(`unsupported argument type '${typeof arg}' for in-process wasm call`);
@@ -1557,12 +1588,17 @@ export class ServiceManager {
     }
   }
 
-  private async processRuntimeHitlInput(input: {
-    runId: string;
-    message: string;
-    serviceId?: string;
-    agent?: string;
-  }): Promise<void> {
+  private async processRuntimeHitlInput(
+    input: {
+      runId: string;
+      message: string;
+      serviceId?: string;
+      agent?: string;
+    },
+    options: {
+      allowDisabledMode: boolean;
+    }
+  ): Promise<void> {
     await this.init();
     const runId = input.runId.trim();
     const operatorMessage = input.message.trim();
@@ -1581,24 +1617,32 @@ export class ServiceManager {
       ?? asNonEmptyString(agentMetadata.name)
       ?? "unknown-agent";
     const stepId = `runtime_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const runtimeChat = this.resolveRuntimeHitlConfig(service);
+    let runtimeChat = this.resolveRuntimeHitlConfig(service);
 
     if (runtimeChat.mode === "disabled") {
-      this.emitEvent({
-        kind: "agent.waiting",
-        serviceId,
-        level: "warn",
-        message: `Runtime chat disabled for agent (${runId})`,
-        data: {
-          runId,
-          ...(serviceId ? { serviceId } : {}),
-          agent,
-          reason: "runtime chat disabled by agent configuration",
-          waitingReason: "runtime chat disabled by agent configuration",
-          source: "runtime_hitl_executor"
-        }
-      });
-      return;
+      if (options.allowDisabledMode) {
+        runtimeChat = {
+          ...runtimeChat,
+          mode: "auto",
+          strategy: "agent_tool"
+        };
+      } else {
+        this.emitEvent({
+          kind: "agent.waiting",
+          serviceId,
+          level: "warn",
+          message: `Runtime chat disabled for agent (${runId})`,
+          data: {
+            runId,
+            ...(serviceId ? { serviceId } : {}),
+            agent,
+            reason: "runtime chat disabled by agent configuration",
+            waitingReason: "runtime chat disabled by agent configuration",
+            source: "runtime_hitl_executor"
+          }
+        });
+        return;
+      }
     }
 
     this.emitEvent({
@@ -1765,7 +1809,8 @@ export class ServiceManager {
     if (handlerTool.startsWith("fn__")) {
       return {
         args: [message, sessionId, runId],
-        expectStringResult: true
+        expectStringResult: true,
+        allowStringArgs: true
       };
     }
     return {

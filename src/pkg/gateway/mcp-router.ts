@@ -612,7 +612,7 @@ function asAgentChatProfile(input: unknown): NonNullable<AgentDescriptor["chat"]
   const modeRaw = asString(obj.mode)?.toLowerCase();
   const mode = modeRaw === "auto" || modeRaw === "echo" || modeRaw === "disabled" ? modeRaw : undefined;
   const providerRaw = asString(obj.provider)?.toLowerCase();
-  const provider = providerRaw === "openai" || providerRaw === "echo" ? providerRaw : undefined;
+  const provider = providerRaw === "openai" || providerRaw === "anthropic" || providerRaw === "echo" ? providerRaw : undefined;
   const handlerTool = asString(obj.handler_tool ?? obj.handlerTool);
   const model = asString(obj.model);
   const apiKeyEnv = asString(obj.api_key_env ?? obj.apiKeyEnv);
