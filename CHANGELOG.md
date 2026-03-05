@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.8.0...v0.8.1) (2026-03-05)
+
+
+### Bug Fixes
+
+* **runtime:** keep HITL active when chat mode disabled ([715bc47](https://github.com/clarity-llm-lang/clarity-runtime/commit/715bc47a41cfbec04b282c614ae8e3c86ffdb959))
+
 ## [0.8.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.7.0...v0.8.0) (2026-03-05)
 
 
