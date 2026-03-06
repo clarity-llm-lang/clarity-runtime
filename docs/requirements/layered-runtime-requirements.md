@@ -42,7 +42,7 @@ Execution order for larger runtime initiatives. The goal is to deliver each laye
   - safe handling for active/in-flight services
 
 ## Layer 6: Native Compiler Entry Path (`clarityc start`)
-- Status: Planned (cross-repo with `LLM-lang`)
+- Status: In progress (cross-repo with `LLM-lang`)
 - Scope:
   - native compiler command that boots runtime flows
   - compatibility contract between compiler/runtime
@@ -55,7 +55,7 @@ Execution order for larger runtime initiatives. The goal is to deliver each laye
   - expose agent run + timeline APIs (`/api/agents/*`)
   - split control-plane UX into `MCP` and `Agents` tabs
 - Remaining:
-  - language runtime integration for automatic event emission from `std/a2a`/`std/mcp`
+  - cross-repo end-to-end coverage for language-emitted `agent.*` event flow (`std/a2a`/`std/mcp`)
   - policy knobs for per-kind retention and redaction
 
 ## Layer 8: Clarity Onboarding Guardrails
@@ -87,7 +87,7 @@ Execution order for larger runtime initiatives. The goal is to deliver each laye
   - `docs/requirements/local-wasm-agent-parity-requirements.md`
 
 ## Layer 10: Cross-Project Alignment Hardening (New)
-- Status: Planned
+- Status: In progress
 - Scope:
   - Architecture
     - Replace TypeScript runtime chat execution bridge with native Clarity orchestration (`RUNTIME-HITL-CLARITY-001`).
@@ -111,6 +111,10 @@ Execution order for larger runtime initiatives. The goal is to deliver each laye
   - Repository `LICENSE` file added.
   - `package.json` now declares `license: "MIT"`.
   - README includes a runtime artifact license metadata policy note.
+  - Registration surfaces now accept explicit remote transport selection (`streamable_http` or `sse_http`) via MCP runtime tools and `clarityctl add-remote --transport`.
+  - Runtime status summaries now expose split local/remote counts for both MCP and agent service classes (`local_mcp`, `remote_mcp`, `local_agent`, `remote_agent`; HTTP camelCase equivalents).
+  - Query-token auth path is restricted to loopback SSE endpoints only (`/events`, `/api/events`), with header auth required elsewhere; status UI strips `?token=` from browser URL after capture.
+  - Runtime docs synchronized with `LLM-lang` status for shared initiatives (`clarityc start` cross-repo state, A2A/event-integration wording).
 - Acceptance criteria:
   - Register flows can select transport without manifest hand-editing.
   - Status summaries expose separate local/remote counts for MCP and agent service classes.

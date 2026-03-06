@@ -24,7 +24,7 @@
 - `GET /status`: status page UI.
 - `GET /mcp`: gateway metadata.
 - `POST /mcp`: MCP JSON-RPC endpoint.
-- `GET /api/status`: full runtime summary.
+- `GET /api/status`: full runtime summary (includes split class/origin counts: `localMcp`, `remoteMcp`, `localAgent`, `remoteAgent`; legacy aliases `local`/`remote` remain MCP-only).
 - `GET /api/services`: service summaries.
 - `GET /api/audit?limit=200`: recent audit/event records.
 - `GET /api/agents/registry`: registered agent services (agent metadata + runtime state only).
@@ -51,9 +51,15 @@
 - `DELETE /api/bootstrap`: remove Codex/Claude `clarity_gateway` registration.
 - `GET /api/bootstrap/status`: read Codex/Claude bootstrap configuration status and file paths.
 
+## Auth
+
+- When `CLARITYD_AUTH_TOKEN` is configured, protected runtime endpoints require either `Authorization: Bearer <token>` or `x-clarity-token`.
+- Query-token auth (`?token=<token>`) is intentionally limited to loopback SSE endpoints (`/events`, `/api/events`) for browser `EventSource` compatibility.
+
 ## Built-in MCP Control Tools
 
 - `runtime__status_summary`
+  - returns split class/origin counts: `local_mcp`, `remote_mcp`, `local_agent`, `remote_agent` (legacy aliases `local`/`remote` remain MCP-only).
 - `runtime__list_services`
 - `runtime__get_service`
 - `runtime__get_logs`
@@ -96,6 +102,7 @@
 - `apiVersion`: `clarity.runtime/v1`.
 - `kind`: `MCPService`.
 - `origin.type`: `local_wasm` or `remote_mcp`.
+- `remote_mcp.transport`: transport selector (`streamable_http` default, `sse_http` optional).
 - `remote_mcp.timeoutMs`: optional per-service timeout.
 - `remote_mcp.allowedTools`: optional per-service tool allowlist.
 - `remote_mcp.authRef`: optional auth reference with provider syntax.
@@ -159,7 +166,7 @@ When runtime chat dispatch runs in `auto` mode, handlers always receive:
 
 - `clarityctl add <service>`
 - `clarityctl add-all [dir] [--recursive]`
-- `clarityctl add-remote --endpoint ... --module ... [--timeout-ms ...] [--allow-tools ...] [--max-payload-bytes ...] [--max-concurrency ...]`
+- `clarityctl add-remote --endpoint ... --module ... [--transport streamable_http|sse_http] [--timeout-ms ...] [--allow-tools ...] [--max-payload-bytes ...] [--max-concurrency ...]`
 - `clarityctl list|status|start|stop|restart|introspect|details|logs|bootstrap|bootstrap-remove|doctor` (`bootstrap` supports stdio/http client config plus optional `--update-agents-md`; `bootstrap-remove` removes client registrations; `doctor` checks daemon, compiler, workspace)
 - `clarityctl gateway serve --stdio`
 
@@ -214,5 +221,5 @@ When runtime chat dispatch runs in `auto` mode, handlers always receive:
 ## Planned Next
 
 - Add stricter auth isolation controls for remote services.
-- Integrate language-side orchestration (`std/a2a`, `std/mcp`) with runtime agent event ingestion APIs.
 - Replace runtime chat dispatch bridge with native Clarity orchestration once language/runtime primitives can execute chat handlers without adapter shims.
+- Extend control-plane authorization beyond shared bearer token semantics (action-scoped write controls).

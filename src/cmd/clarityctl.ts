@@ -85,6 +85,7 @@ function localManifest(input: {
 function remoteManifest(input: {
   endpoint: string;
   module: string;
+  transport?: "streamable_http" | "sse_http";
   displayName?: string;
   serviceType?: "mcp" | "agent";
   agent?: AgentDescriptor;
@@ -109,7 +110,7 @@ function remoteManifest(input: {
       origin: {
         type: "remote_mcp",
         endpoint: input.endpoint,
-        transport: "streamable_http",
+        transport: input.transport ?? "streamable_http",
         ...(input.authRef ? { authRef: input.authRef } : {}),
         ...(typeof input.timeoutMs === "number" ? { timeoutMs: input.timeoutMs } : {}),
         ...(input.allowedTools && input.allowedTools.length > 0 ? { allowedTools: input.allowedTools } : {}),
@@ -279,6 +280,17 @@ function parseServiceType(value: unknown): "mcp" | "agent" | undefined {
     return normalized;
   }
   throw new Error("invalid --service-type: expected 'mcp' or 'agent'");
+}
+
+function parseRemoteTransport(value: unknown): "streamable_http" | "sse_http" | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "streamable_http" || normalized === "sse_http") {
+    return normalized;
+  }
+  throw new Error("invalid --transport: expected 'streamable_http' or 'sse_http'");
 }
 
 function parseCsvList(value: unknown): string[] | undefined {
@@ -652,6 +664,7 @@ program
   .option("--agent-depends-on <items>", "Comma-separated upstream dependencies (service-type=agent)")
   .option("--agent-version <version>", "Agent descriptor version")
   .option("--auth-ref <name>", "Auth secret reference name (resolved from env)")
+  .option("--transport <mode>", "Remote transport: streamable_http | sse_http", "streamable_http")
   .option("--timeout-ms <ms>", "Remote request timeout in milliseconds")
   .option("--allow-tools <items>", "Comma-separated remote tool allowlist (optional)")
   .option("--max-payload-bytes <bytes>", "Max response/request payload bytes for this remote service")
@@ -661,6 +674,7 @@ program
     const timeoutMs = opts.timeoutMs !== undefined ? Number(opts.timeoutMs) : undefined;
     const maxPayloadBytes = opts.maxPayloadBytes !== undefined ? Number(opts.maxPayloadBytes) : undefined;
     const maxConcurrency = opts.maxConcurrency !== undefined ? Number(opts.maxConcurrency) : undefined;
+    const transport = parseRemoteTransport(opts.transport) ?? "streamable_http";
     const allowedTools = opts.allowTools
       ? String(opts.allowTools).split(",").map((s) => s.trim()).filter(Boolean)
       : undefined;
@@ -668,6 +682,7 @@ program
     const manifest = remoteManifest({
       endpoint: opts.endpoint,
       module: opts.module,
+      transport,
       displayName: opts.name,
       serviceType,
       agent: buildAgentDescriptorFromOpts(serviceType, opts as Record<string, unknown>, opts.module, opts.name),

@@ -1142,6 +1142,10 @@ export async function handleHttp(
       const agentRuns = manager.getAgentRuns(500);
       const listen =
         req.headers.host && req.headers.host.length > 0 ? req.headers.host : "localhost:4707";
+      const localMcp = services.filter((s) => s.originType === "local_wasm" && s.serviceType === "mcp").length;
+      const remoteMcp = services.filter((s) => s.originType === "remote_mcp" && s.serviceType === "mcp").length;
+      const localAgent = services.filter((s) => s.originType === "local_wasm" && s.serviceType === "agent").length;
+      const remoteAgent = services.filter((s) => s.originType === "remote_mcp" && s.serviceType === "agent").length;
       const summary = {
         total: services.length,
         mcpServices: services.filter((s) => s.serviceType === "mcp").length,
@@ -1155,10 +1159,13 @@ export async function handleHttp(
         stopped: services.filter((s) => s.lifecycle === "STOPPED" || s.lifecycle === "REGISTERED")
           .length,
         quarantined: services.filter((s) => s.lifecycle === "QUARANTINED").length,
-        local: services.filter((s) => s.originType === "local_wasm" && s.serviceType === "mcp")
-          .length,
-        remote: services.filter((s) => s.originType === "remote_mcp" && s.serviceType === "mcp")
-          .length
+        localMcp,
+        remoteMcp,
+        localAgent,
+        remoteAgent,
+        // Backward-compatible aliases preserved for older clients.
+        local: localMcp,
+        remote: remoteMcp
       };
       const agentSummary = {
         totalRuns: agentRuns.length,

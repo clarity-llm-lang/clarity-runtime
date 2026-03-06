@@ -113,7 +113,7 @@ When auth is enabled, pass `--auth-token <token>` to `clarityctl` (or set `CLARI
 ```bash
 clarityctl add <service_or_source_path>
 clarityctl add-all [dir] [--recursive]
-clarityctl add-remote --endpoint <url> --module <name> [--auth-ref <name>] [--timeout-ms <ms>] [--allow-tools <a,b,c>] [--max-payload-bytes <bytes>] [--max-concurrency <n>]
+clarityctl add-remote --endpoint <url> --module <name> [--transport streamable_http|sse_http] [--auth-ref <name>] [--timeout-ms <ms>] [--allow-tools <a,b,c>] [--max-payload-bytes <bytes>] [--max-concurrency <n>]
 clarityctl list
 clarityctl status
 clarityctl start <service_id>
@@ -171,7 +171,7 @@ Implemented for v0.9 baseline:
 Not implemented yet:
 
 - remote auth/policy isolation hardening for stricter multi-tenant trust boundaries
-- language-level A2A effect/module integration (`std/a2a`) emitting runtime orchestration events by default
+- native Clarity orchestration replacement for the runtime TypeScript chat executor bridge (`RUNTIME-HITL-CLARITY-001`)
 
 ---
 
@@ -198,7 +198,7 @@ Not implemented yet:
 | Compiler-driven onboarding     | In progress     | Runtime side done; `clarityc start` exists in `LLM-lang` and delegates to `clarityctl add`; keep cross-repo contract/version alignment                                                                                              |
 | Local function execution       | Done (baseline) | `<namespace>__fn__*` tools discovered from wasm exports and executed via compiler runtime                                                                                                                                           |
 | In-process WASM host execution | Done            | Local function tools execute directly via wasm instantiate/call in runtime                                                                                                                                                          |
-| Auth/policy hardening          | In progress     | Timeout/allowed-tools/payload-size/concurrency/host-allowlist baseline implemented; auth provider backend (`legacy env`, `env`, `file`, `header_env`) + validation/secret lifecycle tools added; isolation policy hardening pending |
+| Auth/policy hardening          | In progress     | Timeout/allowed-tools/payload-size/concurrency/host-allowlist baseline implemented; auth provider backend (`legacy env`, `env`, `file`, `header_env`) + validation/secret lifecycle tools added; query-token auth path now restricted to local SSE only; isolation policy hardening pending |
 | MCP self-provisioning          | Done (gated)    | `runtime__register_local`, `runtime__register_remote`, `runtime__apply_manifest` behind `CLARITY_ENABLE_MCP_PROVISIONING=1`                                                                                                         |
 | Durable audit/log persistence  | Done            | Events + service logs persisted to `.clarity/runtime/telemetry.json` and reloaded on daemon boot                                                                                                                                    |
 | Agent observability            | Done (baseline) | `agent.*` event persistence, `/api/agents/*` APIs, and status UI `Agents` tab for run/timeline visibility                                                                                                                           |
@@ -218,6 +218,7 @@ Not implemented yet:
 ## Remote Policy Knobs
 
 - `add-remote --timeout-ms <ms>`: set per-service remote request timeout.
+- `add-remote --transport <streamable_http|sse_http>`: select remote MCP transport without manifest hand edits.
 - `add-remote --allow-tools <tool_a,tool_b>`: restrict callable remote tools.
 - `add-remote --max-payload-bytes <bytes>`: set max request/response payload bytes per remote service.
 - `add-remote --max-concurrency <n>`: set max concurrent in-flight remote requests per service.
@@ -247,9 +248,10 @@ Not implemented yet:
 
 ## Security Defaults
 
-- If `CLARITYD_AUTH_TOKEN` is set, all `/api/*` and `/mcp` requests require that token via `Authorization: Bearer <token>` or `x-clarity-token`.
+- If `CLARITYD_AUTH_TOKEN` is set, protected control endpoints require the token via `Authorization: Bearer <token>` or `x-clarity-token`.
 - If no token is set, runtime APIs are limited to loopback callers only.
-- Status UI accepts `?token=<token>` for local browser sessions when token auth is enabled.
+- Query-token auth (`?token=<token>`) is restricted to local loopback SSE endpoints (`/events`, `/api/events`) for browser `EventSource` compatibility only.
+- Status UI can still be opened with `?token=<token>`; the page stores the token in local storage, removes it from the URL, and uses header auth for API calls.
 
 ## Audit And Events
 

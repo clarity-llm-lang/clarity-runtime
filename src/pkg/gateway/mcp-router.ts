@@ -466,6 +466,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
         service_type: { enum: ["mcp", "agent"] },
         agent_descriptor: { type: "object" },
         auth_ref: { type: "string" },
+        transport: { enum: ["streamable_http", "sse_http"] },
         timeout_ms: { type: "integer", minimum: 1 },
         max_payload_bytes: { type: "integer", minimum: 1024 },
         max_concurrency: { type: "integer", minimum: 1 },
@@ -492,6 +493,7 @@ const RUNTIME_TOOLS: RuntimeToolDef[] = [
         service_type: { enum: ["mcp", "agent"] },
         agent_descriptor: { type: "object" },
         auth_ref: { type: "string" },
+        transport: { enum: ["streamable_http", "sse_http"] },
         timeout_ms: { type: "integer", minimum: 1 },
         max_payload_bytes: { type: "integer", minimum: 1024 },
         max_concurrency: { type: "integer", minimum: 1 },
@@ -554,6 +556,13 @@ function asStringList(input: unknown): string[] | undefined {
 
 function asServiceType(input: unknown): "mcp" | "agent" | undefined {
   if (input === "mcp" || input === "agent") {
+    return input;
+  }
+  return undefined;
+}
+
+function asRemoteTransport(input: unknown): "streamable_http" | "sse_http" | undefined {
+  if (input === "streamable_http" || input === "sse_http") {
     return input;
   }
   return undefined;
@@ -1293,6 +1302,10 @@ export class McpRouter {
     if (name === "runtime__status_summary") {
       const services = await this.manager.list();
       const typed = services.map((s) => summarizeService(s));
+      const localMcp = typed.filter((s) => s.origin_type === "local_wasm" && s.service_type === "mcp").length;
+      const remoteMcp = typed.filter((s) => s.origin_type === "remote_mcp" && s.service_type === "mcp").length;
+      const localAgent = typed.filter((s) => s.origin_type === "local_wasm" && s.service_type === "agent").length;
+      const remoteAgent = typed.filter((s) => s.origin_type === "remote_mcp" && s.service_type === "agent").length;
       return contentJson({
         total: services.length,
         mcp_services: typed.filter((s) => s.service_type === "mcp").length,
@@ -1303,8 +1316,13 @@ export class McpRouter {
         degraded: services.filter((s) => s.runtime.health === "DEGRADED").length,
         stopped: services.filter((s) => s.runtime.lifecycle === "STOPPED" || s.runtime.lifecycle === "REGISTERED").length,
         quarantined: services.filter((s) => s.runtime.lifecycle === "QUARANTINED").length,
-        local: typed.filter((s) => s.origin_type === "local_wasm" && s.service_type === "mcp").length,
-        remote: typed.filter((s) => s.origin_type === "remote_mcp" && s.service_type === "mcp").length
+        local_mcp: localMcp,
+        remote_mcp: remoteMcp,
+        local_agent: localAgent,
+        remote_agent: remoteAgent,
+        // Backward-compatible aliases preserved for older clients.
+        local: localMcp,
+        remote: remoteMcp
       });
     }
 
@@ -1993,6 +2011,7 @@ export class McpRouter {
       const timeoutMs = asIntegerMin(payload.timeout_ms, 1);
       const maxPayloadBytes = asIntegerMin(payload.max_payload_bytes, 1024);
       const maxConcurrency = asIntegerMin(payload.max_concurrency, 1);
+      const transport = asRemoteTransport(payload.transport) ?? "streamable_http";
       const manifest: MCPServiceManifest = {
         apiVersion: "clarity.runtime/v1",
         kind: "MCPService",
@@ -2007,7 +2026,7 @@ export class McpRouter {
           origin: {
             type: "remote_mcp",
             endpoint,
-            transport: "streamable_http",
+            transport,
             ...(asString(payload.auth_ref) ? { authRef: asString(payload.auth_ref) } : {}),
             ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
             ...(typeof maxPayloadBytes === "number" ? { maxPayloadBytes } : {}),
@@ -2067,6 +2086,7 @@ export class McpRouter {
       const timeoutMs = asIntegerMin(payload.timeout_ms, 1);
       const maxPayloadBytes = asIntegerMin(payload.max_payload_bytes, 1024);
       const maxConcurrency = asIntegerMin(payload.max_concurrency, 1);
+      const transport = asRemoteTransport(payload.transport) ?? "streamable_http";
       const manifest: MCPServiceManifest = {
         apiVersion: "clarity.runtime/v1",
         kind: "MCPService",
@@ -2081,7 +2101,7 @@ export class McpRouter {
           origin: {
             type: "remote_mcp",
             endpoint,
-            transport: "streamable_http",
+            transport,
             ...(asString(payload.auth_ref) ? { authRef: asString(payload.auth_ref) } : {}),
             ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
             ...(typeof maxPayloadBytes === "number" ? { maxPayloadBytes } : {}),
