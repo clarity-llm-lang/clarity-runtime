@@ -42,6 +42,41 @@ test("authorizeRequest rejects invalid token", () => {
   assert.equal(decision.status, 401);
 });
 
+test("authorizeRequest accepts query token for local SSE endpoint", () => {
+  const req = mockRequest({
+    remoteAddress: "127.0.0.1"
+  });
+  const decision = authorizeRequest(req, new URL("http://localhost/events?token=abc123"), {
+    token: "abc123",
+    enforceLoopbackWhenNoToken: true
+  } satisfies AuthConfig);
+  assert.equal(decision.ok, true);
+});
+
+test("authorizeRequest rejects query token for non-SSE endpoint", () => {
+  const req = mockRequest({
+    remoteAddress: "127.0.0.1"
+  });
+  const decision = authorizeRequest(req, new URL("http://localhost/api/status?token=abc123"), {
+    token: "abc123",
+    enforceLoopbackWhenNoToken: true
+  } satisfies AuthConfig);
+  assert.equal(decision.ok, false);
+  assert.equal(decision.status, 401);
+});
+
+test("authorizeRequest rejects query token for non-loopback SSE callers", () => {
+  const req = mockRequest({
+    remoteAddress: "192.168.1.50"
+  });
+  const decision = authorizeRequest(req, new URL("http://localhost/events?token=abc123"), {
+    token: "abc123",
+    enforceLoopbackWhenNoToken: true
+  } satisfies AuthConfig);
+  assert.equal(decision.ok, false);
+  assert.equal(decision.status, 401);
+});
+
 test("authorizeRequest blocks non-loopback callers when token is unset", () => {
   const req = mockRequest({ remoteAddress: "192.168.1.50" });
   const decision = authorizeRequest(req, new URL("http://localhost/api/status"), {

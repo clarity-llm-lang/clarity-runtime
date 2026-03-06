@@ -59,6 +59,24 @@ function asObject(input: unknown): Record<string, unknown> {
   return input as Record<string, unknown>;
 }
 
+function parseMcpToolPayload(body: unknown): Record<string, unknown> {
+  const result = asObject(asObject(body).result);
+  const content = Array.isArray(result.content) ? result.content : [];
+  const first = content[0];
+  if (!first || typeof first !== "object") {
+    return {};
+  }
+  const text = String((first as { text?: unknown }).text ?? "");
+  if (!text) {
+    return {};
+  }
+  try {
+    return asObject(JSON.parse(text));
+  } catch {
+    return {};
+  }
+}
+
 test("gateway exposes trace spans and run cost ledger for MCP tool calls", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clarity-gateway-trace-"));
   const registry = new ServiceRegistry(path.join(root, "registry.json"));
@@ -89,6 +107,23 @@ test("gateway exposes trace spans and run cost ledger for MCP tool calls", async
     });
     assert.equal(call.status, 200);
     assert.ok(asObject(call.body).result);
+    const statusPayload = parseMcpToolPayload(call.body);
+    assert.equal(Number(statusPayload.local_mcp), 0);
+    assert.equal(Number(statusPayload.remote_mcp), 0);
+    assert.equal(Number(statusPayload.local_agent), 0);
+    assert.equal(Number(statusPayload.remote_agent), 0);
+    assert.equal(Number(statusPayload.local), 0);
+    assert.equal(Number(statusPayload.remote), 0);
+
+    const httpStatus = await jsonRequest(runtime.baseUrl, "/api/status");
+    assert.equal(httpStatus.status, 200);
+    const httpSummary = asObject(asObject(httpStatus.body).summary);
+    assert.equal(Number(httpSummary.localMcp), 0);
+    assert.equal(Number(httpSummary.remoteMcp), 0);
+    assert.equal(Number(httpSummary.localAgent), 0);
+    assert.equal(Number(httpSummary.remoteAgent), 0);
+    assert.equal(Number(httpSummary.local), 0);
+    assert.equal(Number(httpSummary.remote), 0);
 
     const traces = await jsonRequest(runtime.baseUrl, "/api/traces?run_id=run-trace-1&limit=50");
     assert.equal(traces.status, 200);

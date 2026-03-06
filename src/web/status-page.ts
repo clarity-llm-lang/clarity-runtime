@@ -751,9 +751,16 @@ let agentFilterState = {
   hitlOnly: false
 };
 const queryParams = new URLSearchParams(window.location.search);
-const authToken = queryParams.get('token') || window.localStorage.getItem('clarity_auth_token');
+const queryToken = queryParams.get('token');
+const authToken = queryToken || window.localStorage.getItem('clarity_auth_token');
 if (authToken) {
   window.localStorage.setItem('clarity_auth_token', authToken);
+}
+if (queryToken) {
+  queryParams.delete('token');
+  const query = queryParams.toString();
+  const nextUrl = window.location.pathname + (query ? ('?' + query) : '') + window.location.hash;
+  window.history.replaceState({}, document.title, nextUrl);
 }
 
 async function call(path, method = 'GET', body = undefined) {
@@ -813,6 +820,22 @@ function summaryCards(data) {
   const systemServices = typeof data.systemServiceCount === 'number' ? data.systemServiceCount : 0;
   const mcpServices = typeof s.mcpServices === 'number' ? s.mcpServices : (typeof s.total === 'number' ? s.total : 0);
   const runningMcp = typeof s.runningMcp === 'number' ? s.runningMcp : (typeof s.running === 'number' ? s.running : 0);
+  const localMcp = Number(
+    s.localMcp !== undefined
+      ? s.localMcp
+      : (s.local_mcp !== undefined
+          ? s.local_mcp
+          : (s.local !== undefined ? s.local : 0))
+  );
+  const remoteMcp = Number(
+    s.remoteMcp !== undefined
+      ? s.remoteMcp
+      : (s.remote_mcp !== undefined
+          ? s.remote_mcp
+          : (s.remote !== undefined ? s.remote : 0))
+  );
+  const localAgent = Number(s.localAgent !== undefined ? s.localAgent : (s.local_agent !== undefined ? s.local_agent : 0));
+  const remoteAgent = Number(s.remoteAgent !== undefined ? s.remoteAgent : (s.remote_agent !== undefined ? s.remote_agent : 0));
   const totalServices = mcpServices + systemServices;
   const runningWithSystem = runningMcp + systemServices;
   return [
@@ -821,8 +844,10 @@ function summaryCards(data) {
     ['Running', runningWithSystem],
     ['Degraded', s.degraded],
     ['Stopped', s.stopped],
-    ['Local', s.local],
-    ['Remote', s.remote]
+    ['Local MCP', localMcp],
+    ['Remote MCP', remoteMcp],
+    ['Local Agent', localAgent],
+    ['Remote Agent', remoteAgent]
   ].map(([k, v]) => '<div class="card"><div class="label">' + k + '</div><div class="value">' + v + '</div></div>').join('');
 }
 
@@ -1102,7 +1127,7 @@ function renderGuideAgentSection(agentRegistryItems, allRuns) {
     const latestRun = matchedRuns.length > 0 ? matchedRuns[0] : null;
     const waitingRun = matchedRuns.find((run) => String(run && run.status || '').toLowerCase() === 'waiting') || null;
     const hitlRun = waitingRun || latestRun;
-    const hitlSupported = serviceSupportsHitl(svc, matchedRuns);
+    const hitlSupported = serviceSupportsHitl(svc);
     const agent = svc && svc.agent && typeof svc.agent === 'object' ? svc.agent : {};
     const triggers = Array.isArray(agent.triggers) ? agent.triggers.join(', ') : 'n/a';
     const statusBadge = latestRun ? badge(String(latestRun.status || '').toUpperCase()) : '<span class="guide-meta">no runs</span>';
@@ -1127,7 +1152,7 @@ function renderGuideAgentSection(agentRegistryItems, allRuns) {
     '<div class="guide-meta">Registry source: <span class="code">GET /api/agents/registry</span></div>' +
     '<ul class="guide-list">' +
       '<li>Observe runs by trigger, status, and flow/event timeline.</li>' +
-      '<li>Filter agent services by query, run status, trigger, and HITL support.</li>' +
+      '<li>Filter agent services by query, run status, trigger, and explicit HITL capability (<span class="code">metadata.agent.hitl=true</span>).</li>' +
       '<li>Send formal A2A handoff envelopes through <span class="code">POST /api/a2a/messages</span> and inspect compliance via <span class="code">GET /api/a2a/capabilities</span>.</li>' +
       '<li>Use <span class="code">POST /api/agents/runs/:runId/messages</span> for run chat input, and HITL workbench for human override and broker queue flows.</li>' +
       '<li>Control service lifecycle and inspect dependencies/handoff topology.</li>' +
@@ -1313,29 +1338,9 @@ async function openServiceDetails(serviceId) {
   await refresh();
 }
 
-function serviceSupportsHitl(svc, runs) {
+function serviceSupportsHitl(svc) {
   const meta = svc && svc.agent && typeof svc.agent === 'object' ? svc.agent : {};
-  if (meta.hitl === true || meta.humanInTheLoop === true || meta.human_in_the_loop === true) {
-    return true;
-  }
-  const capabilities = Array.isArray(meta.capabilities) ? meta.capabilities.map((x) => String(x || '').toLowerCase()) : [];
-  if (capabilities.includes('hitl') || capabilities.includes('human-in-the-loop') || capabilities.includes('human_in_the_loop')) {
-    return true;
-  }
-  const textFields = []
-    .concat(Array.isArray(meta.inputs) ? meta.inputs : [])
-    .concat(Array.isArray(meta.outputs) ? meta.outputs : [])
-    .concat(Array.isArray(meta.triggers) ? meta.triggers : [])
-    .concat([
-      typeof meta.role === 'string' ? meta.role : '',
-      typeof meta.objective === 'string' ? meta.objective : ''
-    ])
-    .map((x) => String(x || '').toLowerCase());
-  if (textFields.some((entry) => entry.includes('hitl') || entry.includes('human'))) {
-    return true;
-  }
-  const runList = Array.isArray(runs) ? runs : [];
-  return runList.some((run) => String(run && run.status || '').toLowerCase() === 'waiting');
+  return meta.hitl === true;
 }
 
 function renderHitlScreen() {
@@ -1841,7 +1846,7 @@ function renderServiceDetails(serviceId, data, agentRunsForService) {
       renderTriggerInterfaces(agent, agentRunsForService) +
       '<h3 class="detail-title">Agent Metadata</h3>' +
       '<div class="code">agentId=' + esc(agent.agentId || 'unknown') + ', name=' + esc(agent.name || 'unknown') + '</div>' +
-      '<div class="code">role=' + esc(agent.role || 'unknown') + ', objective=' + esc(agent.objective || 'unknown') + '</div>' +
+      '<div class="code">role=' + esc(agent.role || 'unknown') + ', objective=' + esc(agent.objective || 'unknown') + ', hitl=' + (agent.hitl === true ? 'enabled' : 'disabled') + '</div>' +
       '<div class="agent-meta-grid">' +
         '<div><h3 class="detail-title">Inputs</h3>' + listOrNone(agent.inputs, 'No inputs declared.') + '</div>' +
         '<div><h3 class="detail-title">Outputs</h3>' + listOrNone(agent.outputs, 'No outputs declared.') + '</div>' +
@@ -2059,7 +2064,20 @@ async function refresh() {
     const data = statusResult.status === 'fulfilled'
       ? statusResult.value
       : {
-        summary: { total: 0, mcpServices: 0, agentServices: 0, running: 0, runningMcp: 0, runningAgent: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
+        summary: {
+          total: 0,
+          mcpServices: 0,
+          agentServices: 0,
+          running: 0,
+          runningMcp: 0,
+          runningAgent: 0,
+          degraded: 0,
+          stopped: 0,
+          localMcp: 0,
+          remoteMcp: 0,
+          localAgent: 0,
+          remoteAgent: 0
+        },
         agents: { totalRuns: 0, running: 0, waiting: 0, completed: 0, failed: 0, cancelled: 0 },
         services: [],
         systemTools: {
@@ -2080,7 +2098,22 @@ async function refresh() {
     const agentRegistryBody = agentRegistryResult.status === 'fulfilled'
       ? agentRegistryResult.value
       : { items: [] };
-    const summarySafe = (data && data.summary) ? data.summary : { total: 0, mcpServices: 0, agentServices: 0, running: 0, runningMcp: 0, runningAgent: 0, degraded: 0, stopped: 0, local: 0, remote: 0 };
+    const summarySafe = (data && data.summary)
+      ? data.summary
+      : {
+          total: 0,
+          mcpServices: 0,
+          agentServices: 0,
+          running: 0,
+          runningMcp: 0,
+          runningAgent: 0,
+          degraded: 0,
+          stopped: 0,
+          localMcp: 0,
+          remoteMcp: 0,
+          localAgent: 0,
+          remoteAgent: 0
+        };
     const agentSummarySafe = {
       totalRuns: Number(data && data.agents && data.agents.totalRuns || 0),
       running: Number(data && data.agents && data.agents.running || 0),
@@ -2204,7 +2237,7 @@ async function refresh() {
       const sid = String(svc && svc.serviceId || '');
       const matchedRuns = runsByAgentServiceId.get(sid) || [];
       const latestRun = matchedRuns.length > 0 ? matchedRuns[0] : null;
-      const hitlSupported = serviceSupportsHitl(svc, matchedRuns);
+      const hitlSupported = serviceSupportsHitl(svc);
       return agentServiceMatchesFilters(svc, matchedRuns, latestRun, hitlSupported);
     });
     const agentFilterMeta = document.getElementById('agent-filter-meta');
@@ -2248,7 +2281,7 @@ async function refresh() {
       const latestRun = matchedRuns.length > 0 ? matchedRuns[0] : null;
       const waitingRun = matchedRuns.find((run) => String(run && run.status || '').toLowerCase() === 'waiting') || null;
       const hitlRun = waitingRun || latestRun;
-      const hitlSupported = serviceSupportsHitl(svc, matchedRuns);
+      const hitlSupported = serviceSupportsHitl(svc);
       const hitlButton = !hitlSupported
         ? ''
         : (hitlRun
@@ -2366,7 +2399,20 @@ async function refresh() {
     document.getElementById('agent-audit').innerHTML = agentAuditRows || '<li class="audit-item"><div class="audit-msg" style="color:var(--panel-muted)">' + agentAuditFallback + '</div></li>';
   } catch (error) {
     document.getElementById('summary').innerHTML = summaryCards({
-      summary: { total: 0, mcpServices: 0, agentServices: 0, running: 0, runningMcp: 0, runningAgent: 0, degraded: 0, stopped: 0, local: 0, remote: 0 },
+      summary: {
+        total: 0,
+        mcpServices: 0,
+        agentServices: 0,
+        running: 0,
+        runningMcp: 0,
+        runningAgent: 0,
+        degraded: 0,
+        stopped: 0,
+        localMcp: 0,
+        remoteMcp: 0,
+        localAgent: 0,
+        remoteAgent: 0
+      },
       systemServiceCount: 2
     });
     document.getElementById('rows').innerHTML = '<tr><td colspan="7" style="color:#a72525">UI render error: ' + String(error) + '</td></tr>';

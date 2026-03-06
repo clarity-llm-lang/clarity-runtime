@@ -41,6 +41,14 @@ function secureEquals(a: string, b: string): boolean {
   return timingSafeEqual(left, right);
 }
 
+function queryTokenAllowedForRequest(req: IncomingMessage, url: URL): boolean {
+  if (url.pathname !== "/events" && url.pathname !== "/api/events") {
+    return false;
+  }
+  const remoteAddress = req.socket.remoteAddress ?? "";
+  return isPrivateLoopbackAddress(remoteAddress);
+}
+
 function readTokenFromRequest(req: IncomingMessage, url: URL): string | undefined {
   const headerToken = parseBearerToken(
     typeof req.headers.authorization === "string" ? req.headers.authorization : undefined
@@ -57,7 +65,7 @@ function readTokenFromRequest(req: IncomingMessage, url: URL): string | undefine
   }
 
   const queryToken = url.searchParams.get("token");
-  if (queryToken && queryToken.trim().length > 0) {
+  if (queryToken && queryToken.trim().length > 0 && queryTokenAllowedForRequest(req, url)) {
     return queryToken.trim();
   }
 
