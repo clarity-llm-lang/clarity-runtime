@@ -34,6 +34,18 @@ export interface AgentA2AProfile {
 export type AgentChatMode = "auto" | "echo" | "disabled";
 export type AgentChatProvider = "openai" | "anthropic" | "echo";
 
+export interface AgentTimerSchedule {
+  scheduleId: string;
+  scheduleExpr: string;
+  enabled?: boolean;
+}
+
+export interface AgentTimerProfile {
+  schedules: AgentTimerSchedule[];
+  serial?: boolean;
+  handlerTool?: string;
+}
+
 export interface AgentChatProfile {
   mode?: AgentChatMode;
   provider?: AgentChatProvider;
@@ -41,6 +53,9 @@ export interface AgentChatProfile {
   model?: string;
   apiKeyEnv?: string;
   timeoutMs?: number;
+  historyEnabled?: boolean;
+  historyMaxTurns?: number;
+  historyMaxChars?: number;
 }
 
 export interface AgentDescriptor {
@@ -49,6 +64,8 @@ export interface AgentDescriptor {
   role: string;
   objective: string;
   triggers: Array<"timer" | "event" | "api" | "a2a">;
+  hitl?: boolean;
+  timer?: AgentTimerProfile;
   a2a?: AgentA2AProfile;
   inputs?: string[];
   outputs?: string[];

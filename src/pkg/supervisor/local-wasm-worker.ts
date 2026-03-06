@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import * as nodeFs from "node:fs";
 import { Worker, parentPort, workerData } from "node:worker_threads";
 
 interface Payload {
@@ -122,10 +122,35 @@ function alloc(size: number): number {
 }
 
 function allocResultString(ok: boolean, valuePtr: number): number {
-  const ptr = alloc(8);
+  // Result<T,E> uses aligned union layout: [tag:i32][pad:i32][payload:i32...]
+  const ptr = alloc(12);
   const view = new DataView(requireMemory().buffer);
   view.setInt32(ptr, ok ? 0 : 1, true);
-  view.setInt32(ptr + 4, valuePtr, true);
+  view.setInt32(ptr + 8, valuePtr, true);
+  return ptr;
+}
+
+function allocOptionI32(value: number | null): number {
+  const ptr = alloc(12);
+  const view = new DataView(requireMemory().buffer);
+  if (value === null) {
+    view.setInt32(ptr, 1, true);
+  } else {
+    view.setInt32(ptr, 0, true);
+    view.setInt32(ptr + 8, value, true);
+  }
+  return ptr;
+}
+
+function allocOptionI64(value: bigint | null): number {
+  const ptr = alloc(16);
+  const view = new DataView(requireMemory().buffer);
+  if (value === null) {
+    view.setInt32(ptr, 1, true);
+  } else {
+    view.setInt32(ptr, 0, true);
+    view.setBigInt64(ptr + 8, value, true);
+  }
   return ptr;
 }
 
@@ -243,15 +268,37 @@ function readEnvSecret(primary: string, fallbackFileVar: string): string {
     return "";
   }
   try {
-    return readFileSync(path, "utf8").trim();
+    return nodeFs.readFileSync(path, "utf8").trim();
   } catch {
     return "";
   }
 }
 
+function readEnvSecretWithOverride(primary: string, fallbackFileVar: string): string {
+  const overrideEnvName = (process.env.CLARITY_RUNTIME_CHAT_API_KEY_ENV ?? "").trim();
+  if (overrideEnvName.length > 0) {
+    const override = (process.env[overrideEnvName] ?? "").trim();
+    if (override.length > 0) {
+      return override;
+    }
+    const overrideFilePath = (process.env[`${overrideEnvName}_FILE`] ?? "").trim();
+    if (overrideFilePath.length > 0) {
+      try {
+        const fromFile = nodeFs.readFileSync(overrideFilePath, "utf8").trim();
+        if (fromFile.length > 0) {
+          return fromFile;
+        }
+      } catch {
+        // Ignore and fall through to provider defaults.
+      }
+    }
+  }
+  return readEnvSecret(primary, fallbackFileVar);
+}
+
 function callOpenAiChat(model: string, messages: Array<{ role: string; content: string }>): number {
   const baseUrl = (process.env.OPENAI_BASE_URL ?? "https://api.openai.com").replace(/\/$/, "");
-  const apiKey = readEnvSecret("OPENAI_API_KEY", "OPENAI_API_KEY_FILE");
+  const apiKey = readEnvSecretWithOverride("OPENAI_API_KEY", "OPENAI_API_KEY_FILE");
   if (!apiKey) {
     return allocResultString(false, writeString("OPENAI_API_KEY is not set"));
   }
@@ -289,7 +336,7 @@ function callOpenAiChat(model: string, messages: Array<{ role: string; content: 
 
 function callAnthropic(model: string, messages: Array<{ role: string; content: string }>): number {
   const baseUrl = (process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com").replace(/\/$/, "");
-  const apiKey = readEnvSecret("ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_FILE");
+  const apiKey = readEnvSecretWithOverride("ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_FILE");
   if (!apiKey) {
     return allocResultString(false, writeString("ANTHROPIC_API_KEY is not set"));
   }
@@ -335,6 +382,191 @@ function callModel(model: string, messages: Array<{ role: string; content: strin
     return callAnthropic(model, messages);
   }
   return callOpenAiChat(model, messages);
+}
+
+function jsonToString(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+
+function jsonGet(json: string, key: string): number {
+  try {
+    const parsed = JSON.parse(json);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return allocOptionI32(null);
+    }
+    if (!Object.prototype.hasOwnProperty.call(parsed, key)) {
+      return allocOptionI32(null);
+    }
+    const value = (parsed as Record<string, unknown>)[key];
+    if (value === null || value === undefined) {
+      return allocOptionI32(null);
+    }
+    return allocOptionI32(writeString(jsonToString(value)));
+  } catch {
+    return allocOptionI32(null);
+  }
+}
+
+function jsonGetPath(json: string, pathValue: string): number {
+  try {
+    let current: unknown = JSON.parse(json);
+    const segments = pathValue.split(".");
+    for (const segment of segments) {
+      if (current === null || typeof current !== "object" || Array.isArray(current)) {
+        return allocOptionI32(null);
+      }
+      const object = current as Record<string, unknown>;
+      if (!Object.prototype.hasOwnProperty.call(object, segment)) {
+        return allocOptionI32(null);
+      }
+      current = object[segment];
+    }
+    if (current === null || current === undefined) {
+      return allocOptionI32(null);
+    }
+    return allocOptionI32(writeString(jsonToString(current)));
+  } catch {
+    return allocOptionI32(null);
+  }
+}
+
+function jsonGetNested(json: string, pathValue: string): number {
+  try {
+    let node: unknown = JSON.parse(json);
+    const parts = pathValue.split(".");
+    for (const part of parts) {
+      if (node === null || node === undefined) {
+        return allocOptionI32(null);
+      }
+      if (Array.isArray(node)) {
+        const index = Number.parseInt(part, 10);
+        if (Number.isNaN(index) || index < 0 || index >= node.length) {
+          return allocOptionI32(null);
+        }
+        node = node[index];
+      } else if (typeof node === "object") {
+        const object = node as Record<string, unknown>;
+        if (!Object.prototype.hasOwnProperty.call(object, part)) {
+          return allocOptionI32(null);
+        }
+        node = object[part];
+      } else {
+        return allocOptionI32(null);
+      }
+    }
+    if (node === null || node === undefined) {
+      return allocOptionI32(null);
+    }
+    return allocOptionI32(writeString(typeof node === "string" ? node : JSON.stringify(node)));
+  } catch {
+    return allocOptionI32(null);
+  }
+}
+
+function jsonArrayLength(json: string): number {
+  try {
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) {
+      return allocOptionI64(null);
+    }
+    return allocOptionI64(BigInt(parsed.length));
+  } catch {
+    return allocOptionI64(null);
+  }
+}
+
+function jsonArrayGet(json: string, index: bigint): number {
+  try {
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) {
+      return allocOptionI32(null);
+    }
+    const itemIndex = Number(index);
+    if (!Number.isFinite(itemIndex) || itemIndex < 0 || itemIndex >= parsed.length) {
+      return allocOptionI32(null);
+    }
+    const value = parsed[itemIndex];
+    return allocOptionI32(writeString(typeof value === "string" ? value : JSON.stringify(value)));
+  } catch {
+    return allocOptionI32(null);
+  }
+}
+
+function jsonKeys(json: string): number {
+  try {
+    const parsed = JSON.parse(json);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return allocOptionI32(null);
+    }
+    const keys = Object.keys(parsed as Record<string, unknown>).map((key) => writeString(key));
+    return allocOptionI32(allocListI32(keys));
+  } catch {
+    return allocOptionI32(null);
+  }
+}
+
+function hitlAsk(key: string, question: string): string {
+  const dir = process.env.CLARITY_HITL_DIR ?? ".clarity-hitl";
+  const timeoutRaw = Number.parseInt(process.env.CLARITY_HITL_TIMEOUT_SECS ?? "600", 10);
+  const timeoutSecs = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 600;
+
+  nodeFs.mkdirSync(dir, { recursive: true });
+
+  const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const questionFile = `${dir}/${safeKey}.question`;
+  const answerFile = `${dir}/${safeKey}.answer`;
+
+  nodeFs.writeFileSync(
+    questionFile,
+    JSON.stringify({
+      key,
+      question,
+      timestamp: Date.now(),
+      pid: process.pid
+    }),
+    "utf8"
+  );
+
+  const sab = new SharedArrayBuffer(4);
+  const ctrl = new Int32Array(sab);
+  const deadline = Date.now() + timeoutSecs * 1000;
+  const pollMs = 500;
+
+  while (Date.now() < deadline) {
+    Atomics.wait(ctrl, 0, 0, pollMs);
+    if (!nodeFs.existsSync(answerFile)) {
+      continue;
+    }
+    try {
+      const answer = nodeFs.readFileSync(answerFile, "utf8").trim();
+      try {
+        nodeFs.unlinkSync(answerFile);
+      } catch {
+        // Ignore cleanup race.
+      }
+      try {
+        nodeFs.unlinkSync(questionFile);
+      } catch {
+        // Ignore cleanup race.
+      }
+      return answer;
+    } catch {
+      // Broker may still be writing; retry on next loop.
+    }
+  }
+
+  try {
+    nodeFs.unlinkSync(questionFile);
+  } catch {
+    // Ignore cleanup race.
+  }
+  return "[hitl_ask timeout]";
 }
 
 function serializeValue(value: unknown, expectStringResult: boolean): WorkerValue {
@@ -451,6 +683,41 @@ function buildImports(): WebAssembly.Imports {
         { role: "system", content: system },
         { role: "user", content: prompt }
       ]);
+    },
+    json_get(jsonPtr: number, keyPtr: number): number {
+      return jsonGet(readString(jsonPtr), readString(keyPtr));
+    },
+    json_get_path(jsonPtr: number, pathPtr: number): number {
+      return jsonGetPath(readString(jsonPtr), readString(pathPtr));
+    },
+    json_get_nested(jsonPtr: number, pathPtr: number): number {
+      return jsonGetNested(readString(jsonPtr), readString(pathPtr));
+    },
+    json_array_length(jsonPtr: number): number {
+      return jsonArrayLength(readString(jsonPtr));
+    },
+    json_array_get(jsonPtr: number, index: bigint): number {
+      return jsonArrayGet(readString(jsonPtr), index);
+    },
+    json_keys(jsonPtr: number): number {
+      return jsonKeys(readString(jsonPtr));
+    },
+    json_escape_string(ptr: number): number {
+      const source = readString(ptr);
+      return writeString(JSON.stringify(source).slice(1, -1));
+    },
+    get_secret(namePtr: number): number {
+      const secretName = readString(namePtr);
+      const value = process.env[secretName];
+      if (typeof value !== "string") {
+        return allocOptionI32(null);
+      }
+      return allocOptionI32(writeString(value));
+    },
+    hitl_ask(keyPtr: number, questionPtr: number): number {
+      const key = readString(keyPtr);
+      const question = readString(questionPtr);
+      return writeString(hitlAsk(key, question));
     }
   };
 

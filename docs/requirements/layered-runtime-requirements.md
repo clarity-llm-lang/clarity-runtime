@@ -74,3 +74,45 @@ Execution order for larger runtime initiatives. The goal is to deliver each laye
   - Bootstrap can optionally create/update workspace `AGENTS.md` with Clarity-first defaults; rerunning bootstrap is idempotent and preserves user customizations outside managed blocks.
   - E2E tests verify `read_line()` consumes successive piped lines and has deterministic EOF behavior (no infinite invalid-input loops in menu-style CLIs).
   - Docs include operator guidance for enabling/disabling `AGENTS.md` propagation and language-selection overrides.
+
+## Layer 9: Local Wasm Agent Parity
+- Status: Done (baseline)
+- Scope:
+  - local-wasm host import parity for `std/json`, `std/context`, `std/hitl`, `std/a2a`, `std/mcp`, and `get_secret()`
+  - per-service env injection via `spec.origin.env[]` + `secretRef`
+  - `metadata.agent.chat.apiKeyEnv` enforcement for runtime-owned local-wasm model calls
+  - declarative timer schedule contract plus runtime scheduler
+  - consistent interface refresh in `GET /api/services` after introspection
+- Source:
+  - `docs/requirements/local-wasm-agent-parity-requirements.md`
+
+## Layer 10: Cross-Project Alignment Hardening (New)
+- Status: Planned
+- Scope:
+  - Architecture
+    - Replace TypeScript runtime chat execution bridge with native Clarity orchestration (`RUNTIME-HITL-CLARITY-001`).
+    - Expose remote transport selection (`streamable_http` and `sse_http`) in all registration surfaces.
+    - Align status summary contract so local/remote counts include both MCP and agent service types.
+    - Resolve lifecycle/health contract mismatch: implement emitted state richness or simplify exported enum surface.
+  - UX
+    - Ensure run-to-service linking in status UI is deterministic (`serviceId`-first) and warns explicitly on ambiguous matches.
+    - Keep HITL workbench mode boundaries explicit and maintain terminal-run input guardrails.
+    - Keep cross-repo runtime/language status claims synchronized (A2A integration, chat-executor migration, parity status).
+  - Security
+    - Complete remote auth provider isolation hardening for multi-tenant trust boundaries.
+    - Reduce token leakage risk by deprecating query-token auth path (header-based auth only, or tightly scoped local exception).
+    - Introduce stronger authorization model for runtime control-plane writes (beyond shared bearer token), including action scoping.
+    - Tighten `POST /api/agents/events` validation for critical event kinds beyond `agent.run_created`.
+  - Documentation / License / GitHub setup
+    - Add repository `LICENSE` file and explicit license metadata policy for runtime-distributed artifacts.
+    - Keep README/runtime spec/requirements documents in sync on implementation status and cross-repo dependencies.
+    - Keep workflow/action baseline aligned with sibling repos while preserving security gates and deterministic release/snapshot behavior.
+- Progress (2026-03-06):
+  - Repository `LICENSE` file added.
+  - `package.json` now declares `license: "MIT"`.
+  - README includes a runtime artifact license metadata policy note.
+- Acceptance criteria:
+  - Register flows can select transport without manifest hand-editing.
+  - Status summaries expose separate local/remote counts for MCP and agent service classes.
+  - Query-token authentication is removed or explicitly restricted and documented.
+  - Cross-repo requirement docs show no contradictory status for shared initiatives.

@@ -193,6 +193,17 @@ test("runtime e2e API + MCP flow supports remote registration and deprovision", 
     assert.equal(startRes.status, 200);
     const introspectRes = await jsonRequest(runtime.baseUrl, `/api/services/${encodeURIComponent(serviceId)}/introspect`, { method: "POST" });
     assert.equal(introspectRes.status, 200);
+    const refreshedRevision = String(asObject(asObject(introspectRes.body).interface).interfaceRevision ?? "");
+    assert.ok(refreshedRevision.length > 0);
+
+    const servicesRes = await jsonRequest(runtime.baseUrl, "/api/services");
+    assert.equal(servicesRes.status, 200);
+    const services = asObject(servicesRes.body).items as Array<Record<string, unknown>>;
+    const listed = services.find((item) => String(item.serviceId) === serviceId);
+    assert.ok(listed);
+    const listedInterface = asObject(asObject(listed).interface);
+    assert.equal(String(listedInterface.interfaceRevision), refreshedRevision);
+    assert.ok(String(listedInterface.introspectedAt).length > 0);
 
     const toolsListRes = await jsonRequest(runtime.baseUrl, "/mcp", {
       method: "POST",
