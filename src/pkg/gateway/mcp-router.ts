@@ -604,6 +604,40 @@ function defaultAgentA2AProfile(): NonNullable<AgentDescriptor["a2a"]> {
   };
 }
 
+function asAgentTimerProfile(input: unknown): NonNullable<AgentDescriptor["timer"]> | undefined {
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+  const obj = input as Record<string, unknown>;
+  const rawSchedules = Array.isArray(obj.schedules) ? obj.schedules : [];
+  const schedules = rawSchedules
+    .map((row) => {
+      const entry = asObject(row);
+      const scheduleId = asString(entry.scheduleId ?? entry.schedule_id ?? entry.id);
+      const scheduleExpr = asString(entry.scheduleExpr ?? entry.schedule_expr ?? entry.expr);
+      if (!scheduleId || !scheduleExpr) {
+        return null;
+      }
+      const enabled = asBoolean(entry.enabled);
+      return {
+        scheduleId,
+        scheduleExpr,
+        ...(enabled !== undefined ? { enabled } : {})
+      };
+    })
+    .filter((row): row is NonNullable<AgentDescriptor["timer"]>["schedules"][number] => row !== null);
+  if (schedules.length === 0) {
+    return undefined;
+  }
+  const serial = asBoolean(obj.serial);
+  const handlerTool = asString(obj.handlerTool ?? obj.handler_tool);
+  return {
+    schedules,
+    ...(serial !== undefined ? { serial } : {}),
+    ...(handlerTool ? { handlerTool } : {})
+  };
+}
+
 function asAgentChatProfile(input: unknown): NonNullable<AgentDescriptor["chat"]> | undefined {
   if (!input || typeof input !== "object") {
     return undefined;
@@ -617,13 +651,23 @@ function asAgentChatProfile(input: unknown): NonNullable<AgentDescriptor["chat"]
   const model = asString(obj.model);
   const apiKeyEnv = asString(obj.api_key_env ?? obj.apiKeyEnv);
   const timeoutMs = asIntegerMin(obj.timeout_ms ?? obj.timeoutMs, 1_000);
+  const historyEnabled = typeof (obj.history_enabled ?? obj.historyEnabled) === "boolean"
+    ? Boolean(obj.history_enabled ?? obj.historyEnabled)
+    : undefined;
+  const historyMaxTurnsRaw = asIntegerMin(obj.history_max_turns ?? obj.historyMaxTurns, 1);
+  const historyMaxTurns = historyMaxTurnsRaw && historyMaxTurnsRaw <= 200 ? historyMaxTurnsRaw : undefined;
+  const historyMaxCharsRaw = asIntegerMin(obj.history_max_chars ?? obj.historyMaxChars, 256);
+  const historyMaxChars = historyMaxCharsRaw && historyMaxCharsRaw <= 200_000 ? historyMaxCharsRaw : undefined;
   const out: NonNullable<AgentDescriptor["chat"]> = {
     ...(mode ? { mode } : {}),
     ...(provider ? { provider } : {}),
     ...(handlerTool ? { handlerTool } : {}),
     ...(model ? { model } : {}),
     ...(apiKeyEnv ? { apiKeyEnv } : {}),
-    ...(timeoutMs ? { timeoutMs } : {})
+    ...(timeoutMs ? { timeoutMs } : {}),
+    ...(historyEnabled !== undefined ? { historyEnabled } : {}),
+    ...(historyMaxTurns ? { historyMaxTurns } : {}),
+    ...(historyMaxChars ? { historyMaxChars } : {})
   };
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -645,12 +689,17 @@ function asAgentDescriptor(input: unknown): AgentDescriptor | undefined {
   }
   const declaredA2A = asAgentA2AProfile(obj.a2a);
   const hasA2ATrigger = triggers.includes("a2a");
+  const declaredTimer = asAgentTimerProfile(obj.timer);
+  const hasTimerTrigger = triggers.includes("timer");
+  const hitl = asBoolean(obj.hitl);
   return {
     agentId,
     name,
     role,
     objective,
     triggers,
+    ...(hitl !== undefined ? { hitl } : {}),
+    ...(hasTimerTrigger && declaredTimer ? { timer: declaredTimer } : {}),
     ...(hasA2ATrigger ? { a2a: declaredA2A ?? defaultAgentA2AProfile() } : {}),
     ...(asStringList(obj.inputs) ? { inputs: asStringList(obj.inputs)! } : {}),
     ...(asStringList(obj.outputs) ? { outputs: asStringList(obj.outputs)! } : {}),

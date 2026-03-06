@@ -34,7 +34,7 @@
 - `GET /api/agents/runs/:runId/events?limit=200`: events for one agent run.
 - `GET /api/agents/runs/:runId/events/stream?limit=200`: server-sent events stream for one run (initial replay + live `agent.*` updates for matching `runId`).
 - `POST /api/a2a/messages`: ingest one formal A2A envelope (`clarity.a2a.v1`) and normalize into canonical `agent.*` events.
-- `POST /api/agents/runs/:runId/messages`: append run chat input for non-terminal runs (`409` when run is completed/failed/cancelled). `role=user|assistant|system` maps to `agent.chat.user_message|agent.chat.assistant_message|agent.chat.system_message`; only `role=user` queues async run response execution (`runtime_chat_execution_queued=true`) and emits follow-up `agent.step_*` and `agent.waiting` events for the same `runId`. In `auto` mode runtime dispatches chat handling to agent-owned tool interfaces.
+- `POST /api/agents/runs/:runId/messages`: append run chat input for non-terminal runs (`409` when run is completed/failed/cancelled). `role=user|assistant|system` maps to `agent.chat.user_message|agent.chat.assistant_message|agent.chat.system_message`; only `role=user` queues async run response execution (`runtime_chat_execution_queued=true`) and emits follow-up `agent.step_*` and `agent.waiting` events for the same `runId`. In `auto` mode runtime dispatches chat handling to agent-owned tool interfaces and includes run-scoped chat history plus a versioned context envelope (`context.v1`) in handler payloads.
 - `POST /api/agents/runs/:runId/hitl`: append explicit human override input as `agent.hitl_input` for non-terminal runs (`409` when run is completed/failed/cancelled). Input is sanitized/redacted and bounded by `CLARITY_HITL_MAX_MESSAGE_CHARS` (default `2000`). Runtime queues async run response execution and emits follow-up `agent.step_*` / `agent.waiting` events for the same `runId`.
 - `POST /api/agents/events`: ingest one `agent.*` event from orchestration clients.
 - `GET /api/traces?limit=200&run_id=&trace_id=`: recent gateway trace spans (`agent_turn -> mcp.tools/call -> service.execute -> result`).
@@ -105,15 +105,61 @@
   - Header form: `header_env:<Header-Name>:<ENV_VAR>`
 - `remote_mcp.maxPayloadBytes`: optional per-service request/response payload limit.
 - `remote_mcp.maxConcurrency`: optional per-service in-flight request limit.
-- `metadata.agent.chat`: optional per-agent runtime chat dispatch config (`mode`, `handlerTool`) and optional agent-owned provider metadata (`provider`, `model`, `apiKeyEnv`, `timeoutMs`).
+- `metadata.agent.hitl`: optional explicit capability flag for direct run HITL input surfaces (`true` enables HITL UI/actions).
+- `metadata.agent.timer`: required when `metadata.agent.triggers` includes `timer`; includes declarative `schedules[]` entries (`scheduleId`, `scheduleExpr` using `every <n> <unit>`) plus optional `serial` and `handlerTool`.
+- `metadata.agent.chat`: optional per-agent runtime chat dispatch config (`mode`, `handlerTool`, `historyEnabled`, `historyMaxTurns`, `historyMaxChars`) and optional agent-owned provider metadata (`provider`, `model`, `apiKeyEnv`, `timeoutMs`).
 - `metadata.agent.llmProviders`: optional compatibility alias for `allowedLlmProviders`.
+
+### Runtime Timer Contract
+
+- Runtime owns timer execution for declared schedules on running services.
+- Each firing emits canonical timer trigger context:
+  - `scheduleId`
+  - `scheduleExpr`
+  - `firedAt`
+- Runtime emits `agent.run_created` / `agent.run_started` and terminal run events per timer firing; if a timer handler tool is available it is executed within that run.
+
+### Runtime Chat Handler Context Envelope (`context.v1`)
+
+When runtime chat dispatch runs in `auto` mode, handlers always receive:
+
+- `contextVersion`: `"context.v1"`
+- `context`: structured envelope with sections:
+  - `task`
+  - `instructions`
+  - `userContext`
+  - `retrieval`
+  - `conversation`
+  - `runtimeState`
+  - `policy`
+  - `budget`
+  - `provenance`
+
+### Runtime Chat Handler Tool Contract
+
+- Local default handler: `fn__receive_chat`
+  - Args:
+    - arg0: `message` (string)
+    - arg1: `sessionId` (string)
+    - arg2: `runId` (string)
+    - arg3: JSON string object with:
+      - `runId`, `sessionId`, `serviceId`, `agent`
+      - `messages` (array), `history` (`totalMessages`, `usedMessages`, `truncated`, `maxTurns`, `maxChars`)
+      - `contextVersion`, `context`
+  - Return: string assistant reply (runtime also accepts JSON-stringified objects and extracts `reply|message|text|output_text`).
+
+- Remote default handler: `receive_chat`
+  - Input JSON object fields:
+    - `message`, `sessionId`, `runId`
+    - `messages`, `history`
+    - `contextVersion`, `context`
+  - Return: object containing one of `reply|message|text|output_text`, or `content[].text`.
 
 ## CLI
 
 - `clarityctl add <service>`
 - `clarityctl add-all [dir] [--recursive]`
 - `clarityctl add-remote --endpoint ... --module ... [--timeout-ms ...] [--allow-tools ...] [--max-payload-bytes ...] [--max-concurrency ...]`
-- Legacy compatibility: `clarityctl add-local ...`, `clarityctl start-source ...`
 - `clarityctl list|status|start|stop|restart|introspect|details|logs|bootstrap|bootstrap-remove|doctor` (`bootstrap` supports stdio/http client config plus optional `--update-agents-md`; `bootstrap-remove` removes client registrations; `doctor` checks daemon, compiler, workspace)
 - `clarityctl gateway serve --stdio`
 

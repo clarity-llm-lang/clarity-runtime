@@ -37,9 +37,14 @@ const AGENT_A2A_MESSAGE_KINDS = new Set([
 ]);
 const AGENT_CHAT_MODES = new Set(["auto", "echo", "disabled"]);
 const AGENT_CHAT_PROVIDERS = new Set(["openai", "anthropic", "echo"]);
+const TIMER_EXPR_RE = /^every\s+(\d+)\s*(ms|millisecond|milliseconds|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)$/i;
 
 function isEnvVarName(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+function isTimerExpr(value: string): boolean {
+  return TIMER_EXPR_RE.test(value.trim());
 }
 
 function validateAgentA2AProfile(value: unknown): void {
@@ -107,6 +112,62 @@ function validateAgentChatProfile(value: unknown): void {
       throw new Error("invalid manifest: metadata.agent.chat.timeoutMs must be an integer between 1000 and 120000 when provided");
     }
   }
+  if (obj.historyEnabled !== undefined && typeof obj.historyEnabled !== "boolean") {
+    throw new Error("invalid manifest: metadata.agent.chat.historyEnabled must be a boolean when provided");
+  }
+  if (obj.historyMaxTurns !== undefined) {
+    const historyMaxTurns = asPositiveInteger(obj.historyMaxTurns);
+    if (!historyMaxTurns || historyMaxTurns < 1 || historyMaxTurns > 200) {
+      throw new Error("invalid manifest: metadata.agent.chat.historyMaxTurns must be an integer between 1 and 200 when provided");
+    }
+  }
+  if (obj.historyMaxChars !== undefined) {
+    const historyMaxChars = asPositiveInteger(obj.historyMaxChars);
+    if (!historyMaxChars || historyMaxChars < 256 || historyMaxChars > 200_000) {
+      throw new Error("invalid manifest: metadata.agent.chat.historyMaxChars must be an integer between 256 and 200000 when provided");
+    }
+  }
+}
+
+function validateAgentTimerProfile(value: unknown): void {
+  const obj = asObject(value);
+  if (!obj) {
+    throw new Error("invalid manifest: metadata.agent.timer must be an object");
+  }
+  const schedules = obj.schedules;
+  if (!Array.isArray(schedules) || schedules.length === 0) {
+    throw new Error("invalid manifest: metadata.agent.timer.schedules must be a non-empty array");
+  }
+  const seenIds = new Set<string>();
+  for (let index = 0; index < schedules.length; index += 1) {
+    const entry = asObject(schedules[index]);
+    if (!entry) {
+      throw new Error(`invalid manifest: metadata.agent.timer.schedules[${index}] must be an object`);
+    }
+    const scheduleId = asNonEmptyString(entry.scheduleId ?? entry.id);
+    if (!scheduleId) {
+      throw new Error(`invalid manifest: metadata.agent.timer.schedules[${index}].scheduleId must be a non-empty string`);
+    }
+    if (seenIds.has(scheduleId)) {
+      throw new Error(`invalid manifest: metadata.agent.timer.schedules contains duplicate scheduleId '${scheduleId}'`);
+    }
+    seenIds.add(scheduleId);
+    const scheduleExpr = asNonEmptyString(entry.scheduleExpr ?? entry.expr);
+    if (!scheduleExpr || !isTimerExpr(scheduleExpr)) {
+      throw new Error(
+        `invalid manifest: metadata.agent.timer.schedules[${index}].scheduleExpr must match 'every <n> <unit>' (e.g. 'every 5 min')`
+      );
+    }
+    if (entry.enabled !== undefined && typeof entry.enabled !== "boolean") {
+      throw new Error(`invalid manifest: metadata.agent.timer.schedules[${index}].enabled must be a boolean when provided`);
+    }
+  }
+  if (obj.serial !== undefined && typeof obj.serial !== "boolean") {
+    throw new Error("invalid manifest: metadata.agent.timer.serial must be a boolean when provided");
+  }
+  if (obj.handlerTool !== undefined && !asNonEmptyString(obj.handlerTool)) {
+    throw new Error("invalid manifest: metadata.agent.timer.handlerTool must be a non-empty string when provided");
+  }
 }
 
 function validateAgentDescriptor(value: unknown): void {
@@ -129,8 +190,17 @@ function validateAgentDescriptor(value: unknown): void {
       throw new Error("invalid manifest: metadata.agent.triggers must only include timer|event|api|a2a");
     }
   }
+  if (obj.hitl !== undefined && typeof obj.hitl !== "boolean") {
+    throw new Error("invalid manifest: metadata.agent.hitl must be a boolean when provided");
+  }
+  if (obj.timer !== undefined) {
+    validateAgentTimerProfile(obj.timer);
+  }
   if (obj.a2a !== undefined) {
     validateAgentA2AProfile(obj.a2a);
+  }
+  if (triggers.includes("timer") && obj.timer === undefined) {
+    throw new Error("invalid manifest: metadata.agent.timer is required when metadata.agent.triggers includes 'timer'");
   }
   if (triggers.includes("a2a") && obj.a2a === undefined) {
     throw new Error("invalid manifest: metadata.agent.a2a is required when metadata.agent.triggers includes 'a2a'");
@@ -236,6 +306,30 @@ export function validateManifest(input: unknown): MCPServiceManifest {
   if (origin.type === "local_wasm") {
     if (!asNonEmptyString(origin.wasmPath) || !asNonEmptyString(origin.entry)) {
       throw new Error("invalid manifest: local_wasm origin requires wasmPath and entry");
+    }
+    if (origin.env !== undefined) {
+      if (!Array.isArray(origin.env)) {
+        throw new Error("invalid manifest: local_wasm origin.env must be an array when provided");
+      }
+      for (let index = 0; index < origin.env.length; index += 1) {
+        const entry = asObject(origin.env[index]);
+        if (!entry) {
+          throw new Error(`invalid manifest: local_wasm origin.env[${index}] must be an object`);
+        }
+        const name = asNonEmptyString(entry.name);
+        if (!name || !isEnvVarName(name)) {
+          throw new Error(`invalid manifest: local_wasm origin.env[${index}].name must be a valid env var name`);
+        }
+        if (entry.value !== undefined && !asNonEmptyString(entry.value)) {
+          throw new Error(`invalid manifest: local_wasm origin.env[${index}].value must be a non-empty string when provided`);
+        }
+        if (entry.secretRef !== undefined && !asNonEmptyString(entry.secretRef)) {
+          throw new Error(`invalid manifest: local_wasm origin.env[${index}].secretRef must be a non-empty string when provided`);
+        }
+        if (entry.value === undefined && entry.secretRef === undefined) {
+          throw new Error(`invalid manifest: local_wasm origin.env[${index}] must define value or secretRef`);
+        }
+      }
     }
   } else if (origin.type === "remote_mcp") {
     const endpoint = asNonEmptyString(origin.endpoint);

@@ -1033,6 +1033,259 @@ test("run messages endpoint executes local fn__receive_chat and emits assistant 
   }
 });
 
+test("run messages endpoint includes run chat history in agent tool payload on subsequent turns", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-chat-history-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"), {
+    hitlChatMode: "auto"
+  });
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+
+  const toolCalls: Array<Record<string, unknown>> = [];
+  const remote = await startServer(async (req, res) => {
+    if (req.method !== "POST" || req.url !== "/mcp") {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+      id?: string | number | null;
+      method?: string;
+      params?: Record<string, unknown>;
+    };
+
+    const write = (value: unknown): void => {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      res.end(`${JSON.stringify(value)}\n`);
+    };
+
+    if (!payload.id) {
+      res.statusCode = 202;
+      res.end();
+      return;
+    }
+
+    if (payload.method === "initialize") {
+      write({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: {
+          protocolVersion: "2025-11-05",
+          serverInfo: { name: "mock-chat-history", version: "1.0.0" },
+          capabilities: {}
+        }
+      });
+      return;
+    }
+    if (payload.method === "tools/list") {
+      write({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: {
+          tools: [
+            {
+              name: "receive_chat",
+              description: "Receive runtime chat payload",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  message: { type: "string" },
+                  runId: { type: "string" },
+                  sessionId: { type: "string" },
+                  messages: { type: "array" }
+                },
+                additionalProperties: true
+              }
+            }
+          ]
+        }
+      });
+      return;
+    }
+    if (payload.method === "resources/list") {
+      write({ jsonrpc: "2.0", id: payload.id, result: { resources: [] } });
+      return;
+    }
+    if (payload.method === "prompts/list") {
+      write({ jsonrpc: "2.0", id: payload.id, result: { prompts: [] } });
+      return;
+    }
+    if (payload.method === "tools/call") {
+      const params = asObject(payload.params);
+      const args = asObject(params.arguments);
+      toolCalls.push(args);
+      const historyLength = Array.isArray(args.messages) ? args.messages.length : 0;
+      write({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: {
+          content: [{ type: "text", text: `history_len:${historyLength}` }]
+        }
+      });
+      return;
+    }
+
+    write({ jsonrpc: "2.0", id: payload.id, error: { code: -32601, message: "method not found" } });
+  });
+
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const applyAgent = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        manifest: {
+          apiVersion: "clarity.runtime/v1",
+          kind: "MCPService",
+          metadata: {
+            sourceFile: `${remote.baseUrl}/mcp`,
+            module: "ChatHistoryRemote",
+            serviceType: "agent",
+            agent: {
+              agentId: "chat-history-agent",
+              name: "Chat History Agent",
+              role: "assistant",
+              objective: "Validate runtime history payload",
+              triggers: ["api"],
+              chat: {
+                mode: "auto"
+              }
+            }
+          },
+          spec: {
+            origin: {
+              type: "remote_mcp",
+              endpoint: `${remote.baseUrl}/mcp`,
+              transport: "streamable_http"
+            },
+            enabled: true,
+            autostart: false,
+            restartPolicy: {
+              mode: "never",
+              maxRestarts: 0,
+              windowSeconds: 60
+            },
+            policyRef: "default"
+          }
+        }
+      })
+    });
+    assert.equal(applyAgent.status, 200);
+    const serviceId = String(
+      asObject(asObject(asObject(asObject(applyAgent.body).service).manifest).metadata).serviceId ?? ""
+    );
+    assert.ok(serviceId.length > 0);
+
+    const started = await jsonRequest(runtime.baseUrl, `/api/services/${encodeURIComponent(serviceId)}/start`, {
+      method: "POST"
+    });
+    assert.equal(started.status, 200);
+
+    const runId = "run-chat-history-1";
+    const runCreated = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_created",
+        message: "Run created",
+        service_id: serviceId,
+        run_id: runId,
+        agent: "chat-history-agent",
+        data: {
+          trigger: "api",
+          triggerContext: {
+            route: "/tests",
+            method: "POST",
+            requestId: "req-chat-history-1",
+            caller: "agent-observability.test"
+          }
+        }
+      })
+    });
+    assert.equal(runCreated.status, 200);
+
+    const runStarted = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_started",
+        message: "Run started",
+        service_id: serviceId,
+        run_id: runId,
+        agent: "chat-history-agent"
+      })
+    });
+    assert.equal(runStarted.status, 200);
+
+    const postedFirst = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        role: "user",
+        message: "first turn",
+        service_id: serviceId,
+        agent: "chat-history-agent"
+      })
+    });
+    assert.equal(postedFirst.status, 200);
+
+    const firstAssistant = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) => String(item.kind) === "agent.chat.assistant_message" && String(asObject(item.data).message).includes("history_len:")
+    );
+    assert.ok(firstAssistant);
+
+    const postedSecond = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        role: "user",
+        message: "second turn",
+        service_id: serviceId,
+        agent: "chat-history-agent"
+      })
+    });
+    assert.equal(postedSecond.status, 200);
+
+    const secondAssistant = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) =>
+        String(item.kind) === "agent.chat.assistant_message"
+        && String(asObject(item.data).message).includes("history_len:")
+        && String(asObject(item.data).message) !== String(asObject(firstAssistant?.data).message)
+    );
+    assert.ok(secondAssistant);
+
+    assert.ok(toolCalls.length >= 2);
+    const firstCall = toolCalls[0];
+    const secondCall = toolCalls[1];
+    const firstMessages = Array.isArray(firstCall.messages) ? (firstCall.messages as Array<Record<string, unknown>>) : [];
+    const secondMessages = Array.isArray(secondCall.messages) ? (secondCall.messages as Array<Record<string, unknown>>) : [];
+    assert.ok(firstMessages.length >= 1);
+    assert.ok(secondMessages.length >= 3);
+    assert.ok(secondMessages.some((row) => String(row.role) === "assistant" && String(row.content).includes("history_len:")));
+    assert.equal(String(secondCall.contextVersion), "context.v1");
+    const context = asObject(secondCall.context);
+    assert.equal(String(context.version), "context.v1");
+    assert.equal(String(asObject(context.task).runId), runId);
+    assert.equal(String(asObject(context.task).serviceId), serviceId);
+    assert.equal(String(asObject(context.userContext).latestMessage), "second turn");
+    assert.ok(Array.isArray(asObject(context.conversation).messages));
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await remote.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("run-scoped agent events stream replays history and streams live updates", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clarity-agent-run-stream-http-"));
   const registry = new ServiceRegistry(path.join(root, "registry.json"));
@@ -1234,6 +1487,16 @@ test("agent registry endpoint returns only registered agent services", async () 
               role: "planner",
               objective: "Plan and hand off tasks",
               triggers: ["timer", "a2a"],
+              timer: {
+                serial: true,
+                schedules: [
+                  {
+                    scheduleId: "five_minute",
+                    scheduleExpr: "every 5 min",
+                    enabled: true
+                  }
+                ]
+              },
               a2a: {
                 protocol: "clarity.a2a.v1",
                 acceptedMessageKinds: ["handoff.request", "handoff.accepted", "handoff.rejected", "handoff.completed"],

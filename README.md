@@ -144,13 +144,6 @@ npm run test
 npm run test:coverage
 ```
 
-Legacy compatibility commands (still supported):
-
-```bash
-clarityctl add-local --source <file.clarity> --module <name> --wasm <file.wasm>
-clarityctl start-source --source <file.clarity> [--module <name>] [--wasm <file.wasm>]
-```
-
 ---
 
 ## Current Status
@@ -219,6 +212,7 @@ Not implemented yet:
 - Runtime spec: `docs/spec/v1/runtime-spec.md`
 - Manifest schema: `schemas/mcp-service-v1.schema.json`
 - Layered requirements: `docs/requirements/layered-runtime-requirements.md`
+- Shared language requirements intake: `../LLM-lang/docs/runtime-cli-language-requirements.md`
 - v0.9 roadmap: `docs/roadmap/v0.9-roadmap.md`
 
 ## Remote Policy Knobs
@@ -240,9 +234,16 @@ Not implemented yet:
 - `CLARITY_A2A_MAX_MESSAGE_BYTES=65536`: max accepted body size for formal A2A envelope ingestion at `POST /api/a2a/messages`.
 - Runtime chat dispatch:
   - `CLARITY_HITL_CHAT_MODE=auto|echo|disabled` (global default)
-  - per-agent overrides in manifest: `metadata.agent.chat` (`mode`, `handlerTool`)
+  - per-agent overrides in manifest: `metadata.agent.chat` (`mode`, `handlerTool`, `historyEnabled`, `historyMaxTurns`, `historyMaxChars`)
+  - local wasm env/secret injection: `spec.origin.env[]` with `value` or `secretRef` (resolved per service execution context only)
+  - local runtime chat model key override: `metadata.agent.chat.apiKeyEnv` is honored for local wasm `call_model` / `call_model_system`
+  - explicit direct-HITL capability: `metadata.agent.hitl=true`
   - in `auto` mode runtime dispatches to agent-owned handler tools (local default `fn__receive_chat`, remote default `receive_chat`)
+  - runtime always passes `contextVersion="context.v1"` and `context` to chat handlers
   - provider keys/models should be owned by the agent implementation, not runtime
+- Timer schedules:
+  - declare `metadata.agent.timer.schedules[]` (`scheduleId`, `scheduleExpr` with `every <n> <unit>`)
+  - runtime emits canonical timer trigger context (`scheduleId`, `scheduleExpr`, `firedAt`) and executes timer runs while service is running
 
 ## Security Defaults
 
@@ -271,7 +272,12 @@ Not implemented yet:
   - `POST /api/security/auth/secrets` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
   - `DELETE /api/security/auth/secrets` (requires `CLARITY_ENABLE_MCP_PROVISIONING=1`)
 - Service deprovision API:
-  - `DELETE /api/services/:serviceId` with optional body `{ "cleanup_artifacts": true }`
+- `DELETE /api/services/:serviceId` with optional body `{ "cleanup_artifacts": true }`
+
+## License
+
+- Repository license: MIT (see `LICENSE`).
+- Runtime-distributed artifacts must preserve the repository license text and declare SPDX-compatible metadata (`MIT`) in package/build metadata when published.
 
 ## CI/CD And GitHub
 

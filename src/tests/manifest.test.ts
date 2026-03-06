@@ -77,6 +77,7 @@ test("validateManifest accepts explicit metadata.serviceType=agent", () => {
           role: "coordinator",
           objective: "Coordinate downstream tools",
           triggers: ["api"],
+          hitl: true,
           llmProviders: ["openai"],
           chat: {
             mode: "auto",
@@ -84,7 +85,10 @@ test("validateManifest accepts explicit metadata.serviceType=agent", () => {
             handlerTool: "fn__receive_chat",
             model: "gpt-4.1-mini",
             apiKeyEnv: "OPENAI_API_KEY",
-            timeoutMs: 15000
+            timeoutMs: 15000,
+            historyEnabled: true,
+            historyMaxTurns: 32,
+            historyMaxChars: 16000
           }
         }
       },
@@ -108,8 +112,12 @@ test("validateManifest accepts explicit metadata.serviceType=agent", () => {
   assert.equal(manifest.metadata.serviceType, "agent");
   assert.equal(manifest.metadata.agent?.agentId, "agent-sample");
   assert.equal(manifest.metadata.agent?.llmProviders?.[0], "openai");
+  assert.equal(manifest.metadata.agent?.hitl, true);
   assert.equal(manifest.metadata.agent?.chat?.provider, "openai");
   assert.equal(manifest.metadata.agent?.chat?.handlerTool, "fn__receive_chat");
+  assert.equal(manifest.metadata.agent?.chat?.historyEnabled, true);
+  assert.equal(manifest.metadata.agent?.chat?.historyMaxTurns, 32);
+  assert.equal(manifest.metadata.agent?.chat?.historyMaxChars, 16000);
 });
 
 test("validateManifest accepts metadata.agent.a2a profile when trigger includes a2a", () => {
@@ -410,5 +418,251 @@ test("validateManifest rejects empty metadata.agent.chat.handlerTool", () => {
         }
       }),
     /metadata\.agent\.chat\.handlerTool/
+  );
+});
+
+test("validateManifest rejects invalid metadata.agent.chat.historyMaxTurns", () => {
+  assert.throws(
+    () =>
+      validateManifest({
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile: "/tmp/agent-invalid-chat-history.clarity",
+          module: "AgentInvalidChatHistory",
+          serviceType: "agent",
+          agent: {
+            agentId: "agent-invalid-chat-history",
+            name: "Agent Invalid Chat History",
+            role: "assistant",
+            objective: "Validate history limits",
+            triggers: ["api"],
+            chat: {
+              historyMaxTurns: 0
+            }
+          }
+        },
+        spec: {
+          origin: {
+            type: "local_wasm",
+            wasmPath: "/tmp/agent-invalid-chat-history.wasm",
+            entry: "mcp_main"
+          },
+          enabled: true,
+          autostart: false,
+          restartPolicy: {
+            mode: "never",
+            maxRestarts: 0,
+            windowSeconds: 60
+          },
+          policyRef: "default"
+        }
+      }),
+    /metadata\.agent\.chat\.historyMaxTurns/
+  );
+});
+
+test("validateManifest rejects invalid metadata.agent.hitl", () => {
+  assert.throws(
+    () =>
+      validateManifest({
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile: "/tmp/agent-invalid-hitl.clarity",
+          module: "AgentInvalidHitl",
+          serviceType: "agent",
+          agent: {
+            agentId: "agent-invalid-hitl",
+            name: "Agent Invalid Hitl",
+            role: "assistant",
+            objective: "Validate hitl flag",
+            triggers: ["api"],
+            hitl: "yes"
+          }
+        },
+        spec: {
+          origin: {
+            type: "local_wasm",
+            wasmPath: "/tmp/agent-invalid-hitl.wasm",
+            entry: "mcp_main"
+          },
+          enabled: true,
+          autostart: false,
+          restartPolicy: {
+            mode: "never",
+            maxRestarts: 0,
+            windowSeconds: 60
+          },
+          policyRef: "default"
+        }
+      }),
+    /metadata\.agent\.hitl/
+  );
+});
+
+test("validateManifest accepts metadata.agent.timer schedules when trigger includes timer", () => {
+  const manifest = validateManifest({
+    apiVersion: "clarity.runtime/v1",
+    kind: "MCPService",
+    metadata: {
+      sourceFile: "/tmp/agent-timer.clarity",
+      module: "AgentTimer",
+      serviceType: "agent",
+      agent: {
+        agentId: "agent-timer",
+        name: "Agent Timer",
+        role: "coordinator",
+        objective: "Run periodic workflows",
+        triggers: ["timer"],
+        timer: {
+          serial: true,
+          schedules: [
+            {
+              scheduleId: "every_five_min",
+              scheduleExpr: "every 5 min",
+              enabled: true
+            }
+          ]
+        }
+      }
+    },
+    spec: {
+      origin: {
+        type: "local_wasm",
+        wasmPath: "/tmp/agent-timer.wasm",
+        entry: "mcp_main"
+      },
+      enabled: true,
+      autostart: false,
+      restartPolicy: {
+        mode: "never",
+        maxRestarts: 0,
+        windowSeconds: 60
+      },
+      policyRef: "default"
+    }
+  });
+
+  assert.equal(manifest.metadata.agent?.timer?.schedules?.[0]?.scheduleId, "every_five_min");
+});
+
+test("validateManifest rejects timer trigger without metadata.agent.timer", () => {
+  assert.throws(
+    () =>
+      validateManifest({
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile: "/tmp/agent-invalid-timer.clarity",
+          module: "AgentInvalidTimer",
+          serviceType: "agent",
+          agent: {
+            agentId: "agent-invalid-timer",
+            name: "Agent Invalid Timer",
+            role: "coordinator",
+            objective: "Validate timer requirements",
+            triggers: ["timer"]
+          }
+        },
+        spec: {
+          origin: {
+            type: "local_wasm",
+            wasmPath: "/tmp/agent-invalid-timer.wasm",
+            entry: "mcp_main"
+          },
+          enabled: true,
+          autostart: false,
+          restartPolicy: {
+            mode: "never",
+            maxRestarts: 0,
+            windowSeconds: 60
+          },
+          policyRef: "default"
+        }
+      }),
+    /metadata\.agent\.timer/
+  );
+});
+
+test("validateManifest rejects invalid metadata.agent.timer.scheduleExpr", () => {
+  assert.throws(
+    () =>
+      validateManifest({
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile: "/tmp/agent-invalid-timer-expr.clarity",
+          module: "AgentInvalidTimerExpr",
+          serviceType: "agent",
+          agent: {
+            agentId: "agent-invalid-timer-expr",
+            name: "Agent Invalid Timer Expr",
+            role: "coordinator",
+            objective: "Validate timer schedule expression",
+            triggers: ["timer"],
+            timer: {
+              schedules: [
+                {
+                  scheduleId: "bad",
+                  scheduleExpr: "*/5 * * * *"
+                }
+              ]
+            }
+          }
+        },
+        spec: {
+          origin: {
+            type: "local_wasm",
+            wasmPath: "/tmp/agent-invalid-timer-expr.wasm",
+            entry: "mcp_main"
+          },
+          enabled: true,
+          autostart: false,
+          restartPolicy: {
+            mode: "never",
+            maxRestarts: 0,
+            windowSeconds: 60
+          },
+          policyRef: "default"
+        }
+      }),
+    /metadata\.agent\.timer\.schedules\[0\]\.scheduleExpr/
+  );
+});
+
+test("validateManifest rejects local_wasm env entries without value or secretRef", () => {
+  assert.throws(
+    () =>
+      validateManifest({
+        apiVersion: "clarity.runtime/v1",
+        kind: "MCPService",
+        metadata: {
+          sourceFile: "/tmp/local-env-invalid.clarity",
+          module: "LocalEnvInvalid",
+          serviceType: "mcp"
+        },
+        spec: {
+          origin: {
+            type: "local_wasm",
+            wasmPath: "/tmp/local-env-invalid.wasm",
+            entry: "mcp_main",
+            env: [
+              {
+                name: "OPENAI_API_KEY"
+              }
+            ]
+          },
+          enabled: true,
+          autostart: false,
+          restartPolicy: {
+            mode: "never",
+            maxRestarts: 0,
+            windowSeconds: 60
+          },
+          policyRef: "default"
+        }
+      }),
+    /local_wasm origin\.env\[0\] must define value or secretRef/
   );
 });

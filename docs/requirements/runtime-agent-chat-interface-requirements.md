@@ -1,6 +1,6 @@
 # Runtime HITL Chat Executor Requirements
 
-Status: Draft  
+Status: Implemented (baseline)  
 Owner: `LLM-runtime`  
 Related: `LLM-cli` runtime-chat bridge (`docs/runtime-agent-chat-spec.md` in `LLM-cli`)
 

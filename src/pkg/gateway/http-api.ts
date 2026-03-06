@@ -292,14 +292,46 @@ function summarizeAgentRegistryRecord(record: Awaited<ReturnType<ServiceManager[
   const chatModel = nonEmptyString(chatRecord.model);
   const chatApiKeyEnv = nonEmptyString(chatRecord.apiKeyEnv);
   const chatTimeoutMs = Number(chatRecord.timeoutMs);
+  const chatHistoryEnabled = typeof chatRecord.historyEnabled === "boolean" ? chatRecord.historyEnabled : undefined;
+  const chatHistoryMaxTurns = Number(chatRecord.historyMaxTurns);
+  const chatHistoryMaxChars = Number(chatRecord.historyMaxChars);
   const chat = {
     ...(chatMode ? { mode: chatMode } : {}),
     ...(chatProvider ? { provider: chatProvider } : {}),
     ...(chatHandlerTool ? { handlerTool: chatHandlerTool } : {}),
     ...(chatModel ? { model: chatModel } : {}),
     ...(chatApiKeyEnv ? { apiKeyEnv: chatApiKeyEnv } : {}),
-    ...(Number.isInteger(chatTimeoutMs) && chatTimeoutMs > 0 ? { timeoutMs: chatTimeoutMs } : {})
+    ...(Number.isInteger(chatTimeoutMs) && chatTimeoutMs > 0 ? { timeoutMs: chatTimeoutMs } : {}),
+    ...(chatHistoryEnabled !== undefined ? { historyEnabled: chatHistoryEnabled } : {}),
+    ...(Number.isInteger(chatHistoryMaxTurns) && chatHistoryMaxTurns > 0 ? { historyMaxTurns: chatHistoryMaxTurns } : {}),
+    ...(Number.isInteger(chatHistoryMaxChars) && chatHistoryMaxChars > 0 ? { historyMaxChars: chatHistoryMaxChars } : {})
   };
+  const timerRecord = asObject(descriptorRecord.timer);
+  const timerSchedulesRaw = Array.isArray(timerRecord.schedules) ? timerRecord.schedules : [];
+  const timerSchedules = timerSchedulesRaw
+    .map((row) => {
+      const item = asObject(row);
+      const scheduleId = nonEmptyString(item.scheduleId);
+      const scheduleExpr = nonEmptyString(item.scheduleExpr);
+      const enabled = typeof item.enabled === "boolean" ? item.enabled : undefined;
+      if (!scheduleId || !scheduleExpr) {
+        return null;
+      }
+      return {
+        scheduleId,
+        scheduleExpr,
+        ...(enabled !== undefined ? { enabled } : {})
+      };
+    })
+    .filter((row): row is { scheduleId: string; scheduleExpr: string; enabled?: boolean } => row !== null);
+  const timerHandlerTool = nonEmptyString(timerRecord.handlerTool);
+  const timer = timerSchedules.length > 0
+    ? {
+        schedules: timerSchedules,
+        ...(typeof timerRecord.serial === "boolean" ? { serial: timerRecord.serial } : {}),
+        ...(timerHandlerTool ? { handlerTool: timerHandlerTool } : {})
+      }
+    : undefined;
   return {
     serviceId: record.manifest.metadata.serviceId,
     displayName: record.manifest.metadata.displayName,
@@ -333,6 +365,7 @@ function summarizeAgentRegistryRecord(record: Awaited<ReturnType<ServiceManager[
       role: descriptor.role,
       objective: descriptor.objective,
       triggers: Array.isArray(descriptor.triggers) ? descriptor.triggers : [],
+      ...(typeof descriptorRecord.hitl === "boolean" ? { hitl: descriptorRecord.hitl } : {}),
       inputs: listField("inputs"),
       outputs: listField("outputs"),
       dependsOn: listField("dependsOn"),
@@ -342,6 +375,7 @@ function summarizeAgentRegistryRecord(record: Awaited<ReturnType<ServiceManager[
       llmProviders: listField("llmProviders"),
       version: nonEmptyString(descriptorRecord.version) ?? undefined,
       ...(Object.keys(chat).length > 0 ? { chat } : {}),
+      ...(timer ? { timer } : {}),
       a2a
     }
   };

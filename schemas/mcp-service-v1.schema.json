@@ -31,6 +31,30 @@
               "minItems": 1,
               "items": { "enum": ["timer", "event", "api", "a2a"] }
             },
+            "hitl": { "type": "boolean" },
+            "timer": {
+              "type": "object",
+              "required": ["schedules"],
+              "properties": {
+                "schedules": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["scheduleId", "scheduleExpr"],
+                    "properties": {
+                      "scheduleId": { "type": "string", "minLength": 1, "maxLength": 120 },
+                      "scheduleExpr": { "type": "string", "minLength": 1, "maxLength": 120 },
+                      "enabled": { "type": "boolean" }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "serial": { "type": "boolean" },
+                "handlerTool": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            },
             "a2a": {
               "type": "object",
               "required": ["protocol"],
@@ -77,7 +101,10 @@
                 "handlerTool": { "type": "string", "minLength": 1 },
                 "model": { "type": "string", "minLength": 1 },
                 "apiKeyEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
-                "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000 }
+                "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000 },
+                "historyEnabled": { "type": "boolean" },
+                "historyMaxTurns": { "type": "integer", "minimum": 1, "maximum": 200 },
+                "historyMaxChars": { "type": "integer", "minimum": 256, "maximum": 200000 }
               },
               "additionalProperties": false
             },
@@ -87,6 +114,19 @@
           },
           "additionalProperties": false,
           "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "triggers": {
+                    "contains": { "const": "timer" }
+                  }
+                },
+                "required": ["triggers"]
+              },
+              "then": {
+                "required": ["timer"]
+              }
+            },
             {
               "if": {
                 "properties": {

@@ -203,6 +203,35 @@ export async function resolveRemoteAuthHeaders(authRef: string, input: ResolveRe
   throw new Error(`unsupported authRef provider: ${parsed.provider}`);
 }
 
+export async function resolveRemoteAuthSecret(authRef: string, input: ResolveRemoteAuthOptions = {}): Promise<string> {
+  const options: Required<ResolveRemoteAuthOptions> = {
+    env: input.env ?? process.env,
+    cwd: input.cwd ?? process.cwd()
+  };
+  const parsed = parseRemoteAuthRef(authRef);
+
+  if (parsed.provider === "legacy_env") {
+    const envKey = `CLARITY_REMOTE_AUTH_${sanitizeLegacyRef(parsed.target)}`;
+    return readEnvValue(options.env, envKey);
+  }
+
+  if (parsed.provider === "env") {
+    const envKey = ensureNonEmpty(parsed.target, "env authRef variable name");
+    return readEnvValue(options.env, envKey);
+  }
+
+  if (parsed.provider === "file") {
+    return readFileSecret(parsed.target, options);
+  }
+
+  if (parsed.provider === "header_env") {
+    const { envKey } = parseHeaderEnvTarget(parsed.target);
+    return readEnvValue(options.env, envKey);
+  }
+
+  throw new Error(`unsupported authRef provider: ${parsed.provider}`);
+}
+
 export async function validateRemoteAuthRef(authRef: string, input: ResolveRemoteAuthOptions = {}): Promise<RemoteAuthValidation> {
   const options: Required<ResolveRemoteAuthOptions> = {
     env: input.env ?? process.env,

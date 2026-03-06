@@ -10,7 +10,7 @@ import type {
 import { deriveInterfaceRevision, deriveServiceId } from "../registry/ids.js";
 import { ServiceRegistry } from "../registry/registry.js";
 import { normalizeNamespace } from "../security/namespace.js";
-import { resolveRemoteAuthHeaders } from "../security/remote-auth.js";
+import { resolveRemoteAuthHeaders, resolveRemoteAuthSecret } from "../security/remote-auth.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -87,9 +87,60 @@ function asPositiveInteger(value: unknown): number | undefined {
   return value;
 }
 
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => asNonEmptyString(item))
+    .filter((item): item is string => item !== undefined);
+}
+
 function byteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
+
+const TIMER_EXPR_RE = /^every\s+(\d+)\s*(ms|millisecond|milliseconds|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)$/i;
+
+interface ParsedTimerSchedule {
+  intervalMs: number;
+}
+
+function parseTimerScheduleExpr(expr: string): ParsedTimerSchedule | null {
+  const match = TIMER_EXPR_RE.exec(expr.trim());
+  if (!match) {
+    return null;
+  }
+  const every = Number.parseInt(match[1], 10);
+  if (!Number.isInteger(every) || every <= 0) {
+    return null;
+  }
+  const unit = match[2].toLowerCase();
+  const multiplier =
+    unit === "ms" || unit === "millisecond" || unit === "milliseconds"
+      ? 1
+      : unit === "s" || unit === "sec" || unit === "secs" || unit === "second" || unit === "seconds"
+        ? 1_000
+        : unit === "m" || unit === "min" || unit === "mins" || unit === "minute" || unit === "minutes"
+          ? 60_000
+          : 3_600_000;
+  const intervalMs = every * multiplier;
+  if (!Number.isFinite(intervalMs) || intervalMs < 1_000 || intervalMs > 86_400_000) {
+    return null;
+  }
+  return { intervalMs };
+}
+
+const LOCAL_WASM_UNSUPPORTED_IMPORTS = new Set([
+  "a2a_discover",
+  "a2a_submit",
+  "a2a_poll",
+  "a2a_cancel",
+  "mcp_connect",
+  "mcp_list_tools",
+  "mcp_call_tool",
+  "mcp_disconnect"
+]);
 
 const DEFAULT_TELEMETRY_PATH = path.resolve(process.cwd(), ".clarity/runtime/telemetry.json");
 
@@ -126,6 +177,7 @@ export interface ToolCallContext {
   traceId?: string;
   runId?: string;
   sessionId?: string;
+  localEnvOverrides?: Record<string, string>;
   spanId?: string;
   retries?: number;
   requestBytes?: number;
@@ -177,6 +229,75 @@ interface ResolvedRuntimeChatConfig {
   mode: "auto" | "echo" | "disabled";
   strategy: "agent_tool" | "echo";
   handlerTool: string;
+  historyEnabled: boolean;
+  historyMaxTurns: number;
+  historyMaxChars: number;
+}
+
+interface RuntimeChatMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+}
+
+interface RuntimeChatHistorySnapshot {
+  messages: RuntimeChatMessage[];
+  totalMessages: number;
+  truncated: boolean;
+  maxTurns: number;
+  maxChars: number;
+}
+
+interface RuntimeChatContextEnvelopeV1 {
+  version: "context.v1";
+  task: {
+    runId: string;
+    sessionId: string;
+    serviceId: string;
+    agent: string;
+    objective?: string;
+    role?: string;
+  };
+  instructions: {
+    allowedMcpTools: string[];
+    allowedLlmProviders: string[];
+  };
+  userContext: {
+    latestMessage: string;
+    trigger: AgentTriggerType;
+    triggerContext: Record<string, unknown>;
+  };
+  retrieval: {
+    items: Array<Record<string, unknown>>;
+    count: number;
+  };
+  conversation: {
+    messages: RuntimeChatMessage[];
+    totalMessages: number;
+    truncated: boolean;
+  };
+  runtimeState: {
+    status?: AgentRunStatus;
+    waitingReason?: string;
+    eventCount?: number;
+    lastEventKind?: string;
+  };
+  policy: {
+    mode: "auto" | "echo" | "disabled";
+    strategy: "agent_tool" | "echo";
+    handlerTool: string;
+    historyEnabled: boolean;
+    historyMaxTurns: number;
+    historyMaxChars: number;
+  };
+  budget: {
+    historyCharsUsed: number;
+    historyCharsMax: number;
+    historyCharsRemaining: number;
+  };
+  provenance: {
+    generatedAt: string;
+    source: "runtime_hitl_executor";
+  };
 }
 
 function asNonEmptyString(value: unknown): string | undefined {
@@ -236,6 +357,8 @@ export class ServiceManager {
   private readonly remoteInitialized = new Set<string>();
   private readonly remoteInFlight = new Map<string, number>();
   private readonly localModuleCache = new Map<string, WebAssembly.Module>();
+  private readonly timerIntervals = new Map<string, NodeJS.Timeout>();
+  private readonly timerRunChains = new Map<string, Promise<void>>();
   private readonly startFailures = new Map<string, number[]>();
   private readonly toolCallOutcomes = new Map<string, Array<{ at: number; ok: boolean }>>();
   private readonly events: AuditEvent[] = [];
@@ -268,6 +391,15 @@ export class ServiceManager {
       return;
     }
     await this.loadTelemetry();
+    const records = await this.registry.list();
+    for (const record of records) {
+      const serviceId = record.manifest.metadata.serviceId!;
+      if (record.runtime.lifecycle === "RUNNING") {
+        this.syncTimerSchedulesForService(record);
+      } else {
+        this.clearTimerSchedulesForService(serviceId);
+      }
+    }
     this.telemetryLoaded = true;
   }
 
@@ -296,6 +428,11 @@ export class ServiceManager {
         module: manifest.metadata.module
       }
     });
+    if (record.runtime.lifecycle === "RUNNING") {
+      this.syncTimerSchedulesForService(record);
+    } else {
+      this.clearTimerSchedulesForService(manifest.metadata.serviceId!);
+    }
     return record;
   }
 
@@ -329,6 +466,7 @@ export class ServiceManager {
     }));
     this.startFailures.delete(serviceId);
     this.toolCallOutcomes.delete(serviceId);
+    this.clearTimerSchedulesForService(serviceId);
     this.emitEvent({
       kind: "service.unquarantined",
       serviceId,
@@ -357,6 +495,14 @@ export class ServiceManager {
       } catch {
         health = "DEGRADED";
         lastError = `wasm artifact missing: ${existing.manifest.spec.origin.wasmPath}`;
+      }
+      if (!lastError) {
+        try {
+          await this.assertLocalWasmImportSupport(existing);
+        } catch (error) {
+          health = "DEGRADED";
+          lastError = error instanceof Error ? error.message : String(error);
+        }
       }
     }
 
@@ -406,6 +552,7 @@ export class ServiceManager {
     }
     if (quarantined) {
       this.starts.delete(serviceId);
+      this.clearTimerSchedulesForService(serviceId);
       this.emitEvent({
         kind: "service.quarantined",
         serviceId,
@@ -415,6 +562,7 @@ export class ServiceManager {
       });
     } else if (startFailed) {
       this.starts.delete(serviceId);
+      this.clearTimerSchedulesForService(serviceId);
       this.emitEvent({
         kind: "service.start_failed",
         serviceId,
@@ -424,6 +572,7 @@ export class ServiceManager {
       });
     } else {
       this.starts.set(serviceId, Date.now());
+      this.syncTimerSchedulesForService(updated);
       this.emitEvent({
         kind: "service.started",
         serviceId,
@@ -449,6 +598,7 @@ export class ServiceManager {
       }
     }));
     this.starts.delete(serviceId);
+    this.clearTimerSchedulesForService(serviceId);
     this.remoteInitialized.delete(serviceId);
     this.toolCallOutcomes.delete(serviceId);
     this.appendLog(serviceId, "Service stopped");
@@ -499,6 +649,7 @@ export class ServiceManager {
     }
 
     this.starts.delete(serviceId);
+    this.clearTimerSchedulesForService(serviceId);
     this.logs.delete(serviceId);
     this.remoteInitialized.delete(serviceId);
     this.remoteInFlight.delete(serviceId);
@@ -729,7 +880,8 @@ export class ServiceManager {
         const argsList = parseFunctionArgs(args);
         const output = await this.runLocalFunction(service, functionName, argsList, {
           expectStringResult: parseFunctionExpectString(args),
-          allowStringArgs: parseFunctionAllowStringArgs(args)
+          allowStringArgs: parseFunctionAllowStringArgs(args),
+          envOverrides: context?.localEnvOverrides
         });
         this.appendLog(serviceId, `tools/call ${toolName}(${JSON.stringify(argsList)})`);
         this.emitEvent({
@@ -862,20 +1014,28 @@ export class ServiceManager {
       current.lastEventKind = event.kind;
       current.lastEventMessage = event.message;
 
+      const terminal = current.status === "completed" || current.status === "failed" || current.status === "cancelled";
+
       if (event.kind === "agent.run_created") {
-        current.trigger = normalizeTrigger(payload.trigger ?? payload.triggerType ?? payload.trigger_type ?? payload.source);
-        current.triggerContext = pickTriggerContext(current.trigger, payload) ?? current.triggerContext;
-        current.status = "queued";
+        if (!terminal) {
+          current.trigger = normalizeTrigger(payload.trigger ?? payload.triggerType ?? payload.trigger_type ?? payload.source);
+          current.triggerContext = pickTriggerContext(current.trigger, payload) ?? current.triggerContext;
+          current.status = "queued";
+        }
       } else if (event.kind === "agent.run_started") {
-        current.status = "running";
-        current.startedAt ??= event.at;
-        current.waitingReason = undefined;
-        current.failureReason = undefined;
+        if (!terminal) {
+          current.status = "running";
+          current.startedAt ??= event.at;
+          current.waitingReason = undefined;
+          current.failureReason = undefined;
+        }
       } else if (event.kind === "agent.waiting") {
-        current.status = "waiting";
-        const reason = String(payload.reason ?? payload.waitingReason ?? "").trim();
-        if (reason) {
-          current.waitingReason = reason;
+        if (!terminal) {
+          current.status = "waiting";
+          const reason = String(payload.reason ?? payload.waitingReason ?? "").trim();
+          if (reason) {
+            current.waitingReason = reason;
+          }
         }
       } else if (event.kind === "agent.step_started") {
         const stepId = String(payload.stepId ?? payload.step_id ?? "").trim();
@@ -1046,6 +1206,16 @@ export class ServiceManager {
   }
 
   async shutdown(): Promise<void> {
+    for (const timer of this.timerIntervals.values()) {
+      clearInterval(timer);
+    }
+    this.timerIntervals.clear();
+    if (this.hitlRunChains.size > 0) {
+      await Promise.allSettled([...this.hitlRunChains.values()]);
+    }
+    if (this.timerRunChains.size > 0) {
+      await Promise.allSettled([...this.timerRunChains.values()]);
+    }
     await this.telemetryWriteQueue;
   }
 
@@ -1063,6 +1233,322 @@ export class ServiceManager {
         this.starts.delete(tracked);
       }
     }
+  }
+
+  private clearTimerSchedulesForService(serviceId: string): void {
+    const prefix = `${serviceId}:`;
+    for (const [key, timer] of this.timerIntervals.entries()) {
+      if (!key.startsWith(prefix)) {
+        continue;
+      }
+      clearInterval(timer);
+      this.timerIntervals.delete(key);
+    }
+    for (const key of [...this.timerRunChains.keys()]) {
+      if (key.startsWith(prefix)) {
+        this.timerRunChains.delete(key);
+      }
+    }
+  }
+
+  private syncTimerSchedulesForService(service: ServiceRecord): void {
+    const serviceId = service.manifest.metadata.serviceId!;
+    this.clearTimerSchedulesForService(serviceId);
+    if (service.runtime.lifecycle !== "RUNNING") {
+      return;
+    }
+    const schedules = this.resolveTimerSchedules(service);
+    for (const schedule of schedules) {
+      const key = `${serviceId}:${schedule.scheduleId}`;
+      const interval = setInterval(() => {
+        this.queueTimerScheduleRun(serviceId, schedule);
+      }, schedule.intervalMs);
+      this.timerIntervals.set(key, interval);
+    }
+  }
+
+  private resolveTimerSchedules(service: ServiceRecord): Array<{
+    scheduleId: string;
+    scheduleExpr: string;
+    intervalMs: number;
+    serial: boolean;
+    handlerTool?: string;
+  }> {
+    const agent = asObject(service.manifest.metadata.agent);
+    const triggers = asStringArray(agent.triggers);
+    if (!triggers.includes("timer")) {
+      return [];
+    }
+    const timer = asObject(agent.timer);
+    const schedules = Array.isArray(timer.schedules) ? timer.schedules : [];
+    const serial = timer.serial === false ? false : true;
+    const handlerTool = asNonEmptyString(timer.handlerTool);
+    const out: Array<{
+      scheduleId: string;
+      scheduleExpr: string;
+      intervalMs: number;
+      serial: boolean;
+      handlerTool?: string;
+    }> = [];
+    for (const row of schedules) {
+      const entry = asObject(row);
+      const enabled = entry.enabled === false ? false : true;
+      if (!enabled) {
+        continue;
+      }
+      const scheduleId = asNonEmptyString(entry.scheduleId);
+      const scheduleExpr = asNonEmptyString(entry.scheduleExpr);
+      if (!scheduleId || !scheduleExpr) {
+        continue;
+      }
+      const parsed = parseTimerScheduleExpr(scheduleExpr);
+      if (!parsed) {
+        continue;
+      }
+      out.push({
+        scheduleId,
+        scheduleExpr,
+        intervalMs: parsed.intervalMs,
+        serial,
+        ...(handlerTool ? { handlerTool } : {})
+      });
+    }
+    return out;
+  }
+
+  private queueTimerScheduleRun(
+    serviceId: string,
+    schedule: {
+      scheduleId: string;
+      scheduleExpr: string;
+      intervalMs: number;
+      serial: boolean;
+      handlerTool?: string;
+    }
+  ): void {
+    const key = `${serviceId}:${schedule.scheduleId}`;
+    if (!schedule.serial) {
+      const run = this.executeTimerScheduleRun(serviceId, schedule).catch(() => {});
+      this.timerRunChains.set(key, run);
+      return;
+    }
+    const chain = this.timerRunChains.get(key) ?? Promise.resolve();
+    const next = chain
+      .catch(() => {})
+      .then(() => this.executeTimerScheduleRun(serviceId, schedule));
+    this.timerRunChains.set(key, next);
+  }
+
+  private async executeTimerScheduleRun(
+    serviceId: string,
+    schedule: {
+      scheduleId: string;
+      scheduleExpr: string;
+      intervalMs: number;
+      serial: boolean;
+      handlerTool?: string;
+    }
+  ): Promise<void> {
+    const service = await this.registry.get(serviceId);
+    if (!service || service.runtime.lifecycle !== "RUNNING") {
+      return;
+    }
+    const agentMeta = asObject(service.manifest.metadata.agent);
+    const agentId =
+      asNonEmptyString(agentMeta.agentId)
+      ?? asNonEmptyString(agentMeta.name)
+      ?? asNonEmptyString(service.manifest.metadata.module)
+      ?? "unknown-agent";
+    const firedAt = nowIso();
+    const runId = `timer_${serviceId}_${schedule.scheduleId}_${Date.now()}`;
+    const triggerContext = {
+      scheduleId: schedule.scheduleId,
+      scheduleExpr: schedule.scheduleExpr,
+      firedAt
+    };
+
+    this.emitEvent({
+      kind: "agent.run_created",
+      serviceId,
+      level: "info",
+      message: `Timer schedule fired: ${schedule.scheduleId}`,
+      data: {
+        runId,
+        run_id: runId,
+        serviceId,
+        service_id: serviceId,
+        agent: agentId,
+        trigger: "timer",
+        triggerContext,
+        scheduleId: schedule.scheduleId,
+        scheduleExpr: schedule.scheduleExpr,
+        firedAt
+      }
+    });
+    this.emitEvent({
+      kind: "agent.run_started",
+      serviceId,
+      level: "info",
+      message: `Timer run started: ${runId}`,
+      data: {
+        runId,
+        run_id: runId,
+        serviceId,
+        service_id: serviceId,
+        agent: agentId
+      }
+    });
+
+    const defaultHandler = service.manifest.spec.origin.type === "local_wasm" ? "fn__on_timer" : "on_timer";
+    const handlerTool = schedule.handlerTool ?? defaultHandler;
+    const hasHandler = (service.interfaceSnapshot?.tools ?? []).some((tool) => tool.name === handlerTool);
+    if (!hasHandler && !schedule.handlerTool) {
+      this.emitEvent({
+        kind: "agent.run_completed",
+        serviceId,
+        level: "info",
+        message: `Timer run completed (no handler): ${runId}`,
+        data: {
+          runId,
+          run_id: runId,
+          serviceId,
+          service_id: serviceId,
+          agent: agentId,
+          trigger: "timer",
+          triggerContext
+        }
+      });
+      return;
+    }
+
+    const stepId = `timer_step_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    this.emitEvent({
+      kind: "agent.step_started",
+      serviceId,
+      level: "info",
+      message: `Timer step started: ${handlerTool}`,
+      data: {
+        runId,
+        run_id: runId,
+        serviceId,
+        service_id: serviceId,
+        agent: agentId,
+        stepId,
+        step_id: stepId,
+        trigger: "timer",
+        triggerContext,
+        handlerTool
+      }
+    });
+
+    try {
+      await this.callTool(
+        serviceId,
+        handlerTool,
+        this.buildTimerToolArgs({
+          service,
+          runId,
+          scheduleId: schedule.scheduleId,
+          scheduleExpr: schedule.scheduleExpr,
+          firedAt,
+          agent: agentId
+        }),
+        {
+          runId,
+          sessionId: runId
+        }
+      );
+      this.emitEvent({
+        kind: "agent.step_completed",
+        serviceId,
+        level: "info",
+        message: `Timer step completed: ${handlerTool}`,
+        data: {
+          runId,
+          run_id: runId,
+          serviceId,
+          service_id: serviceId,
+          agent: agentId,
+          stepId,
+          step_id: stepId
+        }
+      });
+      this.emitEvent({
+        kind: "agent.run_completed",
+        serviceId,
+        level: "info",
+        message: `Timer run completed: ${runId}`,
+        data: {
+          runId,
+          run_id: runId,
+          serviceId,
+          service_id: serviceId,
+          agent: agentId,
+          trigger: "timer",
+          triggerContext
+        }
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.emitEvent({
+        kind: "agent.run_failed",
+        serviceId,
+        level: "error",
+        message: `Timer run failed: ${runId}`,
+        data: {
+          runId,
+          run_id: runId,
+          serviceId,
+          service_id: serviceId,
+          agent: agentId,
+          trigger: "timer",
+          triggerContext,
+          error: message
+        }
+      });
+    }
+  }
+
+  private buildTimerToolArgs(input: {
+    service: ServiceRecord;
+    runId: string;
+    scheduleId: string;
+    scheduleExpr: string;
+    firedAt: string;
+    agent: string;
+  }): unknown {
+    const triggerContext = {
+      scheduleId: input.scheduleId,
+      scheduleExpr: input.scheduleExpr,
+      firedAt: input.firedAt
+    };
+    if (input.service.manifest.spec.origin.type === "local_wasm") {
+      return {
+        args: [
+          input.runId,
+          input.scheduleId,
+          input.scheduleExpr,
+          input.firedAt,
+          JSON.stringify({
+            runId: input.runId,
+            agent: input.agent,
+            trigger: "timer",
+            triggerContext
+          })
+        ],
+        allowStringArgs: true,
+        expectStringResult: true
+      };
+    }
+    return {
+      runId: input.runId,
+      agent: input.agent,
+      trigger: "timer",
+      triggerContext,
+      scheduleId: input.scheduleId,
+      scheduleExpr: input.scheduleExpr,
+      firedAt: input.firedAt
+    };
   }
 
   private withLiveRuntime(record: ServiceRecord): ServiceRecord {
@@ -1336,6 +1822,66 @@ export class ServiceManager {
     }
   }
 
+  private async assertLocalWasmImportSupport(service: ServiceRecord): Promise<void> {
+    if (service.manifest.spec.origin.type !== "local_wasm") {
+      return;
+    }
+    const module = await this.loadLocalModule(service.manifest.spec.origin.wasmPath);
+    const unsupported = WebAssembly.Module.imports(module)
+      .filter((item) => item.module === "env" && LOCAL_WASM_UNSUPPORTED_IMPORTS.has(item.name))
+      .map((item) => `env.${item.name}`);
+    if (unsupported.length === 0) {
+      return;
+    }
+    throw new Error(
+      `local_wasm unsupported host imports: ${unsupported.join(", ")}. `
+      + "Use remote_mcp execution for std/a2a or std/mcp, or remove these imports."
+    );
+  }
+
+  private async resolveLocalExecutionEnv(
+    service: ServiceRecord,
+    overrides?: Record<string, string>
+  ): Promise<NodeJS.ProcessEnv> {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    if (service.manifest.spec.origin.type !== "local_wasm") {
+      return {
+        ...env,
+        ...(overrides ?? {})
+      };
+    }
+    const originEnv = Array.isArray(service.manifest.spec.origin.env) ? service.manifest.spec.origin.env : [];
+    for (const entry of originEnv) {
+      const name = asNonEmptyString(entry.name);
+      if (!name) {
+        continue;
+      }
+      if (asNonEmptyString(entry.secretRef)) {
+        const secretRef = asNonEmptyString(entry.secretRef)!;
+        try {
+          const value = await resolveRemoteAuthSecret(secretRef, {
+            env: process.env,
+            cwd: process.cwd()
+          });
+          env[name] = value;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`failed to resolve local_wasm env '${name}' from secretRef '${secretRef}': ${message}`, {
+            cause: error
+          });
+        }
+        continue;
+      }
+      env[name] = entry.value ?? "";
+    }
+    if (overrides) {
+      for (const [key, value] of Object.entries(overrides)) {
+        env[key] = value;
+      }
+    }
+    return env;
+  }
+
   private async runLocalFunction(
     service: ServiceRecord,
     functionName: string,
@@ -1343,6 +1889,7 @@ export class ServiceManager {
     options?: {
       expectStringResult?: boolean;
       allowStringArgs?: boolean;
+      envOverrides?: Record<string, string>;
     }
   ): Promise<string> {
     if (service.manifest.spec.origin.type !== "local_wasm") {
@@ -1352,6 +1899,7 @@ export class ServiceManager {
     const wasmPath = service.manifest.spec.origin.wasmPath;
     const timeoutMs = parsePositiveInteger(process.env.CLARITY_LOCAL_FN_TIMEOUT_MS) ?? 2_000;
     const args = this.resolveWasmArgs(argsList, options?.allowStringArgs === true);
+    const localEnv = await this.resolveLocalExecutionEnv(service, options?.envOverrides);
     let lastTypeError: Error | null = null;
 
     for (const candidate of args) {
@@ -1360,7 +1908,8 @@ export class ServiceManager {
         functionName,
         candidate,
         timeoutMs,
-        options?.expectStringResult === true
+        options?.expectStringResult === true,
+        localEnv
       );
       if (workerResult.ok) {
         return this.formatWorkerResult(workerResult.value);
@@ -1390,12 +1939,14 @@ export class ServiceManager {
     functionName: string,
     args: Array<number | bigint | string>,
     timeoutMs: number,
-    expectStringResult: boolean
+    expectStringResult: boolean,
+    workerEnv: NodeJS.ProcessEnv
   ): Promise<WorkerResponse> {
     const workerUrl = new URL("./local-wasm-worker.js", import.meta.url);
 
     return new Promise<WorkerResponse>((resolve, reject) => {
       const worker = new Worker(workerUrl, {
+        env: workerEnv,
         workerData: {
           wasmPath,
           functionName,
@@ -1588,6 +2139,37 @@ export class ServiceManager {
     }
   }
 
+  private async resolveRuntimeInputServiceId(
+    explicitServiceId: string | undefined,
+    preferredAgent: string | undefined
+  ): Promise<string | undefined> {
+    const directServiceId = asNonEmptyString(explicitServiceId);
+    if (directServiceId) {
+      return directServiceId;
+    }
+
+    const preferred = asNonEmptyString(preferredAgent)?.toLowerCase();
+    if (!preferred) {
+      return undefined;
+    }
+
+    const records = await this.registry.list();
+    const matches = records.filter((record) => {
+      const meta = asObject(record.manifest.metadata.agent);
+      const agentId = asNonEmptyString(meta.agentId)?.toLowerCase();
+      const agentName = asNonEmptyString(meta.name)?.toLowerCase();
+      const moduleName = asNonEmptyString(record.manifest.metadata.module)?.toLowerCase();
+      return agentId === preferred || agentName === preferred || moduleName === preferred;
+    });
+
+    if (matches.length === 0) {
+      return undefined;
+    }
+
+    const running = matches.find((record) => record.runtime.lifecycle === "RUNNING");
+    return running?.manifest.metadata.serviceId ?? matches[0].manifest.metadata.serviceId;
+  }
+
   private async processRuntimeHitlInput(
     input: {
       runId: string;
@@ -1607,17 +2189,40 @@ export class ServiceManager {
     }
 
     const runSummary = this.getAgentRuns(2000).find((row) => row.runId === runId);
-    const serviceId = asNonEmptyString(input.serviceId) ?? runSummary?.serviceId;
+    const requestedAgent = asNonEmptyString(input.agent) ?? asNonEmptyString(runSummary?.agent);
+    const serviceId = await this.resolveRuntimeInputServiceId(
+      asNonEmptyString(input.serviceId) ?? runSummary?.serviceId,
+      requestedAgent
+    );
     const service = serviceId ? await this.registry.get(serviceId) : undefined;
     const agentMetadata = asObject(service?.manifest.metadata.agent);
     const agent =
-      asNonEmptyString(input.agent)
-      ?? asNonEmptyString(runSummary?.agent)
+      requestedAgent
       ?? asNonEmptyString(agentMetadata.agentId)
       ?? asNonEmptyString(agentMetadata.name)
       ?? "unknown-agent";
     const stepId = `runtime_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     let runtimeChat = this.resolveRuntimeHitlConfig(service);
+    const history = runtimeChat.historyEnabled
+      ? this.buildRuntimeChatHistory(runId, runtimeChat.historyMaxTurns, runtimeChat.historyMaxChars)
+      : {
+          messages: [],
+          totalMessages: 0,
+          truncated: false,
+          maxTurns: runtimeChat.historyMaxTurns,
+          maxChars: runtimeChat.historyMaxChars
+        };
+    const contextEnvelope = this.buildRuntimeChatContextEnvelopeV1({
+      runId,
+      sessionId: asNonEmptyString(asObject(runSummary?.triggerContext).sessionId ?? asObject(runSummary?.triggerContext).session_id) ?? runId,
+      serviceId: serviceId ?? "",
+      agent,
+      operatorMessage,
+      runSummary,
+      agentMetadata,
+      history,
+      runtimeChat
+    });
 
     if (runtimeChat.mode === "disabled") {
       if (options.allowDisabledMode) {
@@ -1659,13 +2264,17 @@ export class ServiceManager {
         strategy: runtimeChat.strategy,
         handlerTool: runtimeChat.handlerTool,
         source: "runtime_hitl_executor",
-        inputLength: operatorMessage.length
+        inputLength: operatorMessage.length,
+        historyEnabled: runtimeChat.historyEnabled,
+        historyMessages: history.messages.length,
+        historyTruncated: history.truncated
       }
     });
 
     try {
       const provider = runtimeChat.strategy === "agent_tool" ? "agent" : "echo";
       let reply = "";
+      let usedHistory = false;
       if (runtimeChat.strategy === "agent_tool") {
         if (!serviceId) {
           throw new Error("runtime chat dispatch requires serviceId on run or request");
@@ -1683,18 +2292,23 @@ export class ServiceManager {
             agent,
             stepId,
             tool: runtimeChat.handlerTool,
-            sessionId
+            sessionId,
+            historyEnabled: runtimeChat.historyEnabled,
+            historyMessages: history.messages.length
           }
         });
-        const toolResult = await this.callTool(
+        const toolDispatch = await this.callRuntimeChatTool(
           serviceId,
-          runtimeChat.handlerTool,
-          this.buildRuntimeChatToolArgs(runtimeChat.handlerTool, operatorMessage, sessionId, runId),
-          {
-            runId,
-            sessionId
-          }
+          runtimeChat,
+          operatorMessage,
+          sessionId,
+          runId,
+          history,
+          agent,
+          contextEnvelope
         );
+        usedHistory = toolDispatch.usedHistory;
+        const toolResult = toolDispatch.result;
         const candidateReply = this.extractRuntimeChatReply(toolResult);
         if (!candidateReply) {
           throw new Error(`agent chat tool returned no reply text: ${runtimeChat.handlerTool}`);
@@ -1717,6 +2331,7 @@ export class ServiceManager {
           message: reply,
           provider,
           ...(runtimeChat.strategy === "agent_tool" ? { handlerTool: runtimeChat.handlerTool } : {}),
+          ...(runtimeChat.strategy === "agent_tool" ? { historyUsed: usedHistory } : {}),
           source: "runtime_hitl_executor"
         }
       });
@@ -1733,6 +2348,7 @@ export class ServiceManager {
           stepId,
           provider,
           ...(runtimeChat.strategy === "agent_tool" ? { handlerTool: runtimeChat.handlerTool } : {}),
+          ...(runtimeChat.strategy === "agent_tool" ? { historyUsed: usedHistory } : {}),
           message: reply
         }
       });
@@ -1793,22 +2409,303 @@ export class ServiceManager {
     const defaultTool = service?.manifest.spec.origin.type === "remote_mcp" ? "receive_chat" : "fn__receive_chat";
     const handlerTool = asNonEmptyString(chat.handlerTool ?? chat.handler_tool) ?? defaultTool;
     const strategy = mode === "echo" ? "echo" : "agent_tool";
+    const historyEnabledRaw = chat.historyEnabled ?? chat.history_enabled;
+    const historyEnabled = typeof historyEnabledRaw === "boolean" ? historyEnabledRaw : true;
+    const historyMaxTurnsRaw = asPositiveInteger(chat.historyMaxTurns ?? chat.history_max_turns) ?? 24;
+    const historyMaxCharsRaw = asPositiveInteger(chat.historyMaxChars ?? chat.history_max_chars) ?? 12000;
+    const historyMaxTurns = Math.max(1, Math.min(200, historyMaxTurnsRaw));
+    const historyMaxChars = Math.max(256, Math.min(200000, historyMaxCharsRaw));
     return {
       mode,
       strategy,
-      handlerTool
+      handlerTool,
+      historyEnabled,
+      historyMaxTurns,
+      historyMaxChars
+    };
+  }
+
+  private buildRuntimeChatHistory(
+    runId: string,
+    maxTurns: number,
+    maxChars: number
+  ): RuntimeChatHistorySnapshot {
+    const normalizedRunId = runId.trim();
+    if (!normalizedRunId) {
+      return {
+        messages: [],
+        totalMessages: 0,
+        truncated: false,
+        maxTurns,
+        maxChars
+      };
+    }
+    const all: RuntimeChatMessage[] = [];
+    for (const event of this.events) {
+      if (
+        event.kind !== "agent.chat.user_message"
+        && event.kind !== "agent.chat.assistant_message"
+        && event.kind !== "agent.chat.system_message"
+      ) {
+        continue;
+      }
+      const payload = asObject(event.data);
+      const eventRunId = String(payload.runId ?? payload.run_id ?? "").trim();
+      if (eventRunId !== normalizedRunId) {
+        continue;
+      }
+      const roleRaw = asNonEmptyString(payload.role)?.toLowerCase();
+      const role: RuntimeChatMessage["role"] =
+        roleRaw === "assistant" || roleRaw === "system" || roleRaw === "user"
+          ? roleRaw
+          : (
+              event.kind === "agent.chat.assistant_message"
+                ? "assistant"
+                : event.kind === "agent.chat.system_message"
+                  ? "system"
+                  : "user"
+            );
+      const content = asNonEmptyString(payload.message ?? payload.text);
+      if (!content) {
+        continue;
+      }
+      all.push({
+        role,
+        content
+      });
+    }
+
+    const boundedByTurns = all.slice(Math.max(0, all.length - Math.max(1, maxTurns)));
+    const boundedByChars: RuntimeChatMessage[] = [];
+    let totalChars = 0;
+    let truncated = boundedByTurns.length !== all.length;
+    for (let index = boundedByTurns.length - 1; index >= 0; index -= 1) {
+      const item = boundedByTurns[index];
+      const itemChars = item.content.length;
+      const nextChars = totalChars + itemChars;
+      if (boundedByChars.length > 0 && nextChars > maxChars) {
+        truncated = true;
+        break;
+      }
+      if (boundedByChars.length === 0 && nextChars > maxChars) {
+        const start = Math.max(0, itemChars - maxChars);
+        boundedByChars.push({
+          role: item.role,
+          content: item.content.slice(start)
+        });
+        truncated = true;
+        break;
+      }
+      boundedByChars.push(item);
+      totalChars = nextChars;
+    }
+    boundedByChars.reverse();
+
+    return {
+      messages: boundedByChars,
+      totalMessages: all.length,
+      truncated,
+      maxTurns,
+      maxChars
+    };
+  }
+
+  private extractRetrievalItemsFromTriggerContext(triggerContext: Record<string, unknown>): Array<Record<string, unknown>> {
+    const candidates = [
+      triggerContext.retrieval,
+      triggerContext.rag,
+      triggerContext.context,
+      triggerContext.retrievalItems,
+      triggerContext.retrievedDocuments
+    ];
+    for (const candidate of candidates) {
+      if (!Array.isArray(candidate)) {
+        continue;
+      }
+      const out = candidate
+        .map((item) => {
+          if (item && typeof item === "object") {
+            return item as Record<string, unknown>;
+          }
+          if (typeof item === "string") {
+            return { content: item };
+          }
+          return null;
+        })
+        .filter((item): item is Record<string, unknown> => item !== null);
+      if (out.length > 0) {
+        return out;
+      }
+    }
+    return [];
+  }
+
+  private buildRuntimeChatContextEnvelopeV1(input: {
+    runId: string;
+    sessionId: string;
+    serviceId: string;
+    agent: string;
+    operatorMessage: string;
+    runSummary?: AgentRunSummary;
+    agentMetadata: Record<string, unknown>;
+    history: RuntimeChatHistorySnapshot;
+    runtimeChat: ResolvedRuntimeChatConfig;
+  }): RuntimeChatContextEnvelopeV1 {
+    const triggerContext = asObject(input.runSummary?.triggerContext);
+    const retrievalItems = this.extractRetrievalItemsFromTriggerContext(triggerContext);
+    const historyCharsUsed = input.history.messages.reduce((sum, row) => sum + row.content.length, 0);
+    return {
+      version: "context.v1",
+      task: {
+        runId: input.runId,
+        sessionId: input.sessionId,
+        serviceId: input.serviceId,
+        agent: input.agent,
+        objective: asNonEmptyString(input.agentMetadata.objective),
+        role: asNonEmptyString(input.agentMetadata.role)
+      },
+      instructions: {
+        allowedMcpTools: asStringArray(input.agentMetadata.allowedMcpTools ?? input.agentMetadata.allowed_mcp_tools),
+        allowedLlmProviders: asStringArray(input.agentMetadata.allowedLlmProviders ?? input.agentMetadata.allowed_llm_providers)
+      },
+      userContext: {
+        latestMessage: input.operatorMessage,
+        trigger: input.runSummary?.trigger ?? "unknown",
+        triggerContext
+      },
+      retrieval: {
+        items: retrievalItems,
+        count: retrievalItems.length
+      },
+      conversation: {
+        messages: input.history.messages,
+        totalMessages: input.history.totalMessages,
+        truncated: input.history.truncated
+      },
+      runtimeState: {
+        status: input.runSummary?.status,
+        waitingReason: input.runSummary?.waitingReason,
+        eventCount: input.runSummary?.eventCount,
+        lastEventKind: input.runSummary?.lastEventKind
+      },
+      policy: {
+        mode: input.runtimeChat.mode,
+        strategy: input.runtimeChat.strategy,
+        handlerTool: input.runtimeChat.handlerTool,
+        historyEnabled: input.runtimeChat.historyEnabled,
+        historyMaxTurns: input.runtimeChat.historyMaxTurns,
+        historyMaxChars: input.runtimeChat.historyMaxChars
+      },
+      budget: {
+        historyCharsUsed,
+        historyCharsMax: input.runtimeChat.historyMaxChars,
+        historyCharsRemaining: Math.max(0, input.runtimeChat.historyMaxChars - historyCharsUsed)
+      },
+      provenance: {
+        generatedAt: nowIso(),
+        source: "runtime_hitl_executor"
+      }
+    };
+  }
+
+  private async resolveRuntimeChatEnvOverrides(serviceId: string): Promise<Record<string, string> | undefined> {
+    const service = await this.registry.get(serviceId);
+    if (!service || service.manifest.spec.origin.type !== "local_wasm") {
+      return undefined;
+    }
+    const chat = asObject(asObject(service.manifest.metadata.agent).chat);
+    const apiKeyEnv = asNonEmptyString(chat.apiKeyEnv ?? chat.api_key_env);
+    if (!apiKeyEnv) {
+      return undefined;
+    }
+    return {
+      CLARITY_RUNTIME_CHAT_API_KEY_ENV: apiKeyEnv
+    };
+  }
+
+  private async callRuntimeChatTool(
+    serviceId: string,
+    runtimeChat: ResolvedRuntimeChatConfig,
+    message: string,
+    sessionId: string,
+    runId: string,
+    history: RuntimeChatHistorySnapshot,
+    agent: string,
+    contextEnvelope: RuntimeChatContextEnvelopeV1
+  ): Promise<{ result: unknown; usedHistory: boolean }> {
+    const usedHistory = runtimeChat.historyEnabled;
+    const localEnvOverrides = await this.resolveRuntimeChatEnvOverrides(serviceId);
+    const result = await this.callTool(
+      serviceId,
+      runtimeChat.handlerTool,
+      this.buildRuntimeChatToolArgs({
+        handlerTool: runtimeChat.handlerTool,
+        message,
+        sessionId,
+        runId,
+        history,
+        serviceId,
+        agent,
+        contextEnvelope
+      }),
+      {
+        runId,
+        sessionId,
+        ...(localEnvOverrides ? { localEnvOverrides } : {})
+      }
+    );
+    return {
+      result,
+      usedHistory
     };
   }
 
   private buildRuntimeChatToolArgs(
-    handlerTool: string,
-    message: string,
-    sessionId: string,
-    runId: string
+    options: {
+      handlerTool: string;
+      message: string;
+      sessionId: string;
+      runId: string;
+      history: RuntimeChatHistorySnapshot;
+      serviceId: string;
+      agent: string;
+      contextEnvelope: RuntimeChatContextEnvelopeV1;
+    }
   ): unknown {
+    const {
+      handlerTool,
+      message,
+      sessionId,
+      runId,
+      history,
+      serviceId,
+      agent,
+      contextEnvelope
+    } = options;
     if (handlerTool.startsWith("fn__")) {
+      const args = [
+        message,
+        sessionId,
+        runId,
+        JSON.stringify({
+          runId,
+          sessionId,
+          serviceId,
+          agent,
+          messages: history.messages,
+          history: {
+            totalMessages: history.totalMessages,
+            usedMessages: history.messages.length,
+            truncated: history.truncated,
+            maxTurns: history.maxTurns,
+            maxChars: history.maxChars
+          },
+          contextVersion: contextEnvelope.version,
+          context: contextEnvelope
+        })
+      ];
       return {
-        args: [message, sessionId, runId],
+        args,
         expectStringResult: true,
         allowStringArgs: true
       };
@@ -1817,8 +2714,16 @@ export class ServiceManager {
       message,
       sessionId,
       runId,
-      session_id: sessionId,
-      run_id: runId
+      messages: history.messages,
+      history: {
+        totalMessages: history.totalMessages,
+        usedMessages: history.messages.length,
+        truncated: history.truncated,
+        maxTurns: history.maxTurns,
+        maxChars: history.maxChars
+      },
+      contextVersion: contextEnvelope.version,
+      context: contextEnvelope
     };
   }
 
@@ -1923,6 +2828,7 @@ export class ServiceManager {
       }
     }));
     this.starts.delete(serviceId);
+    this.clearTimerSchedulesForService(serviceId);
     this.remoteInitialized.delete(serviceId);
     this.appendLog(
       serviceId,
