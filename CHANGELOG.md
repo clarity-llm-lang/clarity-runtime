@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.8.1...v0.9.0) (2026-03-08)
+
+
+### Features
+
+* **runtime:** complete Layer 10 transport/status/auth hardening ([4e900a4](https://github.com/clarity-llm-lang/clarity-runtime/commit/4e900a4703f526ef82e2046adabc429e8d08dfec))
+* **runtime:** complete layer10 transport/status/auth hardening ([81cbeea](https://github.com/clarity-llm-lang/clarity-runtime/commit/81cbeeaf3f8cf83740c9f273d33d142a5f746a52))
+* **runtime:** implement local-wasm parity requirements ([5537f11](https://github.com/clarity-llm-lang/clarity-runtime/commit/5537f11c3395f000796ad15c56724ff2b4612a60))
+* **runtime:** implement local-wasm parity requirements ([679abb7](https://github.com/clarity-llm-lang/clarity-runtime/commit/679abb7980d26712f4c9ad4fb6dd8da56f29603c))
+* **runtime:** validate critical /api/agents/events payloads ([7172e3f](https://github.com/clarity-llm-lang/clarity-runtime/commit/7172e3fd18439a35e133fc7fbaf674d36a6cd604))
+* **runtime:** validate critical agent event payloads ([d8aa047](https://github.com/clarity-llm-lang/clarity-runtime/commit/d8aa047e36ddc4dbed8a96cfb271a607e7029541))
+
 ## [0.8.1](https://github.com/clarity-llm-lang/clarity-runtime/compare/v0.8.0...v0.8.1) (2026-03-05)
 
 
