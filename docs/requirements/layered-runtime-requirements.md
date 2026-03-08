@@ -114,6 +114,7 @@ Execution order for larger runtime initiatives. The goal is to deliver each laye
   - Registration surfaces now accept explicit remote transport selection (`streamable_http` or `sse_http`) via MCP runtime tools and `clarityctl add-remote --transport`.
   - Runtime status summaries now expose split local/remote counts for both MCP and agent service classes (`local_mcp`, `remote_mcp`, `local_agent`, `remote_agent`; HTTP camelCase equivalents).
   - Query-token auth path is restricted to loopback SSE endpoints only (`/events`, `/api/events`), with header auth required elsewhere; status UI strips `?token=` from browser URL after capture.
+  - `POST /api/agents/events` now validates critical run/step lifecycle payload fields beyond `agent.run_created` (`runId` required; `stepId` required for `agent.step_*`).
   - Runtime docs synchronized with `LLM-lang` status for shared initiatives (`clarityc start` cross-repo state, A2A/event-integration wording).
 - Acceptance criteria:
   - Register flows can select transport without manifest hand-editing.
