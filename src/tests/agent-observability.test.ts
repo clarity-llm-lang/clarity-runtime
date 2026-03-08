@@ -1861,6 +1861,88 @@ test("agent.run_created validates trigger context contract", async () => {
   }
 });
 
+test("agent events endpoint validates critical run/step payload fields", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-agent-critical-event-validation-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"));
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const missingRunId = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_started",
+        message: "Run started without runId"
+      })
+    });
+    assert.equal(missingRunId.status, 400);
+    assert.match(String(asObject(missingRunId.body).error ?? ""), /runId is required/i);
+
+    const missingRunIdFailed = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_failed",
+        message: "Run failed without runId"
+      })
+    });
+    assert.equal(missingRunIdFailed.status, 400);
+    assert.match(String(asObject(missingRunIdFailed.body).error ?? ""), /runId is required/i);
+
+    const missingStepId = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.step_started",
+        message: "Step without step id",
+        runId: "run-critical-1",
+        agent: "validator"
+      })
+    });
+    assert.equal(missingStepId.status, 400);
+    assert.match(String(asObject(missingStepId.body).error ?? ""), /stepId is required/i);
+
+    const goodRun = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_started",
+        message: "Run started",
+        runId: "run-critical-1",
+        agent: "validator"
+      })
+    });
+    assert.equal(goodRun.status, 200);
+
+    const goodStep = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.step_started",
+        message: "Step started",
+        runId: "run-critical-1",
+        stepId: "step-1",
+        agent: "validator"
+      })
+    });
+    assert.equal(goodStep.status, 200);
+
+    const runEvents = await jsonRequest(
+      runtime.baseUrl,
+      "/api/agents/runs/run-critical-1/events?limit=20"
+    );
+    assert.equal(runEvents.status, 200);
+    const items = asObject(runEvents.body).items as Array<Record<string, unknown>>;
+    assert.ok(items.some((item) => String(item.kind) === "agent.run_started"));
+    assert.ok(items.some((item) => String(item.kind) === "agent.step_started"));
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("HITL broker endpoints support question-answer lifecycle", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clarity-hitl-broker-http-"));
   const registry = new ServiceRegistry(path.join(root, "registry.json"));

@@ -36,7 +36,7 @@
 - `POST /api/a2a/messages`: ingest one formal A2A envelope (`clarity.a2a.v1`) and normalize into canonical `agent.*` events.
 - `POST /api/agents/runs/:runId/messages`: append run chat input for non-terminal runs (`409` when run is completed/failed/cancelled). `role=user|assistant|system` maps to `agent.chat.user_message|agent.chat.assistant_message|agent.chat.system_message`; only `role=user` queues async run response execution (`runtime_chat_execution_queued=true`) and emits follow-up `agent.step_*` and `agent.waiting` events for the same `runId`. In `auto` mode runtime dispatches chat handling to agent-owned tool interfaces and includes run-scoped chat history plus a versioned context envelope (`context.v1`) in handler payloads.
 - `POST /api/agents/runs/:runId/hitl`: append explicit human override input as `agent.hitl_input` for non-terminal runs (`409` when run is completed/failed/cancelled). Input is sanitized/redacted and bounded by `CLARITY_HITL_MAX_MESSAGE_CHARS` (default `2000`). Runtime queues async run response execution and emits follow-up `agent.step_*` / `agent.waiting` events for the same `runId`.
-- `POST /api/agents/events`: ingest one `agent.*` event from orchestration clients.
+- `POST /api/agents/events`: ingest one `agent.*` event from orchestration clients. `agent.run_created` enforces trigger-context contract; critical run/step lifecycle kinds require `runId` (and `stepId` for `agent.step_*`).
 - `GET /api/traces?limit=200&run_id=&trace_id=`: recent gateway trace spans (`agent_turn -> mcp.tools/call -> service.execute -> result`).
 - `GET /api/costs/runs?limit=200&run_id=`: per-run cost ledger and budget status.
 - `GET /api/events`: server-sent events stream for live audit updates.

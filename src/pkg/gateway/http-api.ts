@@ -791,6 +791,46 @@ function validateAgentRunCreatedPayload(payload: Record<string, unknown>): strin
   return null;
 }
 
+const RUN_SCOPED_AGENT_EVENT_KINDS = new Set<string>([
+  "agent.run_started",
+  "agent.run_completed",
+  "agent.run_failed",
+  "agent.run_cancelled",
+  "agent.waiting",
+  "agent.handoff",
+  "agent.tool_called",
+  "agent.llm_called",
+  "agent.hitl_input",
+  "agent.chat.user_message",
+  "agent.chat.assistant_message",
+  "agent.chat.system_message",
+  "agent.step_started",
+  "agent.step_completed"
+]);
+
+const STEP_SCOPED_AGENT_EVENT_KINDS = new Set<string>([
+  "agent.step_started",
+  "agent.step_completed"
+]);
+
+function validateCriticalAgentEventPayload(kind: string, payload: Record<string, unknown>): string | null {
+  if (RUN_SCOPED_AGENT_EVENT_KINDS.has(kind)) {
+    const runId = nonEmptyString(getField(payload, "runId"));
+    if (!runId) {
+      return `runId is required for ${kind}`;
+    }
+  }
+
+  if (STEP_SCOPED_AGENT_EVENT_KINDS.has(kind)) {
+    const stepId = nonEmptyString(getField(payload, "stepId"));
+    if (!stepId) {
+      return `stepId is required for ${kind}`;
+    }
+  }
+
+  return null;
+}
+
 async function validateDeclaredServiceTrigger(
   manager: ServiceManager,
   serviceId: string | undefined,
@@ -1689,6 +1729,11 @@ export async function handleHttp(
           json(res, 400, { error: validationError });
           return;
         }
+      }
+      const criticalValidationError = validateCriticalAgentEventPayload(kind, data);
+      if (criticalValidationError) {
+        json(res, 400, { error: criticalValidationError });
+        return;
       }
       const message =
         typeof body.message === "string" && body.message.trim().length > 0
