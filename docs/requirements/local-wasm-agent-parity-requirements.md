@@ -83,6 +83,14 @@ After `POST /api/services/:serviceId/introspect`, the registry/listing surfaces 
 
 At minimum, `GET /api/services` must not continue returning stale `interfaceRevision`, `introspectedAt`, or outdated tool counts for a service that has been successfully re-introspected.
 
+### 7. Structured Local Export Marshalling
+
+Runtime-managed local wasm `fn__*` calls must support typed argument/result marshalling so runtime-owned handlers can accept structured payloads without parsing raw JSON strings:
+
+- call payload may provide `argTypes` descriptors (for example `Record`, `List`, `Option`, `Result`) to marshal nested arguments into wasm memory using Clarity ABI layouts.
+- call payload may provide `resultType` to decode structured wasm return values back to host JSON/text deterministically.
+- runtime-owned local chat and timer dispatch must pass a structured context argument in addition to legacy JSON arguments to preserve backward compatibility for existing handlers.
+
 ## Non-Goals
 
 1. Replacing `remote_mcp` execution.
@@ -97,3 +105,4 @@ At minimum, `GET /api/services` must not continue returning stale `interfaceRevi
 4. A local wasm agent can either use `std/a2a` / `std/mcp`, or runtime rejects unsupported imports at registration/start with an actionable error.
 5. A coordinator agent can declare a 5-minute timer schedule in manifest metadata and runtime executes it without an external shell loop.
 6. `GET /api/services` reflects fresh interface metadata immediately after successful introspection.
+7. Runtime-managed local wasm handlers can consume typed structured context arguments (chat/timer) and runtime can decode structured local export return values via `resultType`.

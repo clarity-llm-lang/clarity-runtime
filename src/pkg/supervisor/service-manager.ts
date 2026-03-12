@@ -32,6 +32,22 @@ function extractListResult<T>(value: unknown, key: string): T[] {
   return [];
 }
 
+interface WasmMarshalRecordField {
+  name: string;
+  type: WasmMarshalType;
+}
+
+type WasmMarshalType =
+  | { kind: "Int64" }
+  | { kind: "Float64" }
+  | { kind: "Bool" }
+  | { kind: "String" }
+  | { kind: "Timestamp" }
+  | { kind: "List"; element: WasmMarshalType }
+  | { kind: "Record"; fields: WasmMarshalRecordField[] }
+  | { kind: "Option"; inner: WasmMarshalType }
+  | { kind: "Result"; ok: WasmMarshalType; err: WasmMarshalType };
+
 function parseFunctionArgs(args: unknown): unknown[] {
   const payload = asObject(args);
   const raw = payload.args;
@@ -50,6 +66,21 @@ function parseFunctionExpectString(args: unknown): boolean {
 function parseFunctionAllowStringArgs(args: unknown): boolean {
   const payload = asObject(args);
   return payload.allowStringArgs === true || payload.allow_string_args === true;
+}
+
+function parseFunctionArgTypes(args: unknown): Array<WasmMarshalType | undefined> | undefined {
+  const payload = asObject(args);
+  const raw = payload.argTypes ?? payload.arg_types;
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  const parsed = raw.map((item) => parseWasmMarshalType(item));
+  return parsed.some((item) => item !== undefined) ? parsed : undefined;
+}
+
+function parseFunctionResultType(args: unknown): WasmMarshalType | undefined {
+  const payload = asObject(args);
+  return parseWasmMarshalType(payload.resultType ?? payload.result_type);
 }
 
 function parseAllowedHosts(value: string | undefined): Set<string> | null {
@@ -300,12 +331,148 @@ interface RuntimeChatContextEnvelopeV1 {
   };
 }
 
+const WASM_STRING_TYPE: WasmMarshalType = { kind: "String" };
+const WASM_INT64_TYPE: WasmMarshalType = { kind: "Int64" };
+const WASM_BOOL_TYPE: WasmMarshalType = { kind: "Bool" };
+
+const RUNTIME_CHAT_MESSAGE_MARSHAL_TYPE: WasmMarshalType = {
+  kind: "Record",
+  fields: [
+    { name: "role", type: WASM_STRING_TYPE },
+    { name: "content", type: WASM_STRING_TYPE }
+  ]
+};
+
+const RUNTIME_CHAT_HISTORY_MARSHAL_TYPE: WasmMarshalType = {
+  kind: "Record",
+  fields: [
+    { name: "totalMessages", type: WASM_INT64_TYPE },
+    { name: "usedMessages", type: WASM_INT64_TYPE },
+    { name: "truncated", type: WASM_BOOL_TYPE },
+    { name: "maxTurns", type: WASM_INT64_TYPE },
+    { name: "maxChars", type: WASM_INT64_TYPE }
+  ]
+};
+
+const RUNTIME_CHAT_STRUCTURED_CONTEXT_MARSHAL_TYPE: WasmMarshalType = {
+  kind: "Record",
+  fields: [
+    { name: "runId", type: WASM_STRING_TYPE },
+    { name: "sessionId", type: WASM_STRING_TYPE },
+    { name: "serviceId", type: WASM_STRING_TYPE },
+    { name: "agent", type: WASM_STRING_TYPE },
+    { name: "contextVersion", type: WASM_STRING_TYPE },
+    { name: "latestMessage", type: WASM_STRING_TYPE },
+    { name: "trigger", type: WASM_STRING_TYPE },
+    {
+      name: "messages",
+      type: {
+        kind: "List",
+        element: RUNTIME_CHAT_MESSAGE_MARSHAL_TYPE
+      }
+    },
+    { name: "history", type: RUNTIME_CHAT_HISTORY_MARSHAL_TYPE },
+    { name: "contextJson", type: WASM_STRING_TYPE }
+  ]
+};
+
+const TIMER_STRUCTURED_CONTEXT_MARSHAL_TYPE: WasmMarshalType = {
+  kind: "Record",
+  fields: [
+    { name: "runId", type: WASM_STRING_TYPE },
+    { name: "agent", type: WASM_STRING_TYPE },
+    { name: "trigger", type: WASM_STRING_TYPE },
+    { name: "scheduleId", type: WASM_STRING_TYPE },
+    { name: "scheduleExpr", type: WASM_STRING_TYPE },
+    { name: "firedAt", type: WASM_STRING_TYPE }
+  ]
+};
+
 function asNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseWasmMarshalType(input: unknown): WasmMarshalType | undefined {
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+  const obj = asObject(input);
+  const kindRaw = asNonEmptyString(obj.kind ?? obj.type)?.toLowerCase();
+  if (!kindRaw) {
+    return undefined;
+  }
+  if (kindRaw === "int64") {
+    return { kind: "Int64" };
+  }
+  if (kindRaw === "float64") {
+    return { kind: "Float64" };
+  }
+  if (kindRaw === "bool" || kindRaw === "boolean") {
+    return { kind: "Bool" };
+  }
+  if (kindRaw === "string") {
+    return { kind: "String" };
+  }
+  if (kindRaw === "timestamp") {
+    return { kind: "Timestamp" };
+  }
+  if (kindRaw === "list") {
+    const element = parseWasmMarshalType(obj.element);
+    if (!element) {
+      return undefined;
+    }
+    return {
+      kind: "List",
+      element
+    };
+  }
+  if (kindRaw === "record") {
+    const fieldsRaw = Array.isArray(obj.fields) ? obj.fields : [];
+    if (fieldsRaw.length === 0) {
+      return undefined;
+    }
+    const fields: WasmMarshalRecordField[] = [];
+    for (const entry of fieldsRaw) {
+      const fieldObj = asObject(entry);
+      const name = asNonEmptyString(fieldObj.name);
+      const type = parseWasmMarshalType(fieldObj.type);
+      if (!name || !type) {
+        return undefined;
+      }
+      fields.push({ name, type });
+    }
+    return {
+      kind: "Record",
+      fields
+    };
+  }
+  if (kindRaw === "option") {
+    const inner = parseWasmMarshalType(obj.inner);
+    if (!inner) {
+      return undefined;
+    }
+    return {
+      kind: "Option",
+      inner
+    };
+  }
+  if (kindRaw === "result") {
+    const ok = parseWasmMarshalType(obj.ok);
+    const err = parseWasmMarshalType(obj.err);
+    if (!ok || !err) {
+      return undefined;
+    }
+    return {
+      kind: "Result",
+      ok,
+      err
+    };
+  }
+  return undefined;
 }
 
 function normalizeTrigger(value: unknown): AgentTriggerType {
@@ -740,9 +907,18 @@ export class ServiceManager {
                     anyOf: [
                       { type: "string" },
                       { type: "number" },
-                      { type: "boolean" }
+                      { type: "boolean" },
+                      { type: "object" },
+                      { type: "array" }
                     ]
                   }
+                },
+                argTypes: {
+                  type: "array",
+                  items: { type: "object" }
+                },
+                resultType: {
+                  type: "object"
                 }
               },
               additionalProperties: false
@@ -878,9 +1054,13 @@ export class ServiceManager {
       if (toolName.startsWith("fn__")) {
         const functionName = toolName.slice("fn__".length);
         const argsList = parseFunctionArgs(args);
+        const argTypes = parseFunctionArgTypes(args);
+        const resultType = parseFunctionResultType(args);
         const output = await this.runLocalFunction(service, functionName, argsList, {
           expectStringResult: parseFunctionExpectString(args),
           allowStringArgs: parseFunctionAllowStringArgs(args),
+          argTypes,
+          resultType,
           envOverrides: context?.localEnvOverrides
         });
         this.appendLog(serviceId, `tools/call ${toolName}(${JSON.stringify(argsList)})`);
@@ -1523,18 +1703,36 @@ export class ServiceManager {
       firedAt: input.firedAt
     };
     if (input.service.manifest.spec.origin.type === "local_wasm") {
+      const legacyPayload = {
+        runId: input.runId,
+        agent: input.agent,
+        trigger: "timer",
+        triggerContext
+      };
+      const structuredPayload = {
+        runId: input.runId,
+        agent: input.agent,
+        trigger: "timer",
+        scheduleId: input.scheduleId,
+        scheduleExpr: input.scheduleExpr,
+        firedAt: input.firedAt
+      };
       return {
         args: [
           input.runId,
           input.scheduleId,
           input.scheduleExpr,
           input.firedAt,
-          JSON.stringify({
-            runId: input.runId,
-            agent: input.agent,
-            trigger: "timer",
-            triggerContext
-          })
+          JSON.stringify(legacyPayload),
+          structuredPayload
+        ],
+        argTypes: [
+          WASM_STRING_TYPE,
+          WASM_STRING_TYPE,
+          WASM_STRING_TYPE,
+          WASM_STRING_TYPE,
+          WASM_STRING_TYPE,
+          TIMER_STRUCTURED_CONTEXT_MARSHAL_TYPE
         ],
         allowStringArgs: true,
         expectStringResult: true
@@ -1889,6 +2087,8 @@ export class ServiceManager {
     options?: {
       expectStringResult?: boolean;
       allowStringArgs?: boolean;
+      argTypes?: Array<WasmMarshalType | undefined>;
+      resultType?: WasmMarshalType;
       envOverrides?: Record<string, string>;
     }
   ): Promise<string> {
@@ -1898,7 +2098,8 @@ export class ServiceManager {
 
     const wasmPath = service.manifest.spec.origin.wasmPath;
     const timeoutMs = parsePositiveInteger(process.env.CLARITY_LOCAL_FN_TIMEOUT_MS) ?? 2_000;
-    const args = this.resolveWasmArgs(argsList, options?.allowStringArgs === true);
+    const hasTypedArgs = Array.isArray(options?.argTypes) && options.argTypes.some((item) => item !== undefined);
+    const args = hasTypedArgs ? [argsList] : this.resolveWasmArgs(argsList, options?.allowStringArgs === true);
     const localEnv = await this.resolveLocalExecutionEnv(service, options?.envOverrides);
     let lastTypeError: Error | null = null;
 
@@ -1909,6 +2110,8 @@ export class ServiceManager {
         candidate,
         timeoutMs,
         options?.expectStringResult === true,
+        hasTypedArgs ? options?.argTypes : undefined,
+        options?.resultType,
         localEnv
       );
       if (workerResult.ok) {
@@ -1937,9 +2140,11 @@ export class ServiceManager {
   private async runLocalFunctionInWorker(
     wasmPath: string,
     functionName: string,
-    args: Array<number | bigint | string>,
+    args: unknown[],
     timeoutMs: number,
     expectStringResult: boolean,
+    argTypes: Array<WasmMarshalType | undefined> | undefined,
+    resultType: WasmMarshalType | undefined,
     workerEnv: NodeJS.ProcessEnv
   ): Promise<WorkerResponse> {
     const workerUrl = new URL("./local-wasm-worker.js", import.meta.url);
@@ -1951,7 +2156,9 @@ export class ServiceManager {
           wasmPath,
           functionName,
           args,
-          expectStringResult
+          expectStringResult,
+          argTypes,
+          resultType
         }
       });
 
@@ -2683,29 +2890,56 @@ export class ServiceManager {
       contextEnvelope
     } = options;
     if (handlerTool.startsWith("fn__")) {
+      const legacyPayload = {
+        runId,
+        sessionId,
+        serviceId,
+        agent,
+        messages: history.messages,
+        history: {
+          totalMessages: history.totalMessages,
+          usedMessages: history.messages.length,
+          truncated: history.truncated,
+          maxTurns: history.maxTurns,
+          maxChars: history.maxChars
+        },
+        contextVersion: contextEnvelope.version,
+        context: contextEnvelope
+      };
+      const structuredPayload = {
+        runId,
+        sessionId,
+        serviceId,
+        agent,
+        contextVersion: contextEnvelope.version,
+        latestMessage: message,
+        trigger: contextEnvelope.userContext.trigger,
+        messages: history.messages,
+        history: {
+          totalMessages: history.totalMessages,
+          usedMessages: history.messages.length,
+          truncated: history.truncated,
+          maxTurns: history.maxTurns,
+          maxChars: history.maxChars
+        },
+        contextJson: JSON.stringify(contextEnvelope)
+      };
       const args = [
         message,
         sessionId,
         runId,
-        JSON.stringify({
-          runId,
-          sessionId,
-          serviceId,
-          agent,
-          messages: history.messages,
-          history: {
-            totalMessages: history.totalMessages,
-            usedMessages: history.messages.length,
-            truncated: history.truncated,
-            maxTurns: history.maxTurns,
-            maxChars: history.maxChars
-          },
-          contextVersion: contextEnvelope.version,
-          context: contextEnvelope
-        })
+        JSON.stringify(legacyPayload),
+        structuredPayload
       ];
       return {
         args,
+        argTypes: [
+          WASM_STRING_TYPE,
+          WASM_STRING_TYPE,
+          WASM_STRING_TYPE,
+          WASM_STRING_TYPE,
+          RUNTIME_CHAT_STRUCTURED_CONTEXT_MARSHAL_TYPE
+        ],
         expectStringResult: true,
         allowStringArgs: true
       };

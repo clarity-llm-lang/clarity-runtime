@@ -1033,6 +1033,135 @@ test("run messages endpoint executes local fn__receive_chat and emits assistant 
   }
 });
 
+test("run messages endpoint passes structured context argument to local fn__receive_chat", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-chat-local-structured-http-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"), {
+    hitlChatMode: "auto"
+  });
+  await manager.init();
+  const authConfig: AuthConfig = {
+    enforceLoopbackWhenNoToken: true
+  };
+  const runtime = await startServer((req, res) => handleHttp(manager, req, res, authConfig));
+
+  try {
+    const wasmPath = path.join(root, "chat-local-structured-agent.wasm");
+    const wasmBase64 =
+      "AGFzbQEAAAABHwRgAn9/AX9gBX9/f39/AX9gBn9/f39/fwF/YAF/AX8CFQEDZW52DXN0cmluZ19jb25jYXQAAAMEAwECAwUFAQEBgAIGBgF/AEEwCwdGBQZtZW1vcnkCAAxyZWNlaXZlX2NoYXQAAQhvbl90aW1lcgACEW1hcnNoYWxfcm91bmR0cmlwAAMLX19oZWFwX2Jhc2UDAApVAyEAQQAgBCgCAEEUIAQoAhRBFCAEKAIYEAAQABAAEAAQAAssAEEcIAUoAgBBFCAFKAIMQRQgBSgCCEEUIAUoAhQQABAAEAAQABAAEAAQAAsEACAACws4AwBBAAsRDQAAAG1hcnNoYWwtY2hhdDoAQRQLBQEAAAA6AEEcCxIOAAAAbWFyc2hhbC10aW1lcjo=";
+    await writeFile(wasmPath, Buffer.from(wasmBase64, "base64"));
+    const applyAgent = await jsonRequest(runtime.baseUrl, "/api/services/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        manifest: {
+          apiVersion: "clarity.runtime/v1",
+          kind: "MCPService",
+          metadata: {
+            sourceFile: path.join(root, "chat-local-structured-agent.clarity"),
+            module: "ChatLocalStructuredAgent",
+            serviceType: "agent",
+            agent: {
+              agentId: "chat-local-structured-agent",
+              name: "Chat Local Structured Agent",
+              role: "assistant",
+              objective: "Validate structured local wasm chat context argument",
+              triggers: ["api"]
+            }
+          },
+          spec: {
+            origin: {
+              type: "local_wasm",
+              wasmPath,
+              entry: "main"
+            },
+            enabled: true,
+            autostart: false,
+            restartPolicy: {
+              mode: "never",
+              maxRestarts: 0,
+              windowSeconds: 60
+            },
+            policyRef: "default"
+          }
+        }
+      })
+    });
+    assert.equal(applyAgent.status, 200);
+    const serviceId = String(
+      asObject(asObject(asObject(asObject(applyAgent.body).service).manifest).metadata).serviceId ?? ""
+    );
+    assert.ok(serviceId.length > 0);
+
+    const started = await jsonRequest(runtime.baseUrl, `/api/services/${encodeURIComponent(serviceId)}/start`, {
+      method: "POST"
+    });
+    assert.equal(started.status, 200);
+
+    const runId = "run-chat-local-structured-1";
+    const runCreated = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_created",
+        message: "Run created",
+        service_id: serviceId,
+        run_id: runId,
+        agent: "chat-local-structured-agent",
+        data: {
+          trigger: "api",
+          triggerContext: {
+            route: "/tests",
+            method: "POST",
+            requestId: "req-chat-local-structured-1",
+            caller: "agent-observability.test"
+          }
+        }
+      })
+    });
+    assert.equal(runCreated.status, 200);
+
+    const runStarted = await jsonRequest(runtime.baseUrl, "/api/agents/events", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "agent.run_started",
+        message: "Run started",
+        service_id: serviceId,
+        run_id: runId,
+        agent: "chat-local-structured-agent"
+      })
+    });
+    assert.equal(runStarted.status, 200);
+
+    const userMessage = "typed context please";
+    const postedMessage = await jsonRequest(runtime.baseUrl, `/api/agents/runs/${runId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        role: "user",
+        message: userMessage,
+        service_id: serviceId,
+        agent: "chat-local-structured-agent"
+      })
+    });
+    assert.equal(postedMessage.status, 200);
+    assert.equal(Boolean(asObject(postedMessage.body).runtime_chat_execution_queued), true);
+
+    const assistantMessage = await waitForRunEvent(
+      runtime.baseUrl,
+      runId,
+      (item) => String(item.kind) === "agent.chat.assistant_message"
+    );
+    assert.ok(assistantMessage);
+    assert.equal(
+      String(asObject(assistantMessage?.data).message),
+      `marshal-chat:${runId}:${userMessage}:api`
+    );
+  } finally {
+    await manager.shutdown();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("run messages endpoint includes run chat history in agent tool payload on subsequent turns", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clarity-run-chat-history-http-"));
   const registry = new ServiceRegistry(path.join(root, "registry.json"));

@@ -14,12 +14,24 @@ function asObject(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function extractTextResponse(value: unknown): string {
+  const content = asObject(value).content;
+  if (!Array.isArray(content) || content.length === 0) {
+    return "";
+  }
+  return String(asObject(content[0]).text ?? "");
+}
+
 const EMPTY_WASM = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
 const UNSUPPORTED_IMPORT_WASM = Buffer.from([
   0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
   0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
   0x02, 0x13, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x0b, 0x6d, 0x63, 0x70, 0x5f, 0x63, 0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74, 0x00, 0x00
 ]);
+const STRUCTURED_MARSHAL_WASM = Buffer.from(
+  "AGFzbQEAAAABHwRgAn9/AX9gBX9/f39/AX9gBn9/f39/fwF/YAF/AX8CFQEDZW52DXN0cmluZ19jb25jYXQAAAMEAwECAwUFAQEBgAIGBgF/AEEwCwdGBQZtZW1vcnkCAAxyZWNlaXZlX2NoYXQAAQhvbl90aW1lcgACEW1hcnNoYWxfcm91bmR0cmlwAAMLX19oZWFwX2Jhc2UDAApVAyEAQQAgBCgCAEEUIAQoAhRBFCAEKAIYEAAQABAAEAAQAAssAEEcIAUoAgBBFCAFKAIMQRQgBSgCCEEUIAUoAhQQABAAEAAQABAAEAAQAAsEACAACws4AwBBAAsRDQAAAG1hcnNoYWwtY2hhdDoAQRQLBQEAAAA6AEEcCxIOAAAAbWFyc2hhbC10aW1lcjo=",
+  "base64"
+);
 
 async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
@@ -176,6 +188,130 @@ test("timer schedules emit canonical trigger context", async () => {
     const timerRun = runs.find((run) => run.serviceId === serviceId && run.trigger === "timer");
     assert.ok(timerRun);
     assert.equal(String(asObject(timerRun?.triggerContext).scheduleId), "every_second");
+  } finally {
+    await manager.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("local_wasm fn tools support typed record/list marshalling", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clarity-runtime-local-wasm-marshal-"));
+  const registry = new ServiceRegistry(path.join(root, "registry.json"));
+  await registry.init();
+  const manager = new ServiceManager(registry, path.join(root, "telemetry.json"));
+  await manager.init();
+
+  try {
+    const wasmPath = path.join(root, "marshal-agent.wasm");
+    await writeFile(wasmPath, STRUCTURED_MARSHAL_WASM);
+
+    const manifest: MCPServiceManifest = {
+      apiVersion: "clarity.runtime/v1",
+      kind: "MCPService",
+      metadata: {
+        sourceFile: "/tmp/marshal-agent.clarity",
+        module: "MarshalAgent",
+        serviceType: "agent",
+        agent: {
+          agentId: "marshal-agent",
+          name: "Marshal Agent",
+          role: "worker",
+          objective: "Validate typed wasm marshalling",
+          triggers: ["api"]
+        }
+      },
+      spec: {
+        origin: {
+          type: "local_wasm",
+          wasmPath,
+          entry: "main"
+        },
+        enabled: true,
+        autostart: false,
+        restartPolicy: {
+          mode: "never",
+          maxRestarts: 0,
+          windowSeconds: 60
+        },
+        policyRef: "default"
+      }
+    };
+
+    const applied = await manager.applyManifest(manifest);
+    const serviceId = applied.manifest.metadata.serviceId!;
+    const started = await manager.start(serviceId);
+    assert.equal(started.runtime.lifecycle, "RUNNING");
+
+    const marshalType = {
+      kind: "Record",
+      fields: [
+        { name: "name", type: { kind: "String" } },
+        { name: "values", type: { kind: "List", element: { kind: "Int64" } } },
+        { name: "tags", type: { kind: "List", element: { kind: "String" } } },
+        { name: "ok", type: { kind: "Bool" } }
+      ]
+    };
+
+    const roundtrip = await manager.callTool(serviceId, "fn__marshal_roundtrip", {
+      args: [
+        {
+          name: "payload-1",
+          values: [3, 7],
+          tags: ["alpha", "beta"],
+          ok: true
+        }
+      ],
+      argTypes: [marshalType],
+      resultType: marshalType
+    });
+    const roundtripText = extractTextResponse(roundtrip);
+    assert.ok(roundtripText.length > 0);
+    const decoded = asObject(JSON.parse(roundtripText));
+    assert.equal(String(decoded.name), "payload-1");
+    assert.deepEqual(decoded.values, ["3", "7"]);
+    assert.deepEqual(decoded.tags, ["alpha", "beta"]);
+    assert.equal(decoded.ok, true);
+
+    const timerCall = await manager.callTool(serviceId, "fn__on_timer", {
+      args: [
+        "run-local-1",
+        "every_second",
+        "every 1 s",
+        "2026-03-08T12:00:00.000Z",
+        "{}",
+        {
+          runId: "run-local-1",
+          agent: "marshal-agent",
+          trigger: "timer",
+          scheduleId: "every_second",
+          scheduleExpr: "every 1 s",
+          firedAt: "2026-03-08T12:00:00.000Z"
+        }
+      ],
+      argTypes: [
+        { kind: "String" },
+        { kind: "String" },
+        { kind: "String" },
+        { kind: "String" },
+        { kind: "String" },
+        {
+          kind: "Record",
+          fields: [
+            { name: "runId", type: { kind: "String" } },
+            { name: "agent", type: { kind: "String" } },
+            { name: "trigger", type: { kind: "String" } },
+            { name: "scheduleId", type: { kind: "String" } },
+            { name: "scheduleExpr", type: { kind: "String" } },
+            { name: "firedAt", type: { kind: "String" } }
+          ]
+        }
+      ],
+      expectStringResult: true
+    });
+    assert.equal(
+      extractTextResponse(timerCall),
+      "marshal-timer:run-local-1:every_second:timer:2026-03-08T12:00:00.000Z"
+    );
   } finally {
     await manager.shutdown();
     await rm(root, { recursive: true, force: true });
