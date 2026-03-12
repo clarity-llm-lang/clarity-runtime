@@ -48,7 +48,7 @@ When runtime receives run-scoped chat input, it must enqueue asynchronous proces
 ## Non-Goals (This Increment)
 
 1. Full language-native orchestration in Clarity for chat processing.
-2. Generic string marshalling for all local wasm exported function calls.
+2. Full ABI reflection for arbitrary local wasm exported function signatures (typed `argTypes`/`resultType` marshalling is handled in follow-up runtime work).
 3. Persisted conversation memory beyond the current run event timeline.
 
 ## Acceptance Criteria

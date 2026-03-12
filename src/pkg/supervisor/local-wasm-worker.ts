@@ -5,9 +5,27 @@ import { Worker, parentPort, workerData } from "node:worker_threads";
 interface Payload {
   wasmPath: string;
   functionName: string;
-  args: Array<number | bigint | string>;
+  args: unknown[];
   expectStringResult?: boolean;
+  argTypes?: Array<WasmMarshalType | undefined>;
+  resultType?: WasmMarshalType;
 }
+
+interface WasmMarshalRecordField {
+  name: string;
+  type: WasmMarshalType;
+}
+
+type WasmMarshalType =
+  | { kind: "Int64" }
+  | { kind: "Float64" }
+  | { kind: "Bool" }
+  | { kind: "String" }
+  | { kind: "Timestamp" }
+  | { kind: "List"; element: WasmMarshalType }
+  | { kind: "Record"; fields: WasmMarshalRecordField[] }
+  | { kind: "Option"; inner: WasmMarshalType }
+  | { kind: "Result"; ok: WasmMarshalType; err: WasmMarshalType };
 
 type WorkerValue =
   | { kind: "undefined" }
@@ -110,7 +128,7 @@ function requireMemory(): WebAssembly.Memory {
 function alloc(size: number): number {
   const mem = requireMemory();
   const alignedSize = Math.max(1, size);
-  heapPtr = (heapPtr + 3) & ~3;
+  heapPtr = (heapPtr + 7) & ~7;
   const ptr = heapPtr;
   const needed = ptr + alignedSize;
   if (needed > mem.buffer.byteLength) {
@@ -569,7 +587,342 @@ function hitlAsk(key: string, question: string): string {
   return "[hitl_ask timeout]";
 }
 
-function serializeValue(value: unknown, expectStringResult: boolean): WorkerValue {
+function stringifyWithBigInts(value: unknown): string {
+  return JSON.stringify(value, (_key, current) => (typeof current === "bigint" ? current.toString() : current));
+}
+
+function alignTo(value: number, alignment: number): number {
+  if (alignment <= 1) {
+    return value;
+  }
+  return (value + alignment - 1) & ~(alignment - 1);
+}
+
+function isInt64LikeType(type: WasmMarshalType): boolean {
+  return type.kind === "Int64" || type.kind === "Timestamp";
+}
+
+function isFloat64Type(type: WasmMarshalType): boolean {
+  return type.kind === "Float64";
+}
+
+function fieldAlign(type: WasmMarshalType): number {
+  if (isInt64LikeType(type) || isFloat64Type(type)) {
+    return 8;
+  }
+  return 4;
+}
+
+function fieldSize(type: WasmMarshalType): number {
+  if (isInt64LikeType(type) || isFloat64Type(type)) {
+    return 8;
+  }
+  return 4;
+}
+
+function recordLayout(fields: WasmMarshalRecordField[]): Array<WasmMarshalRecordField & { offset: number }> {
+  const layout: Array<WasmMarshalRecordField & { offset: number }> = [];
+  let offset = 0;
+  for (const field of fields) {
+    offset = alignTo(offset, fieldAlign(field.type));
+    layout.push({ ...field, offset });
+    offset += fieldSize(field.type);
+  }
+  return layout;
+}
+
+function recordSize(fields: WasmMarshalRecordField[]): number {
+  const layout = recordLayout(fields);
+  if (layout.length === 0) {
+    return 4;
+  }
+  const last = layout[layout.length - 1];
+  return alignTo(last.offset + fieldSize(last.type), 4);
+}
+
+function unionSizeForPayload(payloadType: WasmMarshalType): number {
+  return 8 + recordSize([{ name: "payload", type: payloadType }]);
+}
+
+function unionSizeForResult(ok: WasmMarshalType, err: WasmMarshalType): number {
+  const okSize = recordSize([{ name: "ok", type: ok }]);
+  const errSize = recordSize([{ name: "err", type: err }]);
+  return 8 + Math.max(okSize, errSize);
+}
+
+function coerceInt64(value: unknown, label: string): bigint {
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value) && Number.isInteger(value)) {
+    return BigInt(value);
+  }
+  if (typeof value === "string" && /^-?\d+$/.test(value.trim())) {
+    return BigInt(value.trim());
+  }
+  throw new Error(`${label}: expected Int64-compatible value`);
+}
+
+function coerceFloat64(value: unknown, label: string): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  throw new Error(`${label}: expected Float64-compatible value`);
+}
+
+function coerceBool(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "bigint") {
+    return value !== 0n;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1") {
+      return true;
+    }
+    if (normalized === "false" || normalized === "0" || normalized.length === 0) {
+      return false;
+    }
+  }
+  return false;
+}
+
+function asRecordValue(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label}: expected record/object value`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function asPointer(value: unknown, label: string): number {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value === "bigint") {
+    const asNumber = Number(value);
+    if (Number.isSafeInteger(asNumber) && asNumber >= 0) {
+      return asNumber;
+    }
+  }
+  throw new Error(`${label}: expected pointer value`);
+}
+
+function storeMarshalledValue(view: DataView, ptr: number, offset: number, type: WasmMarshalType, value: unknown, label: string): void {
+  const base = ptr + offset;
+  if (isInt64LikeType(type)) {
+    view.setBigInt64(base, coerceInt64(value, label), true);
+    return;
+  }
+  if (isFloat64Type(type)) {
+    view.setFloat64(base, coerceFloat64(value, label), true);
+    return;
+  }
+  if (type.kind === "Bool") {
+    view.setInt32(base, coerceBool(value) ? 1 : 0, true);
+    return;
+  }
+  view.setInt32(base, asPointer(value, label), true);
+}
+
+function marshalValueByType(type: WasmMarshalType, value: unknown, label: string): number | bigint {
+  if (isInt64LikeType(type)) {
+    return coerceInt64(value, label);
+  }
+  if (type.kind === "Float64") {
+    return coerceFloat64(value, label);
+  }
+  if (type.kind === "Bool") {
+    return coerceBool(value) ? 1 : 0;
+  }
+  if (type.kind === "String") {
+    return writeString(String(value ?? ""));
+  }
+  if (type.kind === "List") {
+    if (!Array.isArray(value)) {
+      throw new Error(`${label}: expected list/array value`);
+    }
+    const elemType = type.element;
+    const elemSize = fieldSize(elemType);
+    const ptr = alloc(4 + value.length * elemSize);
+    const view = new DataView(requireMemory().buffer);
+    view.setInt32(ptr, value.length, true);
+    for (let i = 0; i < value.length; i += 1) {
+      const itemValue = marshalValueByType(elemType, value[i], `${label}[${i}]`);
+      storeMarshalledValue(view, ptr, 4 + i * elemSize, elemType, itemValue, `${label}[${i}]`);
+    }
+    return ptr;
+  }
+  if (type.kind === "Record") {
+    const record = asRecordValue(value, label);
+    const layout = recordLayout(type.fields);
+    const ptr = alloc(recordSize(type.fields));
+    const view = new DataView(requireMemory().buffer);
+    for (const field of layout) {
+      const fieldValue = marshalValueByType(
+        field.type,
+        record[field.name],
+        `${label}.${field.name}`
+      );
+      storeMarshalledValue(view, ptr, field.offset, field.type, fieldValue, `${label}.${field.name}`);
+    }
+    return ptr;
+  }
+  if (type.kind === "Option") {
+    const ptr = alloc(unionSizeForPayload(type.inner));
+    const view = new DataView(requireMemory().buffer);
+    if (value === null || value === undefined) {
+      view.setInt32(ptr, 1, true);
+      return ptr;
+    }
+    view.setInt32(ptr, 0, true);
+    const payload = marshalValueByType(type.inner, value, `${label}.some`);
+    storeMarshalledValue(view, ptr, 8, type.inner, payload, `${label}.some`);
+    return ptr;
+  }
+  if (type.kind === "Result") {
+    const ptr = alloc(unionSizeForResult(type.ok, type.err));
+    const view = new DataView(requireMemory().buffer);
+    const record = asRecordValue(value, label);
+    if (Object.prototype.hasOwnProperty.call(record, "ok")) {
+      view.setInt32(ptr, 0, true);
+      const payload = marshalValueByType(type.ok, record.ok, `${label}.ok`);
+      storeMarshalledValue(view, ptr, 8, type.ok, payload, `${label}.ok`);
+      return ptr;
+    }
+    if (Object.prototype.hasOwnProperty.call(record, "err")) {
+      view.setInt32(ptr, 1, true);
+      const payload = marshalValueByType(type.err, record.err, `${label}.err`);
+      storeMarshalledValue(view, ptr, 8, type.err, payload, `${label}.err`);
+      return ptr;
+    }
+    throw new Error(`${label}: expected Result object with 'ok' or 'err'`);
+  }
+  throw new Error(`${label}: unsupported marshal type '${(type as { kind?: string }).kind ?? "unknown"}'`);
+}
+
+function readMarshalledValue(type: WasmMarshalType, rawValue: unknown, label: string): unknown {
+  if (isInt64LikeType(type)) {
+    return coerceInt64(rawValue, label);
+  }
+  if (type.kind === "Float64") {
+    return coerceFloat64(rawValue, label);
+  }
+  if (type.kind === "Bool") {
+    return coerceBool(rawValue);
+  }
+  const ptr = asPointer(rawValue, label);
+  const view = new DataView(requireMemory().buffer);
+  if (type.kind === "String") {
+    return readString(ptr);
+  }
+  if (type.kind === "List") {
+    const len = view.getInt32(ptr, true);
+    const elemType = type.element;
+    const elemSize = fieldSize(elemType);
+    const out: unknown[] = [];
+    for (let i = 0; i < len; i += 1) {
+      const offset = ptr + 4 + i * elemSize;
+      let rawItem: unknown;
+      if (isInt64LikeType(elemType)) {
+        rawItem = view.getBigInt64(offset, true);
+      } else if (isFloat64Type(elemType)) {
+        rawItem = view.getFloat64(offset, true);
+      } else {
+        rawItem = view.getInt32(offset, true);
+      }
+      out.push(readMarshalledValue(elemType, rawItem, `${label}[${i}]`));
+    }
+    return out;
+  }
+  if (type.kind === "Record") {
+    const out: Record<string, unknown> = {};
+    const layout = recordLayout(type.fields);
+    for (const field of layout) {
+      const offset = ptr + field.offset;
+      let rawField: unknown;
+      if (isInt64LikeType(field.type)) {
+        rawField = view.getBigInt64(offset, true);
+      } else if (isFloat64Type(field.type)) {
+        rawField = view.getFloat64(offset, true);
+      } else {
+        rawField = view.getInt32(offset, true);
+      }
+      out[field.name] = readMarshalledValue(field.type, rawField, `${label}.${field.name}`);
+    }
+    return out;
+  }
+  if (type.kind === "Option") {
+    const tag = view.getInt32(ptr, true);
+    if (tag === 1) {
+      return null;
+    }
+    let payloadRaw: unknown;
+    if (isInt64LikeType(type.inner)) {
+      payloadRaw = view.getBigInt64(ptr + 8, true);
+    } else if (isFloat64Type(type.inner)) {
+      payloadRaw = view.getFloat64(ptr + 8, true);
+    } else {
+      payloadRaw = view.getInt32(ptr + 8, true);
+    }
+    return readMarshalledValue(type.inner, payloadRaw, `${label}.some`);
+  }
+  if (type.kind === "Result") {
+    const tag = view.getInt32(ptr, true);
+    if (tag === 0) {
+      let okRaw: unknown;
+      if (isInt64LikeType(type.ok)) {
+        okRaw = view.getBigInt64(ptr + 8, true);
+      } else if (isFloat64Type(type.ok)) {
+        okRaw = view.getFloat64(ptr + 8, true);
+      } else {
+        okRaw = view.getInt32(ptr + 8, true);
+      }
+      return { ok: readMarshalledValue(type.ok, okRaw, `${label}.ok`) };
+    }
+    let errRaw: unknown;
+    if (isInt64LikeType(type.err)) {
+      errRaw = view.getBigInt64(ptr + 8, true);
+    } else if (isFloat64Type(type.err)) {
+      errRaw = view.getFloat64(ptr + 8, true);
+    } else {
+      errRaw = view.getInt32(ptr + 8, true);
+    }
+    return { err: readMarshalledValue(type.err, errRaw, `${label}.err`) };
+  }
+  return undefined;
+}
+
+function serializeValue(value: unknown, expectStringResult: boolean, resultType?: WasmMarshalType): WorkerValue {
+  if (resultType) {
+    const decoded = readMarshalledValue(resultType, value, "result");
+    if (decoded === undefined) {
+      return { kind: "undefined" };
+    }
+    if (typeof decoded === "string") {
+      return { kind: "string", value: decoded };
+    }
+    if (typeof decoded === "number") {
+      return { kind: "number", value: decoded };
+    }
+    if (typeof decoded === "boolean") {
+      return { kind: "boolean", value: decoded };
+    }
+    if (typeof decoded === "bigint") {
+      return { kind: "bigint", value: decoded.toString() };
+    }
+    return { kind: "string", value: stringifyWithBigInts(decoded) };
+  }
   if (value === undefined) {
     return { kind: "undefined" };
   }
@@ -601,7 +954,7 @@ function serializeValue(value: unknown, expectStringResult: boolean): WorkerValu
     return { kind: "bigint", value: value.toString() };
   }
 
-  return { kind: "string", value: JSON.stringify(value) };
+  return { kind: "string", value: stringifyWithBigInts(value) };
 }
 
 function buildImports(): WebAssembly.Imports {
@@ -735,12 +1088,22 @@ function buildImports(): WebAssembly.Imports {
   return { env };
 }
 
-function prepareArgs(rawArgs: Array<number | bigint | string>): Array<number | bigint> {
-  return rawArgs.map((arg) => {
+function prepareArgs(rawArgs: unknown[], argTypes?: Array<WasmMarshalType | undefined>): Array<number | bigint> {
+  return rawArgs.map((arg, index) => {
+    const explicitType = Array.isArray(argTypes) ? argTypes[index] : undefined;
+    if (explicitType) {
+      return marshalValueByType(explicitType, arg, `arg[${index}]`);
+    }
     if (typeof arg === "string") {
       return writeString(arg);
     }
-    return arg;
+    if (typeof arg === "boolean") {
+      return arg ? 1 : 0;
+    }
+    if (typeof arg === "number" || typeof arg === "bigint") {
+      return arg;
+    }
+    throw new Error(`unsupported argument type '${typeof arg}' for wasm call`);
   });
 }
 
@@ -778,10 +1141,10 @@ async function run(): Promise<WorkerResponse> {
   }
 
   try {
-    const output = (fn as Function)(...prepareArgs(payload.args));
+    const output = (fn as Function)(...prepareArgs(payload.args, payload.argTypes));
     return {
       ok: true,
-      value: serializeValue(output, payload.expectStringResult === true)
+      value: serializeValue(output, payload.expectStringResult === true, payload.resultType)
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
