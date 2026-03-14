@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { spawn } from "node:child_process";
-import { access, mkdir, readdir } from "node:fs/promises";
+import { access, mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 import { normalizeNamespace } from "../pkg/security/namespace.js";
@@ -18,6 +18,7 @@ const FORMAL_A2A_MESSAGE_KINDS = [
   "handoff.rejected",
   "handoff.completed"
 ] as const;
+const KNOWN_AUTH_REF_PROVIDER_PREFIXES = new Set(["env", "file", "header_env", "keychain", "op"]);
 
 function requestHeaders(authToken: string | undefined, headers?: HeadersInit): Headers {
   const out = new Headers(headers);
@@ -307,6 +308,276 @@ function parseCsvList(value: unknown): string[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function asString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function asStringArrayLoose(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const out = value.map((item) => String(item).trim()).filter(Boolean);
+    return out.length > 0 ? out : undefined;
+  }
+  if (typeof value === "string") {
+    const out = value.split(",").map((item) => item.trim()).filter(Boolean);
+    return out.length > 0 ? out : undefined;
+  }
+  return undefined;
+}
+
+function hasCliFlag(flagName: string): boolean {
+  return process.argv.some((arg) => arg === flagName || arg.startsWith(`${flagName}=`));
+}
+
+function isValidEnvName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
+function addOrReplaceLocalEnvEntry(
+  map: Map<string, { name: string; value?: string; secretRef?: string }>,
+  name: string,
+  entry: { name: string; value?: string; secretRef?: string },
+  allowReplace: boolean
+): void {
+  if (!allowReplace && map.has(name)) {
+    throw new Error(`duplicate env assignment for '${name}'`);
+  }
+  map.set(name, entry);
+}
+
+function normalizeAuthRef(rawValue: string, defaultProvider?: string): string {
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    throw new Error("secret reference value cannot be empty");
+  }
+  const split = trimmed.indexOf(":");
+  if (split > 0) {
+    const provider = trimmed.slice(0, split).toLowerCase();
+    if (KNOWN_AUTH_REF_PROVIDER_PREFIXES.has(provider)) {
+      return trimmed;
+    }
+  }
+  if (!defaultProvider) {
+    return trimmed;
+  }
+  return `${defaultProvider}:${trimmed}`;
+}
+
+function parseConfigLocalEnvEntries(config: Record<string, unknown>): Array<{ name: string; value?: string; secretRef?: string }> | undefined {
+  const out = new Map<string, { name: string; value?: string; secretRef?: string }>();
+  const agent = asObject(config.agent);
+  const agentEnv = agent ? agent.env : undefined;
+  const agentEnvSecretRefs = agent ? agent.env_secret_refs : undefined;
+  const secrets = asObject(config.secrets);
+  const defaultSecretProvider = asString(secrets?.provider)?.toLowerCase();
+  const secretRefsObject = asObject(secrets?.refs);
+
+  if (Array.isArray(agentEnv)) {
+    for (const item of agentEnv) {
+      const entry = asObject(item);
+      if (!entry) {
+        continue;
+      }
+      const name = asString(entry.name);
+      if (!name) {
+        continue;
+      }
+      if (!isValidEnvName(name)) {
+        throw new Error(`clarity.json agent.env has invalid env var name '${name}'`);
+      }
+      const value = asString(entry.value);
+      const secretRefRaw = asString(entry.secretRef);
+      const secretRef = secretRefRaw ? normalizeAuthRef(secretRefRaw, defaultSecretProvider) : undefined;
+      if (!value && !secretRef) {
+        continue;
+      }
+      addOrReplaceLocalEnvEntry(out, name, { name, ...(value ? { value } : {}), ...(secretRef ? { secretRef } : {}) }, true);
+    }
+  } else if (asObject(agentEnv)) {
+    for (const [name, rawValue] of Object.entries(asObject(agentEnv)!)) {
+      if (!isValidEnvName(name)) {
+        throw new Error(`clarity.json agent.env has invalid env var name '${name}'`);
+      }
+      const value = asString(rawValue);
+      if (!value) {
+        continue;
+      }
+      addOrReplaceLocalEnvEntry(out, name, { name, value }, true);
+    }
+  }
+
+  if (secretRefsObject) {
+    for (const [name, rawRef] of Object.entries(secretRefsObject)) {
+      if (!isValidEnvName(name)) {
+        throw new Error(`clarity.json secrets.refs has invalid env var name '${name}'`);
+      }
+      const refValue = asString(rawRef);
+      if (!refValue) {
+        continue;
+      }
+      const secretRef = normalizeAuthRef(refValue, defaultSecretProvider);
+      addOrReplaceLocalEnvEntry(out, name, { name, secretRef }, true);
+    }
+  }
+
+  if (Array.isArray(agentEnvSecretRefs)) {
+    for (const item of agentEnvSecretRefs) {
+      const entry = asObject(item);
+      if (!entry) {
+        continue;
+      }
+      const name = asString(entry.name);
+      const rawRef = asString(entry.ref ?? entry.secretRef);
+      if (!name || !rawRef) {
+        continue;
+      }
+      if (!isValidEnvName(name)) {
+        throw new Error(`clarity.json agent.env_secret_refs has invalid env var name '${name}'`);
+      }
+      const secretRef = normalizeAuthRef(rawRef, defaultSecretProvider);
+      addOrReplaceLocalEnvEntry(out, name, { name, secretRef }, true);
+    }
+  } else {
+    const refsMap = asObject(agentEnvSecretRefs);
+    if (refsMap) {
+      for (const [name, rawRef] of Object.entries(refsMap)) {
+        if (!isValidEnvName(name)) {
+          throw new Error(`clarity.json agent.env_secret_refs has invalid env var name '${name}'`);
+        }
+        const refValue = asString(rawRef);
+        if (!refValue) {
+          continue;
+        }
+        const secretRef = normalizeAuthRef(refValue, defaultSecretProvider);
+        addOrReplaceLocalEnvEntry(out, name, { name, secretRef }, true);
+      }
+    }
+  }
+
+  return out.size > 0 ? [...out.values()] : undefined;
+}
+
+function mergeLocalEnvEntries(
+  base?: Array<{ name: string; value?: string; secretRef?: string }>,
+  override?: Array<{ name: string; value?: string; secretRef?: string }>
+): Array<{ name: string; value?: string; secretRef?: string }> | undefined {
+  const out = new Map<string, { name: string; value?: string; secretRef?: string }>();
+  for (const entry of base ?? []) {
+    out.set(entry.name, entry);
+  }
+  for (const entry of override ?? []) {
+    out.set(entry.name, entry);
+  }
+  return out.size > 0 ? [...out.values()] : undefined;
+}
+
+function csvFromList(values?: string[]): string | undefined {
+  return values && values.length > 0 ? values.join(",") : undefined;
+}
+
+function loadAgentOptionsFromConfig(config: Record<string, unknown>, cliOpts: Record<string, unknown>): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...cliOpts };
+  const agent = asObject(config.agent) ?? {};
+
+  const triggers = asStringArrayLoose(agent.triggers);
+  const inputs = asStringArrayLoose(agent.inputs);
+  const outputs = asStringArrayLoose(agent.outputs);
+  const mcpTools = asStringArrayLoose(agent.mcp_tools ?? agent.allowed_mcp_tools ?? agent.allowedMcpTools);
+  const llmProviders = asStringArrayLoose(
+    agent.llm_providers ?? agent.allowed_llm_providers ?? agent.allowedLlmProviders ?? agent.llmProviders
+  );
+  const handoffTargets = asStringArrayLoose(agent.handoff_targets ?? agent.handoffTargets);
+  const dependsOn = asStringArrayLoose(agent.depends_on ?? agent.dependsOn);
+
+  if (merged.agentId === undefined) merged.agentId = asString(agent.id ?? agent.agent_id ?? agent.agentId);
+  if (merged.agentName === undefined) merged.agentName = asString(agent.name);
+  if (merged.agentRole === undefined) merged.agentRole = asString(agent.role);
+  if (merged.agentObjective === undefined) merged.agentObjective = asString(agent.objective);
+  if (merged.agentTriggers === undefined) merged.agentTriggers = csvFromList(triggers);
+  if (merged.agentInputs === undefined) merged.agentInputs = csvFromList(inputs);
+  if (merged.agentOutputs === undefined) merged.agentOutputs = csvFromList(outputs);
+  if (merged.agentMcpTools === undefined) merged.agentMcpTools = csvFromList(mcpTools);
+  if (merged.agentLlmProviders === undefined) merged.agentLlmProviders = csvFromList(llmProviders);
+  if (merged.agentHandoffTargets === undefined) merged.agentHandoffTargets = csvFromList(handoffTargets);
+  if (merged.agentDependsOn === undefined) merged.agentDependsOn = csvFromList(dependsOn);
+  if (merged.agentVersion === undefined) merged.agentVersion = asString(agent.version);
+
+  return merged;
+}
+
+async function findConfigPathUpward(startDir: string, fileName: string): Promise<string | undefined> {
+  let dir = path.resolve(startDir);
+  for (;;) {
+    const candidate = path.join(dir, fileName);
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // Keep searching upward.
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      return undefined;
+    }
+    dir = parent;
+  }
+}
+
+async function loadConfigForAddAgent(input: {
+  explicitConfigPath?: string;
+  sourceHint?: string;
+}): Promise<{ configPath: string; configDir: string; data: Record<string, unknown> }> {
+  let configPath: string | undefined;
+  if (input.explicitConfigPath) {
+    configPath = path.resolve(input.explicitConfigPath);
+  } else {
+    if (input.sourceHint) {
+      configPath = await findConfigPathUpward(path.dirname(path.resolve(input.sourceHint)), "clarity.json");
+    }
+    if (!configPath) {
+      configPath = await findConfigPathUpward(process.cwd(), "clarity.json");
+    }
+  }
+  if (!configPath) {
+    throw new Error("could not locate clarity.json (use --config to specify path)");
+  }
+
+  const raw = await readFile(configPath, "utf8");
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `failed to parse config at ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
+    );
+  }
+  const object = asObject(data);
+  if (!object) {
+    throw new Error(`invalid config at ${configPath}: expected JSON object`);
+  }
+  return {
+    configPath,
+    configDir: path.dirname(configPath),
+    data: object
+  };
+}
+
+function resolveSourceAndModuleFrom(baseDir: string, serviceInput: string, explicitModule?: string): { sourceFile: string; moduleName: string } {
+  const resolvedInput = path.isAbsolute(serviceInput) ? serviceInput : path.resolve(baseDir, serviceInput);
+  const hasClarityExtension = path.extname(resolvedInput) === ".clarity";
+  const sourceFile = hasClarityExtension ? resolvedInput : `${resolvedInput}.clarity`;
+  const moduleName = explicitModule ?? path.basename(sourceFile, path.extname(sourceFile));
+  return { sourceFile, moduleName };
+}
+
 function collectListOption(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
@@ -538,6 +809,124 @@ program
     const opts = await runtimeOpts();
     const out = await api<Record<string, unknown>>(opts.daemonUrl, "/api/status", opts.authToken);
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  });
+
+program
+  .command("addagent [service]")
+  .description("Compile, register, and start an agent using clarity.json metadata")
+  .option("--config <file>", "Path to clarity.json (default: discover upward from source or cwd)")
+  .option("--module <name>", "Module name override")
+  .option("--wasm <file>", "Compiled wasm output path override")
+  .option("--entry <name>", "MCP entry function override")
+  .option("--name <display>", "Display name override")
+  .option("--agent-id <id>", "Agent identifier override")
+  .option("--agent-name <name>", "Agent display name override")
+  .option("--agent-role <role>", "Agent role override")
+  .option("--agent-objective <text>", "Agent objective override")
+  .option("--agent-triggers <items>", "Comma-separated allowed triggers override: timer,event,api,a2a")
+  .option("--agent-inputs <items>", "Comma-separated expected inputs override")
+  .option("--agent-outputs <items>", "Comma-separated expected outputs override")
+  .option("--agent-mcp-tools <items>", "Comma-separated allowed MCP tools override")
+  .option("--agent-llm-providers <items>", "Comma-separated allowed LLM providers override")
+  .option("--agent-handoff-targets <items>", "Comma-separated handoff targets override")
+  .option("--agent-depends-on <items>", "Comma-separated upstream dependencies override")
+  .option("--agent-version <version>", "Agent descriptor version override")
+  .option("--env <name=value>", "Set local_wasm env var (repeatable)", collectListOption, [])
+  .option("--env-secret <name=authRef>", "Set local_wasm env from secretRef (repeatable)", collectListOption, [])
+  .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
+  .action(async (service, opts) => {
+    const optsRecord = opts as Record<string, unknown>;
+    const sourceHint = typeof service === "string" && service.trim().length > 0 ? service.trim() : undefined;
+    const config = await loadConfigForAddAgent({
+      explicitConfigPath: asString(optsRecord.config),
+      sourceHint
+    });
+
+    const runtimeMeta = asObject(config.data.runtime) ?? {};
+    const projectMeta = asObject(config.data.project) ?? {};
+    const toolingMeta = asObject(config.data.tooling) ?? {};
+    const secretsMeta = asObject(config.data.secrets) ?? {};
+    const defaultSecretProvider = asString(secretsMeta.provider)?.toLowerCase();
+
+    const configuredServiceType = asString(config.data.service_type)?.toLowerCase();
+    if (configuredServiceType && configuredServiceType !== "agent") {
+      throw new Error(`clarity.json service_type must be 'agent' for addagent (found '${configuredServiceType}')`);
+    }
+
+    const defaultSource = asString(projectMeta.entry_file) ?? "main.clarity";
+    const sourceInput = sourceHint ?? defaultSource;
+    const moduleOverride = asString(optsRecord.module);
+    const moduleFromConfig = asString(config.data.module);
+    const { sourceFile, moduleName } = resolveSourceAndModuleFrom(config.configDir, sourceInput, moduleOverride ?? moduleFromConfig);
+
+    try {
+      await access(sourceFile);
+    } catch (error) {
+      throw new Error(`source file not found: ${sourceFile}`, { cause: error });
+    }
+
+    const entry = asString(optsRecord.entry) ?? asString(config.data.entry) ?? "mcp_main";
+    const displayName = asString(optsRecord.name) ?? asString(config.data.name);
+    const wasmOverride = asString(optsRecord.wasm);
+    const wasmFromConfig = asString(toolingMeta.wasm);
+    const wasmPath = wasmOverride
+      ? path.resolve(wasmOverride)
+      : (wasmFromConfig
+        ? (path.isAbsolute(wasmFromConfig) ? wasmFromConfig : path.resolve(config.configDir, wasmFromConfig))
+        : undefined);
+
+    const runtimeFromCli = await runtimeOpts();
+    let daemonUrl = runtimeFromCli.daemonUrl;
+    if (!hasCliFlag("--daemon-url")) {
+      const daemonFromConfig = asString(runtimeMeta.daemon_url);
+      if (daemonFromConfig) {
+        daemonUrl = daemonFromConfig;
+      }
+    }
+
+    let authToken = runtimeFromCli.authToken;
+    if (!authToken) {
+      const tokenRef = asString(runtimeMeta.auth_token_ref);
+      if (tokenRef) {
+        authToken = await resolveRemoteAuthSecret(normalizeAuthRef(tokenRef, defaultSecretProvider), {
+          env: process.env,
+          cwd: config.configDir
+        });
+      }
+    }
+    if (!authToken) {
+      const tokenEnv = asString(runtimeMeta.auth_token_env);
+      if (tokenEnv) {
+        authToken = asString(process.env[tokenEnv]);
+      }
+    }
+
+    const envFromConfig = parseConfigLocalEnvEntries(config.data);
+    const envFromCli = parseLocalEnvOptions(optsRecord);
+    const localEnv = mergeLocalEnvEntries(envFromConfig, envFromCli);
+
+    const mergedAgentOpts = loadAgentOptionsFromConfig(config.data, optsRecord);
+    const agentDescriptor = buildAgentDescriptorFromOpts("agent", mergedAgentOpts, moduleName, displayName);
+    if (!agentDescriptor) {
+      throw new Error("failed to build agent descriptor from clarity.json");
+    }
+
+    const out = await compileRegisterStartIntrospect({
+      daemonUrl,
+      authToken,
+      sourceFile,
+      moduleName,
+      wasmPath,
+      entry,
+      env: localEnv,
+      displayName,
+      serviceType: "agent",
+      agent: agentDescriptor,
+      compilerBin: asString(optsRecord.compilerBin) ?? (process.env.CLARITYC_BIN ?? "clarityc")
+    });
+    process.stdout.write(
+      `${JSON.stringify({ ok: true, configPath: config.configPath, ...out }, null, 2)}\n`
+    );
   });
 
 program

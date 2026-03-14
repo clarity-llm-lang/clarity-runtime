@@ -111,6 +111,7 @@ When auth is enabled, pass `--auth-token <token>` to `clarityctl` (or set `CLARI
 ## CLI
 
 ```bash
+clarityctl addagent [service] [--config path/to/clarity.json]
 clarityctl add <service_or_source_path> [--env NAME=VALUE] [--env-secret NAME=REF]
 clarityctl add-all [dir] [--recursive] [--env NAME=VALUE] [--env-secret NAME=REF]
 clarityctl add-remote --endpoint <url> --module <name> [--transport streamable_http|sse_http] [--auth-ref <name>] [--timeout-ms <ms>] [--allow-tools <a,b,c>] [--max-payload-bytes <bytes>] [--max-concurrency <n>]
@@ -132,6 +133,12 @@ clarityctl bootstrap --clients codex,claude [--transport stdio|http] [--endpoint
 clarityctl bootstrap-remove --clients codex,claude
 clarityctl doctor
 ```
+
+`addagent` is the config-first path for agent repositories. It loads metadata from `clarity.json`, defaults to `project.entry_file` (or `main.clarity`), and applies:
+
+- runtime defaults from `runtime.daemon_url`, `runtime.auth_token_ref`, `runtime.auth_token_env`
+- agent descriptor defaults from `agent.*` (`role`, `objective`, `triggers`, `inputs`, `outputs`, etc.)
+- local wasm env injection from `agent.env`, `agent.env_secret_refs`, and `secrets.refs`
 
 `clarityctl doctor` now validates daemon connectivity, compiler availability, and local build workspace readiness.
 
