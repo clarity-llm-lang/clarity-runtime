@@ -110,6 +110,9 @@
   - Env form: `env:<ENV_VAR>`
   - File form: `file:<relative/path>` (resolved under `CLARITY_REMOTE_AUTH_FILE_ROOT` or `.clarity/secrets`)
   - Header form: `header_env:<Header-Name>:<ENV_VAR>`
+  - macOS keychain form: `keychain:service=<name>;account=<name>`
+  - 1Password CLI form: `op:op://<vault>/<item>/<field>`
+- `local_wasm.env[].secretRef`: uses the same provider syntax as `remote_mcp.authRef`.
 - `remote_mcp.maxPayloadBytes`: optional per-service request/response payload limit.
 - `remote_mcp.maxConcurrency`: optional per-service in-flight request limit.
 - `metadata.agent.hitl`: optional explicit capability flag for direct run HITL input surfaces (`true` enables HITL UI/actions).

@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import {
   deleteRemoteAuthSecret,
   listRemoteAuthFileSecrets,
+  resolveRemoteAuthSecret,
   resolveRemoteAuthHeaders,
   upsertRemoteAuthSecret,
   validateRemoteAuthRef
@@ -70,6 +71,40 @@ test("resolveRemoteAuthHeaders supports file provider within configured root", a
   }
 });
 
+test("resolveRemoteAuthSecret supports keychain provider with service/account target", async () => {
+  const secret = await resolveRemoteAuthSecret("keychain:service=clarity/openai;account=default", {
+    runCommand: async (command, args) => {
+      assert.equal(command, "security");
+      assert.deepEqual(args, ["find-generic-password", "-w", "-s", "clarity/openai", "-a", "default"]);
+      return {
+        code: 0,
+        stdout: "kc-secret\n",
+        stderr: ""
+      };
+    }
+  });
+
+  assert.equal(secret, "kc-secret");
+});
+
+test("resolveRemoteAuthHeaders supports 1Password provider", async () => {
+  const headers = await resolveRemoteAuthHeaders("op:op://Engineering/OpenAI/api_key", {
+    runCommand: async (command, args) => {
+      assert.equal(command, "op");
+      assert.deepEqual(args, ["read", "op://Engineering/OpenAI/api_key"]);
+      return {
+        code: 0,
+        stdout: "op-secret\n",
+        stderr: ""
+      };
+    }
+  });
+
+  assert.deepEqual(headers, {
+    Authorization: "Bearer op-secret"
+  });
+});
+
 test("resolveRemoteAuthHeaders blocks file traversal outside configured root", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clarity-auth-root-"));
   const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "clarity-auth-outside-"));
@@ -104,6 +139,22 @@ test("validateRemoteAuthRef returns redacted diagnostics", async () => {
   assert.equal(result.provider, "header_env");
   assert.equal(result.redactedTarget, "X-API-Key:***");
   assert.deepEqual(result.headerKeys, ["X-API-Key"]);
+});
+
+test("validateRemoteAuthRef returns keychain source metadata", async () => {
+  const result = await validateRemoteAuthRef("keychain:service=clarity/openai;account=default", {
+    runCommand: async () => ({
+      code: 0,
+      stdout: "kc-secret\n",
+      stderr: ""
+    })
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.provider, "keychain");
+  assert.equal(result.source, "os_keyring");
+  assert.equal(result.redactedTarget, "service=clarity/openai;account=***");
+  assert.deepEqual(result.headerKeys, ["Authorization"]);
 });
 
 test("upsertRemoteAuthSecret and deleteRemoteAuthSecret manage file provider secrets", async () => {

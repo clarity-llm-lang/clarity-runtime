@@ -1,10 +1,11 @@
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 
-const KNOWN_PROVIDERS = new Set(["legacy_env", "env", "file", "header_env"] as const);
+const KNOWN_PROVIDERS = new Set(["legacy_env", "env", "file", "header_env", "keychain", "op"] as const);
 const MAX_SECRET_LIST_ITEMS = 500;
 
-export type RemoteAuthProvider = "legacy_env" | "env" | "file" | "header_env";
+export type RemoteAuthProvider = "legacy_env" | "env" | "file" | "header_env" | "keychain" | "op";
 
 export interface ParsedRemoteAuthRef {
   provider: RemoteAuthProvider;
@@ -14,6 +15,7 @@ export interface ParsedRemoteAuthRef {
 export interface ResolveRemoteAuthOptions {
   env?: NodeJS.ProcessEnv;
   cwd?: string;
+  runCommand?: RemoteAuthCommandRunner;
 }
 
 export interface RemoteAuthValidation {
@@ -24,7 +26,7 @@ export interface RemoteAuthValidation {
   valid: boolean;
   issues: string[];
   headerKeys: string[];
-  source: "environment" | "file";
+  source: "environment" | "file" | "os_keyring" | "external_cli";
 }
 
 export interface RemoteAuthSecretWriteResult {
@@ -52,6 +54,18 @@ export interface RemoteAuthProviderHealth {
   fileRootExists: boolean;
 }
 
+export interface RemoteAuthCommandResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+export type RemoteAuthCommandRunner = (
+  command: string,
+  args: string[],
+  input: { env: NodeJS.ProcessEnv; cwd: string }
+) => Promise<RemoteAuthCommandResult>;
+
 function sanitizeLegacyRef(authRef: string): string {
   return authRef.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase();
 }
@@ -62,6 +76,129 @@ function ensureNonEmpty(value: string, field: string): string {
     throw new Error(`${field} must be a non-empty string`);
   }
   return trimmed;
+}
+
+async function runCommandDefault(
+  command: string,
+  args: string[],
+  input: { env: NodeJS.ProcessEnv; cwd: string }
+): Promise<RemoteAuthCommandResult> {
+  return await new Promise<RemoteAuthCommandResult>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: input.cwd,
+      env: input.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      stderr += String(chunk);
+    });
+
+    child.on("error", (error) => {
+      reject(error);
+    });
+    child.on("close", (code) => {
+      resolve({
+        code: typeof code === "number" ? code : 1,
+        stdout,
+        stderr
+      });
+    });
+  });
+}
+
+function parseKeychainTarget(target: string): { service: string; account: string } {
+  if (target.includes("=")) {
+    const parts = target
+      .split(";")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const map = new Map<string, string>();
+    for (const part of parts) {
+      const eq = part.indexOf("=");
+      if (eq <= 0 || eq >= part.length - 1) {
+        throw new Error("keychain authRef target must use 'service=<name>;account=<name>'");
+      }
+      const key = part.slice(0, eq).trim().toLowerCase();
+      const value = part.slice(eq + 1).trim();
+      if (!value) {
+        throw new Error("keychain authRef target contains an empty value");
+      }
+      map.set(key, value);
+    }
+    const service = map.get("service");
+    const account = map.get("account");
+    if (!service || !account) {
+      throw new Error("keychain authRef target must define both service and account");
+    }
+    return { service, account };
+  }
+
+  const split = target.indexOf(":");
+  if (split <= 0 || split >= target.length - 1) {
+    throw new Error("keychain authRef target must be '<service>:<account>' or 'service=<name>;account=<name>'");
+  }
+  const service = target.slice(0, split).trim();
+  const account = target.slice(split + 1).trim();
+  if (!service || !account) {
+    throw new Error("keychain authRef target must define non-empty service and account");
+  }
+  return { service, account };
+}
+
+async function readKeychainSecret(target: string, options: Required<ResolveRemoteAuthOptions>): Promise<string> {
+  const { service, account } = parseKeychainTarget(target);
+  let result: RemoteAuthCommandResult;
+  try {
+    result = await options.runCommand("security", ["find-generic-password", "-w", "-s", service, "-a", account], {
+      env: options.env,
+      cwd: options.cwd
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`failed to execute macOS keychain resolver: ${message}`, {
+      cause: error
+    });
+  }
+  if (result.code !== 0) {
+    const details = (result.stderr || result.stdout || "").trim();
+    throw new Error(`keychain lookup failed for service='${service}' account='${account}'${details ? `: ${details}` : ""}`);
+  }
+  const value = result.stdout.trim();
+  if (!value) {
+    throw new Error(`keychain secret is empty for service='${service}' account='${account}'`);
+  }
+  return value;
+}
+
+async function readOnePasswordSecret(target: string, options: Required<ResolveRemoteAuthOptions>): Promise<string> {
+  const secretRef = ensureNonEmpty(target, "1Password secret reference");
+  let result: RemoteAuthCommandResult;
+  try {
+    result = await options.runCommand("op", ["read", secretRef], {
+      env: options.env,
+      cwd: options.cwd
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`failed to execute 1Password CLI resolver: ${message}`, {
+      cause: error
+    });
+  }
+  if (result.code !== 0) {
+    const details = (result.stderr || result.stdout || "").trim();
+    throw new Error(`1Password lookup failed for ref '${secretRef}'${details ? `: ${details}` : ""}`);
+  }
+  const value = result.stdout.trim();
+  if (!value) {
+    throw new Error(`1Password secret is empty for ref '${secretRef}'`);
+  }
+  return value;
 }
 
 export function parseRemoteAuthRef(authRef: string): ParsedRemoteAuthRef {
@@ -160,6 +297,17 @@ function redactTarget(provider: RemoteAuthProvider, target: string): string {
     const headerName = target.slice(0, firstColon);
     return `${headerName}:***`;
   }
+  if (provider === "keychain") {
+    try {
+      const parsed = parseKeychainTarget(target);
+      return `service=${parsed.service};account=***`;
+    } catch {
+      return "service=***;account=***";
+    }
+  }
+  if (provider === "op") {
+    return target.length <= 8 ? "***" : `${target.slice(0, 4)}***${target.slice(-4)}`;
+  }
   if (target.length <= 4) {
     return "***";
   }
@@ -173,7 +321,8 @@ function uniqueSorted<T>(values: T[]): T[] {
 export async function resolveRemoteAuthHeaders(authRef: string, input: ResolveRemoteAuthOptions = {}): Promise<Record<string, string>> {
   const options: Required<ResolveRemoteAuthOptions> = {
     env: input.env ?? process.env,
-    cwd: input.cwd ?? process.cwd()
+    cwd: input.cwd ?? process.cwd(),
+    runCommand: input.runCommand ?? runCommandDefault
   };
 
   const parsed = parseRemoteAuthRef(authRef);
@@ -200,13 +349,24 @@ export async function resolveRemoteAuthHeaders(authRef: string, input: ResolveRe
     return { [headerName]: readEnvValue(options.env, envKey) };
   }
 
+  if (parsed.provider === "keychain") {
+    const secret = await readKeychainSecret(parsed.target, options);
+    return { Authorization: toBearerHeaderValue(secret) };
+  }
+
+  if (parsed.provider === "op") {
+    const secret = await readOnePasswordSecret(parsed.target, options);
+    return { Authorization: toBearerHeaderValue(secret) };
+  }
+
   throw new Error(`unsupported authRef provider: ${parsed.provider}`);
 }
 
 export async function resolveRemoteAuthSecret(authRef: string, input: ResolveRemoteAuthOptions = {}): Promise<string> {
   const options: Required<ResolveRemoteAuthOptions> = {
     env: input.env ?? process.env,
-    cwd: input.cwd ?? process.cwd()
+    cwd: input.cwd ?? process.cwd(),
+    runCommand: input.runCommand ?? runCommandDefault
   };
   const parsed = parseRemoteAuthRef(authRef);
 
@@ -229,13 +389,22 @@ export async function resolveRemoteAuthSecret(authRef: string, input: ResolveRem
     return readEnvValue(options.env, envKey);
   }
 
+  if (parsed.provider === "keychain") {
+    return readKeychainSecret(parsed.target, options);
+  }
+
+  if (parsed.provider === "op") {
+    return readOnePasswordSecret(parsed.target, options);
+  }
+
   throw new Error(`unsupported authRef provider: ${parsed.provider}`);
 }
 
 export async function validateRemoteAuthRef(authRef: string, input: ResolveRemoteAuthOptions = {}): Promise<RemoteAuthValidation> {
   const options: Required<ResolveRemoteAuthOptions> = {
     env: input.env ?? process.env,
-    cwd: input.cwd ?? process.cwd()
+    cwd: input.cwd ?? process.cwd(),
+    runCommand: input.runCommand ?? runCommandDefault
   };
   const parsed = parseRemoteAuthRef(authRef);
   const issues: string[] = [];
@@ -263,7 +432,11 @@ export async function validateRemoteAuthRef(authRef: string, input: ResolveRemot
     valid: issues.length === 0,
     issues,
     headerKeys,
-    source: parsed.provider === "file" ? "file" : "environment"
+    source: parsed.provider === "file"
+      ? "file"
+      : (parsed.provider === "keychain"
+        ? "os_keyring"
+        : (parsed.provider === "op" ? "external_cli" : "environment"))
   };
 }
 
@@ -274,7 +447,8 @@ export async function upsertRemoteAuthSecret(
 ): Promise<RemoteAuthSecretWriteResult> {
   const options: Required<ResolveRemoteAuthOptions> = {
     env: input.env ?? process.env,
-    cwd: input.cwd ?? process.cwd()
+    cwd: input.cwd ?? process.cwd(),
+    runCommand: input.runCommand ?? runCommandDefault
   };
   const parsed = parseRemoteAuthRef(authRef);
   if (parsed.provider !== "file") {
@@ -297,7 +471,8 @@ export async function upsertRemoteAuthSecret(
 export async function deleteRemoteAuthSecret(authRef: string, input: ResolveRemoteAuthOptions = {}): Promise<RemoteAuthSecretDeleteResult> {
   const options: Required<ResolveRemoteAuthOptions> = {
     env: input.env ?? process.env,
-    cwd: input.cwd ?? process.cwd()
+    cwd: input.cwd ?? process.cwd(),
+    runCommand: input.runCommand ?? runCommandDefault
   };
   const parsed = parseRemoteAuthRef(authRef);
   if (parsed.provider !== "file") {
@@ -352,7 +527,8 @@ async function listRelativeFiles(root: string): Promise<string[]> {
 export async function listRemoteAuthFileSecrets(input: ResolveRemoteAuthOptions = {}): Promise<RemoteAuthFileSecretEntry[]> {
   const options: Required<ResolveRemoteAuthOptions> = {
     env: input.env ?? process.env,
-    cwd: input.cwd ?? process.cwd()
+    cwd: input.cwd ?? process.cwd(),
+    runCommand: input.runCommand ?? runCommandDefault
   };
   const root = resolveFileRoot(options);
   try {
@@ -376,7 +552,8 @@ export async function listRemoteAuthFileSecrets(input: ResolveRemoteAuthOptions 
 export async function getRemoteAuthProviderHealth(input: ResolveRemoteAuthOptions = {}): Promise<RemoteAuthProviderHealth> {
   const options: Required<ResolveRemoteAuthOptions> = {
     env: input.env ?? process.env,
-    cwd: input.cwd ?? process.cwd()
+    cwd: input.cwd ?? process.cwd(),
+    runCommand: input.runCommand ?? runCommandDefault
   };
   const fileRoot = resolveFileRoot(options);
   let fileRootExists = true;
@@ -396,7 +573,9 @@ export async function getRemoteAuthProviderHealth(input: ResolveRemoteAuthOption
       { name: "legacy_env", supported: true },
       { name: "env", supported: true },
       { name: "file", supported: true },
-      { name: "header_env", supported: true }
+      { name: "header_env", supported: true },
+      { name: "keychain", supported: true },
+      { name: "op", supported: true }
     ],
     fileRoot,
     fileRootExists

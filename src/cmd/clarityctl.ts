@@ -5,6 +5,7 @@ import { access, mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 import { normalizeNamespace } from "../pkg/security/namespace.js";
+import { resolveRemoteAuthSecret } from "../pkg/security/remote-auth.js";
 import type { AgentDescriptor, MCPServiceManifest } from "../types/contracts.js";
 
 const program = new Command();
@@ -48,6 +49,7 @@ function localManifest(input: {
   module: string;
   wasmPath: string;
   entry: string;
+  env?: Array<{ name: string; value?: string; secretRef?: string }>;
   displayName?: string;
   serviceType?: "mcp" | "agent";
   agent?: AgentDescriptor;
@@ -67,7 +69,8 @@ function localManifest(input: {
       origin: {
         type: "local_wasm",
         wasmPath: input.wasmPath,
-        entry: input.entry
+        entry: input.entry,
+        ...(input.env && input.env.length > 0 ? { env: input.env } : {})
       },
       enabled: true,
       autostart: true,
@@ -304,6 +307,60 @@ function parseCsvList(value: unknown): string[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+function collectListOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function parseAssignment(raw: string, optionName: string): { name: string; value: string } {
+  const eq = raw.indexOf("=");
+  if (eq <= 0 || eq >= raw.length - 1) {
+    throw new Error(`${optionName} must be in the format NAME=VALUE`);
+  }
+  const name = raw.slice(0, eq).trim();
+  const value = raw.slice(eq + 1).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    throw new Error(`${optionName} has invalid env var name '${name}'`);
+  }
+  if (!value) {
+    throw new Error(`${optionName} value cannot be empty`);
+  }
+  return { name, value };
+}
+
+function readStringArrayOption(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => String(item)).map((item) => item.trim()).filter(Boolean);
+}
+
+function parseLocalEnvOptions(
+  opts: Record<string, unknown>
+): Array<{ name: string; value?: string; secretRef?: string }> | undefined {
+  const byName = new Map<string, { name: string; value?: string; secretRef?: string }>();
+
+  for (const entry of readStringArrayOption(opts.env)) {
+    const parsed = parseAssignment(entry, "--env");
+    if (byName.has(parsed.name)) {
+      throw new Error(`duplicate env assignment for '${parsed.name}'`);
+    }
+    byName.set(parsed.name, { name: parsed.name, value: parsed.value });
+  }
+
+  for (const entry of readStringArrayOption(opts.envSecret)) {
+    const parsed = parseAssignment(entry, "--env-secret");
+    if (byName.has(parsed.name)) {
+      throw new Error(`duplicate env assignment for '${parsed.name}'`);
+    }
+    byName.set(parsed.name, { name: parsed.name, secretRef: parsed.value });
+  }
+
+  if (byName.size === 0) {
+    return undefined;
+  }
+  return [...byName.values()];
+}
+
 function buildAgentDescriptorFromOpts(
   serviceType: "mcp" | "agent" | undefined,
   opts: Record<string, unknown>,
@@ -372,6 +429,7 @@ async function compileRegisterStartIntrospect(input: {
   moduleName: string;
   wasmPath?: string;
   entry: string;
+  env?: Array<{ name: string; value?: string; secretRef?: string }>;
   displayName?: string;
   serviceType?: "mcp" | "agent";
   agent?: AgentDescriptor;
@@ -389,6 +447,7 @@ async function compileRegisterStartIntrospect(input: {
     module: input.moduleName,
     wasmPath,
     entry: input.entry,
+    env: input.env,
     serviceType: input.serviceType,
     agent: input.agent,
     displayName: input.displayName
@@ -440,16 +499,35 @@ program
   .name("clarityctl")
   .description("Clarity runtime control CLI")
   .option("--daemon-url <url>", "Clarity daemon base URL", DEFAULT_DAEMON_URL)
+  .option(
+    "--runtime-auth-ref <ref>",
+    "Runtime auth token secret reference (providers: env, file, keychain, op)"
+  )
   .option("--auth-token <token>", "Runtime auth token", process.env.CLARITYD_AUTH_TOKEN ?? process.env.CLARITY_API_TOKEN);
 
-function runtimeOpts(): { daemonUrl: string; authToken?: string } {
-  return program.opts<{ daemonUrl: string; authToken?: string }>();
+async function runtimeOpts(): Promise<{ daemonUrl: string; authToken?: string }> {
+  const opts = program.opts<{ daemonUrl: string; authToken?: string; runtimeAuthRef?: string }>();
+  const directToken = typeof opts.authToken === "string" ? opts.authToken.trim() : "";
+  if (directToken) {
+    return { daemonUrl: opts.daemonUrl, authToken: directToken };
+  }
+
+  const runtimeAuthRef = typeof opts.runtimeAuthRef === "string" ? opts.runtimeAuthRef.trim() : "";
+  if (!runtimeAuthRef) {
+    return { daemonUrl: opts.daemonUrl };
+  }
+
+  const authToken = await resolveRemoteAuthSecret(runtimeAuthRef, {
+    env: process.env,
+    cwd: process.cwd()
+  });
+  return { daemonUrl: opts.daemonUrl, authToken };
 }
 
 program
   .command("list")
   .action(async () => {
-    const opts = runtimeOpts();
+    const opts = await runtimeOpts();
     const out = await api<{ items: Array<Record<string, unknown>> }>(opts.daemonUrl, "/api/services", opts.authToken);
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });
@@ -457,7 +535,7 @@ program
 program
   .command("status")
   .action(async () => {
-    const opts = runtimeOpts();
+    const opts = await runtimeOpts();
     const out = await api<Record<string, unknown>>(opts.daemonUrl, "/api/status", opts.authToken);
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });
@@ -482,9 +560,11 @@ program
   .option("--agent-handoff-targets <items>", "Comma-separated handoff targets (service-type=agent)")
   .option("--agent-depends-on <items>", "Comma-separated upstream dependencies (service-type=agent)")
   .option("--agent-version <version>", "Agent descriptor version")
+  .option("--env <name=value>", "Set local_wasm env var (repeatable)", collectListOption, [])
+  .option("--env-secret <name=authRef>", "Set local_wasm env from secretRef (repeatable)", collectListOption, [])
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (service, opts) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const { sourceFile, moduleName } = resolveSourceAndModule(String(service), opts.module);
     const serviceType = parseServiceType(opts.serviceType);
     const out = await compileRegisterStartIntrospect({
@@ -494,6 +574,7 @@ program
       moduleName,
       wasmPath: opts.wasm,
       entry: opts.entry,
+      env: parseLocalEnvOptions(opts as Record<string, unknown>),
       displayName: opts.name,
       serviceType,
       agent: buildAgentDescriptorFromOpts(serviceType, opts as Record<string, unknown>, moduleName, opts.name),
@@ -518,9 +599,11 @@ program
   .option("--agent-handoff-targets <items>", "Comma-separated handoff targets (service-type=agent)")
   .option("--agent-depends-on <items>", "Comma-separated upstream dependencies (service-type=agent)")
   .option("--agent-version <version>", "Agent descriptor version")
+  .option("--env <name=value>", "Set local_wasm env var for each service (repeatable)", collectListOption, [])
+  .option("--env-secret <name=authRef>", "Set local_wasm env from secretRef for each service (repeatable)", collectListOption, [])
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (dir, opts) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const rootDir = path.resolve(dir ?? ".");
     const files = await collectClarityFiles(rootDir, Boolean(opts.recursive));
     if (files.length === 0) {
@@ -538,6 +621,7 @@ program
         sourceFile,
         moduleName,
         entry: opts.entry,
+        env: parseLocalEnvOptions(opts as Record<string, unknown>),
         serviceType,
         agent: buildAgentDescriptorFromOpts(serviceType, opts as Record<string, unknown>, moduleName, moduleName),
         compilerBin: opts.compilerBin
@@ -581,8 +665,10 @@ program
   .option("--agent-handoff-targets <items>", "Comma-separated handoff targets (service-type=agent)")
   .option("--agent-depends-on <items>", "Comma-separated upstream dependencies (service-type=agent)")
   .option("--agent-version <version>", "Agent descriptor version")
+  .option("--env <name=value>", "Set local_wasm env var (repeatable)", collectListOption, [])
+  .option("--env-secret <name=authRef>", "Set local_wasm env from secretRef (repeatable)", collectListOption, [])
   .action(async (opts) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     process.stderr.write("warning: `add-local` is legacy; prefer `add <service>`.\n");
     const serviceType = parseServiceType(opts.serviceType);
     const manifest = localManifest({
@@ -590,6 +676,7 @@ program
       module: opts.module,
       wasmPath: path.resolve(opts.wasm),
       entry: opts.entry,
+      env: parseLocalEnvOptions(opts as Record<string, unknown>),
       serviceType,
       agent: buildAgentDescriptorFromOpts(serviceType, opts as Record<string, unknown>, opts.module, opts.name),
       displayName: opts.name
@@ -623,9 +710,11 @@ program
   .option("--agent-handoff-targets <items>", "Comma-separated handoff targets (service-type=agent)")
   .option("--agent-depends-on <items>", "Comma-separated upstream dependencies (service-type=agent)")
   .option("--agent-version <version>", "Agent descriptor version")
+  .option("--env <name=value>", "Set local_wasm env var (repeatable)", collectListOption, [])
+  .option("--env-secret <name=authRef>", "Set local_wasm env from secretRef (repeatable)", collectListOption, [])
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (opts) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     process.stderr.write("warning: `start-source` is legacy; prefer `add <service>`.\n");
     const sourceFile = path.resolve(opts.source);
     const moduleName = opts.module ?? path.basename(sourceFile, path.extname(sourceFile));
@@ -637,6 +726,7 @@ program
       moduleName,
       wasmPath: opts.wasm,
       entry: opts.entry,
+      env: parseLocalEnvOptions(opts as Record<string, unknown>),
       displayName: opts.name,
       serviceType,
       agent: buildAgentDescriptorFromOpts(serviceType, opts as Record<string, unknown>, moduleName, opts.name),
@@ -663,14 +753,14 @@ program
   .option("--agent-handoff-targets <items>", "Comma-separated handoff targets (service-type=agent)")
   .option("--agent-depends-on <items>", "Comma-separated upstream dependencies (service-type=agent)")
   .option("--agent-version <version>", "Agent descriptor version")
-  .option("--auth-ref <name>", "Auth secret reference name (resolved from env)")
+  .option("--auth-ref <ref>", "Auth secret reference (providers: env, file, header_env, keychain, op)")
   .option("--transport <mode>", "Remote transport: streamable_http | sse_http", "streamable_http")
   .option("--timeout-ms <ms>", "Remote request timeout in milliseconds")
   .option("--allow-tools <items>", "Comma-separated remote tool allowlist (optional)")
   .option("--max-payload-bytes <bytes>", "Max response/request payload bytes for this remote service")
   .option("--max-concurrency <n>", "Max concurrent in-flight remote requests for this service")
   .action(async (opts) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const timeoutMs = opts.timeoutMs !== undefined ? Number(opts.timeoutMs) : undefined;
     const maxPayloadBytes = opts.maxPayloadBytes !== undefined ? Number(opts.maxPayloadBytes) : undefined;
     const maxConcurrency = opts.maxConcurrency !== undefined ? Number(opts.maxConcurrency) : undefined;
@@ -704,7 +794,7 @@ for (const action of ["start", "stop", "restart", "introspect"] as const) {
   program
     .command(`${action} <serviceId>`)
     .action(async (serviceId) => {
-      const runtime = runtimeOpts();
+      const runtime = await runtimeOpts();
       const out = await api<Record<string, unknown>>(
         runtime.daemonUrl,
         `/api/services/${encodeURIComponent(serviceId)}/${action}`,
@@ -721,7 +811,7 @@ program
   .command("remove <serviceId>")
   .option("--cleanup-artifacts", "Delete local wasm artifact when removing local service")
   .action(async (serviceId, opts) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const out = await api<Record<string, unknown>>(
       runtime.daemonUrl,
       `/api/services/${encodeURIComponent(serviceId)}`,
@@ -742,7 +832,7 @@ program
   .option("--event-limit <n>", "Recent events", "100")
   .option("--call-limit <n>", "Recent tool calls", "20")
   .action(async (serviceId, opts) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const logLimit = Number(opts.logLimit);
     const eventLimit = Number(opts.eventLimit);
     const callLimit = Number(opts.callLimit);
@@ -763,7 +853,7 @@ program
   .command("logs <serviceId>")
   .option("--limit <n>", "Number of lines", "200")
   .action(async (serviceId, opts) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const limit = Number(opts.limit);
     const out = await api<{ lines: string[] }>(
       runtime.daemonUrl,
@@ -778,7 +868,7 @@ const authCmd = program.command("auth").description("Remote auth provider and se
 authCmd
   .command("providers")
   .action(async () => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/security/auth/providers", runtime.authToken);
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });
@@ -786,7 +876,7 @@ authCmd
 authCmd
   .command("validate <authRef>")
   .action(async (authRef) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/security/auth/validate", runtime.authToken, {
       method: "POST",
       body: JSON.stringify({ auth_ref: authRef })
@@ -797,7 +887,7 @@ authCmd
 authCmd
   .command("list-secrets")
   .action(async () => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/security/auth/secrets", runtime.authToken);
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   });
@@ -805,7 +895,7 @@ authCmd
 authCmd
   .command("set-secret <authRef> <secret>")
   .action(async (authRef, secret) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/security/auth/secrets", runtime.authToken, {
       method: "POST",
       body: JSON.stringify({ auth_ref: authRef, secret })
@@ -816,7 +906,7 @@ authCmd
 authCmd
   .command("delete-secret <authRef>")
   .action(async (authRef) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const out = await api<Record<string, unknown>>(runtime.daemonUrl, "/api/security/auth/secrets", runtime.authToken, {
       method: "DELETE",
       body: JSON.stringify({ auth_ref: authRef })
@@ -831,7 +921,7 @@ program
   .option("--endpoint <url>", "HTTP endpoint to use when --transport http")
   .option("--update-agents-md", "Also upsert workspace AGENTS.md Clarity defaults (managed block)")
   .action(async (opts) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const clients = String(opts.clients)
       .split(",")
       .map((s) => s.trim())
@@ -861,7 +951,7 @@ program
   .command("bootstrap-remove")
   .option("--clients <items>", "Comma separated clients", "codex,claude")
   .action(async (opts) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const clients = String(opts.clients)
       .split(",")
       .map((s) => s.trim())
@@ -878,7 +968,7 @@ program
   .command("doctor")
   .option("--compiler-bin <bin>", "Compiler binary", process.env.CLARITYC_BIN ?? "clarityc")
   .action(async (opts) => {
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     const checks: Array<{ name: string; status: "pass" | "fail"; detail?: string }> = [];
     let statusOut: Record<string, unknown> | undefined;
 
@@ -929,7 +1019,7 @@ gateway
       throw new Error("Only --stdio mode is currently supported");
     }
 
-    const runtime = runtimeOpts();
+    const runtime = await runtimeOpts();
     await runStdioGateway(runtime.daemonUrl, runtime.authToken);
   });
 

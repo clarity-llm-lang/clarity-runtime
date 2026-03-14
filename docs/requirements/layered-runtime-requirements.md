@@ -7,11 +7,11 @@ Execution order for larger runtime initiatives. The goal is to deliver each laye
 - Scope:
   - provider-backed `authRef` resolution for remote MCP services
   - legacy compatibility with `CLARITY_REMOTE_AUTH_<NAME>`
-  - initial providers: `env:`, `file:`, `header_env:`
+  - supported providers: `env:`, `file:`, `header_env:`, `keychain:`, `op:`
   - path/header validation for safer secret handling
 - Remaining:
   - expanded isolation policy controls for multi-tenant/remote trust zones
-  - optional key-management backends (beyond env/file)
+  - optional managed key-management backends beyond local OS/CLI providers
 
 ## Layer 2: Transactional Clarity Bootstrap
 - Status: Done (baseline)

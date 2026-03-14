@@ -104,15 +104,15 @@ npm run dev:daemon
 npm run dev:ctl -- list
 ```
 
-When auth is enabled, pass `--auth-token <token>` to `clarityctl` (or set `CLARITYD_AUTH_TOKEN`/`CLARITY_API_TOKEN` in the environment).
+When auth is enabled, pass `--auth-token <token>` to `clarityctl` (or set `CLARITYD_AUTH_TOKEN`/`CLARITY_API_TOKEN` in the environment). You can also resolve the runtime token from a secret reference with `--runtime-auth-ref <ref>`.
 
 ---
 
 ## CLI
 
 ```bash
-clarityctl add <service_or_source_path>
-clarityctl add-all [dir] [--recursive]
+clarityctl add <service_or_source_path> [--env NAME=VALUE] [--env-secret NAME=REF]
+clarityctl add-all [dir] [--recursive] [--env NAME=VALUE] [--env-secret NAME=REF]
 clarityctl add-remote --endpoint <url> --module <name> [--transport streamable_http|sse_http] [--auth-ref <name>] [--timeout-ms <ms>] [--allow-tools <a,b,c>] [--max-payload-bytes <bytes>] [--max-concurrency <n>]
 clarityctl list
 clarityctl status
@@ -222,7 +222,9 @@ Not implemented yet:
 - `add-remote --allow-tools <tool_a,tool_b>`: restrict callable remote tools.
 - `add-remote --max-payload-bytes <bytes>`: set max request/response payload bytes per remote service.
 - `add-remote --max-concurrency <n>`: set max concurrent in-flight remote requests per service.
-- `add-remote --auth-ref <ref>`: remote auth reference (supports `legacy-name`, `env:ENV_VAR`, `file:relative/path`, `header_env:Header-Name:ENV_VAR`).
+- `add --env-secret NAME=REF`: bind a local wasm env var to a secret reference (`REF` supports `legacy-name`, `env:ENV_VAR`, `file:relative/path`, `header_env:Header-Name:ENV_VAR`, `keychain:service=<name>;account=<name>`, `op:op://vault/item/field`).
+- `add-remote --auth-ref <ref>`: remote auth reference (supports `legacy-name`, `env:ENV_VAR`, `file:relative/path`, `header_env:Header-Name:ENV_VAR`, `keychain:service=<name>;account=<name>`, `op:op://vault/item/field`).
+- global `--runtime-auth-ref <ref>`: resolve runtime control-plane token from a secret reference instead of passing raw token text.
 - `CLARITY_REMOTE_ALLOWED_HOSTS=host1,host2`: optional global remote host allowlist.
 - `CLARITY_REMOTE_DEFAULT_TIMEOUT_MS=20000`: default timeout when manifest timeout is not set.
 - `CLARITY_REMOTE_MAX_PAYLOAD_BYTES=1048576`: default max request/response payload bytes when manifest value is not set.
